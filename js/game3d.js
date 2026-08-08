@@ -314,6 +314,26 @@ scene.add(moon);
 const playerLight = new THREE.PointLight(0xffbbaa, 0.0, TILE * 10, 0);
 scene.add(playerLight);
 
+// ── Carry-light fallback (readability, not a real light) ──────────
+// With no torch or lantern the player would be invisible in the dark, so a
+// small point light rides the character. It is an affordance, and it used to
+// be ONE number covering two situations that are nothing alike — calibrated
+// for the darker of them:
+//   • In a cave there is genuinely no other light, so the fill has to carry
+//     the whole figure.
+//   • Outdoors at night the moon and sky ambient already light the world, so
+//     that same cave-strength fill made the character measure **8.05x
+//     brighter than the ground beside it** at midnight (vs 0.58x at noon).
+//     It read as a lit sticker on a black field, not a figure in moonlight.
+// Split, so each can be tuned for its own case. The outdoor one is cool-tinted
+// to sit with the moon (0x7799cc) rather than reading as neutral daylight, and
+// scales with nightFactor so it fades UP through dusk instead of popping on.
+// Tune live: _dev.nightLight({night:0.2, cave:0.4}).
+let NIGHT_FILL_I = 0.12;               // outdoors, after dark
+let NIGHT_FILL_COL = 0x8aa0c8;         // cool — moonlight, not daylight
+let CAVE_FILL_I = 0.35;                // caves/interiors: nothing else lights you
+let CAVE_FILL_COL = 0xaaaaaa;
+
 // ── Sky + dynamic environment ─────────────────────────────────────
 // Replaces the flat clear colour AND the one-shot 64x256 gradient env map.
 // The gradient above stays as a boot placeholder so materials have something
@@ -2111,10 +2131,17 @@ function updateEnvironmentCycle(dt) {
     playerLight.intensity = 0.9 * flicker;
     playerLight.color.setHex(0xffaa44);
     playerLight.distance = TILE * 9;
-  } else if (inCave || inHouse || nightFactor > 0.01) {
-    // Dim fallback so players aren't completely blinded but need a light source
-    playerLight.intensity = 0.35;
-    playerLight.color.setHex(0xaaaaaa);
+  } else if (inCave || inHouse) {
+    // Enclosed: nothing else is lighting you, so this fill carries the figure.
+    playerLight.intensity = CAVE_FILL_I;
+    playerLight.color.setHex(CAVE_FILL_COL);
+    playerLight.distance = TILE * 2.5;
+  } else if (nightFactor > 0.01) {
+    // Outdoors after dark the moon and ambient already light the scene — this
+    // only has to keep the silhouette readable. Scaled by nightFactor so it
+    // comes up with the dark rather than switching on at the dusk threshold.
+    playerLight.intensity = NIGHT_FILL_I * nightFactor;
+    playerLight.color.setHex(NIGHT_FILL_COL);
     playerLight.distance = TILE * 2.5;
   } else {
     playerLight.intensity = 0.0;
@@ -3750,6 +3777,21 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     paintWaterMask(0,0,MAP_W-1,MAP_H-1); wMaskTex.needsUpdate=true;
     return JSON.stringify({ampC:WARP_AMP_C, ampF:WARP_AMP_F, cellC:WARP_CELL_C,
       cellF:WARP_CELL_F, hash:WARP_HASH, reachTiles:WARP_R, rebakeMs:+(performance.now()-t0).toFixed(0)});
+  },
+  // Carry-light fallback. _dev.nightLight({night:0.2, cave:0.4}) tunes the two
+  // cases independently; no args just reports. `ratio` is the thing being
+  // calibrated: character luminance over ground luminance in the same frame —
+  // 8.05x was the sticker-on-black bug, ~1.5-2x reads as moonlight.
+  nightLight(o){
+    o=o||{};
+    if(o.night!==undefined) NIGHT_FILL_I=o.night;
+    if(o.cave!==undefined)  CAVE_FILL_I=o.cave;
+    if(o.nightCol!==undefined) NIGHT_FILL_COL=o.nightCol;
+    if(o.caveCol!==undefined)  CAVE_FILL_COL=o.caveCol;
+    return JSON.stringify({night:NIGHT_FILL_I, nightCol:'#'+NIGHT_FILL_COL.toString(16).padStart(6,'0'),
+      cave:CAVE_FILL_I, caveCol:'#'+CAVE_FILL_COL.toString(16).padStart(6,'0'),
+      liveIntensity:+playerLight.intensity.toFixed(3),
+      liveColor:'#'+playerLight.color.getHexString(), radiusTiles:+(playerLight.distance/TILE).toFixed(2)});
   },
   // Walk-clip rate matching: _dev.gait(110) raises the speed that plays at 1.0x
   // (slower legs); _dev.gait() just reports. Live per-mob readout for eyeballing it.
