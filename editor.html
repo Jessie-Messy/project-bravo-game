@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Project Bravo — World & Entity Editor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #0d0b12;
+      --bg-panel: rgba(22, 18, 30, 0.94);
+      --bg-card: rgba(32, 26, 44, 0.7);
+      --bg-hover: rgba(50, 42, 70, 0.8);
+      --border-gold: #c8a25a;
+      --border-dim: rgba(200, 162, 90, 0.3);
+      --text-gold: #ffd97a;
+      --text-main: #e8dcc0;
+      --text-muted: #9a9080;
+      --accent-red: #ff5555;
+      --accent-green: #50fa7b;
+      --accent-blue: #8be9fd;
+      --accent-purple: #bd93f9;
+      --font-heading: 'Cinzel', serif;
+      --font-body: 'Inter', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    html, body { width: 100vw; height: 100vh; overflow: hidden; background: var(--bg-dark); color: var(--text-main); font-family: var(--font-body); font-size: 13px; }
+
+    /* App Container */
+    #app { display: grid; grid-template-rows: 46px 1fr 24px; width: 100vw; height: 100vh; }
+
+    /* Top Navigation Header */
+    header {
+      background: rgba(15, 12, 22, 0.98);
+      border-bottom: 1px solid var(--border-dim);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 16px; gap: 12px; z-index: 10;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-heading); font-weight: 700; font-size: 16px; color: var(--text-gold); letter-spacing: 0.5px; }
+    .brand span { font-size: 11px; background: rgba(200, 162, 90, 0.15); color: var(--border-gold); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border-dim); font-family: var(--font-mono); font-weight: normal; }
+
+    .header-actions { display: flex; align-items: center; gap: 8px; }
+    .btn {
+      background: var(--bg-card); border: 1px solid var(--border-dim); color: var(--text-main);
+      padding: 6px 12px; border-radius: 4px; font-family: var(--font-body); font-size: 12px; font-weight: 500;
+      cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: all 0.15s ease;
+    }
+    .btn:hover { background: var(--bg-hover); border-color: var(--border-gold); color: var(--text-gold); }
+    .btn-primary { background: linear-gradient(135deg, rgba(200, 162, 90, 0.3), rgba(140, 100, 40, 0.3)); border-color: var(--border-gold); color: var(--text-gold); font-weight: 600; }
+    .btn-primary:hover { background: linear-gradient(135deg, rgba(200, 162, 90, 0.5), rgba(140, 100, 40, 0.5)); box-shadow: 0 0 10px rgba(200, 162, 90, 0.3); }
+    .btn-danger { background: rgba(255, 85, 85, 0.15); border-color: rgba(255, 85, 85, 0.4); color: var(--accent-red); }
+    .btn-danger:hover { background: rgba(255, 85, 85, 0.3); }
+
+    /* Main Grid: Sidebar - Viewport - Inspector */
+    main { display: grid; grid-template-columns: 280px 1fr 310px; position: relative; overflow: hidden; }
+
+    /* Left Sidebar */
+    .sidebar-left {
+      background: var(--bg-panel); border-right: 1px solid var(--border-dim);
+      display: flex; flex-direction: column; overflow: hidden; z-index: 5;
+    }
+
+    /* Tool Selector Bar */
+    .tool-selector {
+      display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; padding: 10px;
+      background: rgba(10, 8, 15, 0.6); border-bottom: 1px solid var(--border-dim);
+    }
+    .tool-btn {
+      aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: var(--bg-card); border: 1px solid var(--border-dim); border-radius: 4px; color: var(--text-muted);
+      cursor: pointer; font-size: 16px; transition: all 0.15s ease; position: relative;
+    }
+    .tool-btn span { font-size: 9px; font-weight: 600; font-family: var(--font-mono); margin-top: 2px; text-transform: uppercase; }
+    .tool-btn:hover { background: var(--bg-hover); color: var(--text-main); }
+    .tool-btn.active { background: rgba(200, 162, 90, 0.25); border-color: var(--border-gold); color: var(--text-gold); box-shadow: inset 0 0 8px rgba(200, 162, 90, 0.2); }
+
+    /* Brush Size Row */
+    .brush-size-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: rgba(15, 12, 22, 0.4); border-bottom: 1px solid var(--border-dim); }
+    .brush-size-row label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }
+    .brush-sizes { display: flex; gap: 4px; }
+    .b-size-btn { padding: 3px 8px; font-size: 11px; font-family: var(--font-mono); border-radius: 3px; background: var(--bg-card); border: 1px solid var(--border-dim); color: var(--text-main); cursor: pointer; }
+    .b-size-btn.active { background: var(--border-gold); color: #100d14; font-weight: bold; }
+
+    /* Sidebar Tabs */
+    .tab-header { display: flex; background: rgba(10, 8, 15, 0.8); border-bottom: 1px solid var(--border-dim); }
+    .tab-btn { flex: 1; padding: 10px; text-align: center; font-family: var(--font-heading); font-size: 12px; font-weight: 700; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; }
+    .tab-btn:hover { color: var(--text-main); }
+    .tab-btn.active { color: var(--text-gold); border-bottom-color: var(--border-gold); background: rgba(200, 162, 90, 0.08); }
+
+    .tab-content { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+    .tab-content::-webkit-scrollbar { width: 6px; }
+    .tab-content::-webkit-scrollbar-thumb { background: var(--border-dim); border-radius: 3px; }
+
+    /* Palette Grid */
+    .section-title { font-size: 11px; font-weight: 700; color: var(--border-gold); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+    .palette-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    .palette-item {
+      display: flex; align-items: center; gap: 8px; padding: 6px; background: var(--bg-card);
+      border: 1px solid var(--border-dim); border-radius: 4px; cursor: pointer; transition: all 0.15s;
+    }
+    .palette-item:hover { background: var(--bg-hover); border-color: rgba(200, 162, 90, 0.6); }
+    .palette-item.active { background: rgba(200, 162, 90, 0.2); border-color: var(--border-gold); box-shadow: 0 0 6px rgba(200, 162, 90, 0.2); }
+    .swatch { width: 20px; height: 20px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.5); flex-shrink: 0; }
+    .palette-item-info { overflow: hidden; }
+    .palette-item-name { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .palette-item-sub { font-size: 9px; color: var(--text-muted); font-family: var(--font-mono); }
+
+    /* Center Canvas Viewport */
+    .viewport-container { position: relative; background: #08070c; overflow: hidden; cursor: crosshair; }
+    #mapCanvas { display: block; width: 100%; height: 100%; }
+
+    /* Canvas Floating Controls */
+    .canvas-controls {
+      position: absolute; bottom: 16px; left: 16px; display: flex; gap: 8px;
+      background: var(--bg-panel); border: 1px solid var(--border-dim); border-radius: 6px; padding: 6px 10px; z-index: 4; backdrop-filter: blur(8px);
+    }
+    .control-group { display: flex; align-items: center; gap: 6px; border-right: 1px solid var(--border-dim); padding-right: 8px; margin-right: 2px; }
+    .control-group:last-child { border: none; padding-right: 0; margin-right: 0; }
+    .toggle-btn { background: var(--bg-card); border: 1px solid var(--border-dim); color: var(--text-muted); padding: 4px 8px; border-radius: 3px; font-size: 11px; cursor: pointer; font-family: var(--font-mono); }
+    .toggle-btn.active { background: var(--border-gold); color: #100d14; font-weight: bold; }
+
+    /* Hover Tooltip Overlay */
+    .map-tooltip {
+      position: absolute; pointer-events: none; background: rgba(12, 10, 18, 0.9); border: 1px solid var(--border-gold);
+      border-radius: 4px; padding: 6px 10px; font-family: var(--font-mono); font-size: 11px; color: var(--text-gold);
+      z-index: 20; display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+
+    /* Right Sidebar (Inspector & Tuners) */
+    .sidebar-right {
+      background: var(--bg-panel); border-left: 1px solid var(--border-dim);
+      display: flex; flex-direction: column; overflow-y: auto; padding: 12px; gap: 14px; z-index: 5;
+    }
+    .sidebar-right::-webkit-scrollbar { width: 6px; }
+    .sidebar-right::-webkit-scrollbar-thumb { background: var(--border-dim); border-radius: 3px; }
+
+    .panel-card {
+      background: var(--bg-card); border: 1px solid var(--border-dim); border-radius: 6px; padding: 12px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .panel-card-header { font-family: var(--font-heading); font-size: 13px; font-weight: 700; color: var(--text-gold); border-bottom: 1px solid var(--border-dim); padding-bottom: 6px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; }
+
+    /* Form Inputs */
+    .form-group { display: flex; flex-direction: column; gap: 4px; }
+    .form-group label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; font-family: var(--font-mono); }
+    .form-control {
+      background: rgba(10, 8, 16, 0.8); border: 1px solid var(--border-dim); color: var(--text-main);
+      padding: 6px 8px; border-radius: 4px; font-family: var(--font-mono); font-size: 12px; outline: none;
+    }
+    .form-control:focus { border-color: var(--border-gold); box-shadow: 0 0 6px rgba(200, 162, 90, 0.3); }
+    .form-row { display: flex; gap: 8px; }
+    .form-row .form-group { flex: 1; }
+
+    /* Stat Tuner Slider Row */
+    .stat-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; border-bottom: 1px dashed rgba(200,162,90,0.15); }
+    .stat-label { font-size: 11px; color: var(--text-main); width: 85px; }
+    .stat-val { font-family: var(--font-mono); font-size: 11px; color: var(--text-gold); width: 45px; text-align: right; }
+    .stat-controls { display: flex; align-items: center; gap: 4px; flex: 1; }
+    .stat-btn { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; background: var(--bg-hover); border: 1px solid var(--border-dim); border-radius: 3px; color: var(--text-main); cursor: pointer; font-size: 12px; font-weight: bold; }
+    .stat-btn:hover { background: var(--border-gold); color: #100d14; }
+
+    /* Status Bar */
+    footer {
+      background: rgba(10, 8, 14, 0.98); border-top: 1px solid var(--border-dim);
+      display: flex; align-items: center; justify-content: space-between; padding: 0 16px;
+      font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); z-index: 10;
+    }
+    .status-item { display: flex; align-items: center; gap: 6px; }
+    .status-badge { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
+
+    /* Modal Windows */
+    .modal-overlay {
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.75);
+      backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 100; opacity: 0; pointer-events: none; transition: opacity 0.2s ease;
+    }
+    .modal-overlay.active { opacity: 1; pointer-events: auto; }
+    .modal {
+      background: var(--bg-panel); border: 1px solid var(--border-gold); border-radius: 8px; width: 440px;
+      max-width: 90vw; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.8); display: flex; flex-direction: column; gap: 14px;
+    }
+    .modal-header { font-family: var(--font-heading); font-size: 16px; font-weight: 700; color: var(--text-gold); border-bottom: 1px solid var(--border-dim); padding-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+    .modal-body { display: flex; flex-direction: column; gap: 12px; max-height: 70vh; overflow-y: auto; }
+    .modal-footer { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--border-dim); padding-top: 12px; margin-top: 4px; }
+
+    /* Color Swatch Picker Grid */
+    .color-picker-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+    .color-swatch-opt { aspect-ratio: 1; border-radius: 4px; border: 2px solid transparent; cursor: pointer; transition: transform 0.1s; }
+    .color-swatch-opt:hover { transform: scale(1.15); }
+    .color-swatch-opt.selected { border-color: #ffffff; box-shadow: 0 0 8px #ffffff; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header>
+      <div class="brand">
+        🏰 PROJECT BRAVO WORLD EDITOR <span>v1.0 STANDALONE</span>
+      </div>
+      <div class="header-actions">
+        <button class="btn" id="btnLoadDefaultMap" title="Reset/load default procedural game map">🗺️ Default World</button>
+        <button class="btn btn-danger" id="btnClearEdits" title="Clear all map tile edits & spawns">🧹 Clear Edits</button>
+        <button class="btn" id="btnImportJson" title="Import world_edits.json file">📥 Import JSON</button>
+        <button class="btn btn-primary" id="btnExportJson" title="Export world_edits.json file">📤 Export JSON</button>
+        <button class="btn" id="btnCopyJson" title="Copy JSON configuration to clipboard">📋 Copy JSON</button>
+        <button class="btn btn-primary" id="btnLaunchGame" style="margin-left: 10px;">🎮 Play Game</button>
+      </div>
+    </header>
+
+    <!-- Main Content Grid -->
+    <main>
+      <!-- Left Sidebar -->
+      <aside class="sidebar-left">
+        <!-- Tools Bar -->
+        <div class="tool-selector">
+          <div class="tool-btn active" data-tool="inspect" title="Inspect / Select (Click tile or mob to inspect)">
+            🔍<span>Select</span>
+          </div>
+          <div class="tool-btn" data-tool="paint" title="Paint Brush (Click/Drag to paint tiles)">
+            🖌️<span>Brush</span>
+          </div>
+          <div class="tool-btn" data-tool="rect" title="Rectangle Fill (Click & drag box area)">
+            🔲<span>Rect</span>
+          </div>
+          <div class="tool-btn" data-tool="bucket" title="Bucket Fill (Flood fill connected tiles)">
+            🪣<span>Fill</span>
+          </div>
+          <div class="tool-btn" data-tool="erase" title="Eraser (Reset tile to grass or delete mob spawn)">
+            🧹<span>Erase</span>
+          </div>
+          <div class="tool-btn" data-tool="spawn" title="Place Mob Spawn Point">
+            👾<span>Spawn</span>
+          </div>
+        </div>
+
+        <!-- Brush Size Selector -->
+        <div class="brush-size-row">
+          <label>Brush Size</label>
+          <div class="brush-sizes">
+            <button class="b-size-btn active" data-size="1">1×1</button>
+            <button class="b-size-btn" data-size="2">3×3</button>
+            <button class="b-size-btn" data-size="3">5×5</button>
+            <button class="b-size-btn" data-size="4">7×7</button>
+          </div>
+        </div>
+
+        <!-- Palette Tabs -->
+        <div class="tab-header">
+          <div class="tab-btn active" data-tab="tiles">Terrain Tiles</div>
+          <div class="tab-btn" data-tab="mobs">Mobs & Entities</div>
+        </div>
+
+        <!-- Tab Contents -->
+        <div class="tab-content" id="tabTilesContent">
+          <div class="section-title">
+            <span>Built-in Tiles</span>
+          </div>
+          <div class="palette-grid" id="builtinTilesGrid"></div>
+
+          <div class="section-title" style="margin-top: 14px;">
+            <span>Custom Tiles</span>
+            <button class="btn btn-primary" id="btnNewTileWiz" style="padding: 2px 8px; font-size: 10px;">+ New Tile</button>
+          </div>
+          <div class="palette-grid" id="customTilesGrid"></div>
+        </div>
+
+        <div class="tab-content" id="tabMobsContent" style="display: none;">
+          <div class="section-title">
+            <span>Standard Mobs</span>
+          </div>
+          <div class="palette-grid" id="standardMobsGrid"></div>
+
+          <div class="section-title" style="margin-top: 14px;">
+            <span>Custom Mob Entities</span>
+            <button class="btn btn-primary" id="btnNewMobWiz" style="padding: 2px 8px; font-size: 10px;">+ New Mob</button>
+          </div>
+          <div class="palette-grid" id="customMobsGrid"></div>
+        </div>
+      </aside>
+
+      <!-- Center Viewport -->
+      <div class="viewport-container" id="viewport">
+        <canvas id="mapCanvas"></canvas>
+
+        <!-- Floating View Controls -->
+        <div class="canvas-controls">
+          <div class="control-group">
+            <button class="toggle-btn active" id="toggleGrid">Grid: ON</button>
+            <button class="toggle-btn active" id="toggleSpawns">Spawns: ON</button>
+            <button class="toggle-btn active" id="toggleDungeon">Dungeon View</button>
+          </div>
+          <div class="control-group">
+            <button class="btn" id="btnZoomOut" style="padding: 2px 8px;">−</button>
+            <span id="zoomLabel" style="font-family: var(--font-mono); font-size: 11px; color: var(--text-gold); min-width: 40px; text-align: center;">100%</span>
+            <button class="btn" id="btnZoomIn" style="padding: 2px 8px;">+</button>
+            <button class="btn" id="btnResetView" style="padding: 2px 8px;">Center</button>
+          </div>
+        </div>
+
+        <!-- Tooltip -->
+        <div class="map-tooltip" id="mapTooltip"></div>
+      </div>
+
+      <!-- Right Sidebar (Inspector & Tuners) -->
+      <aside class="sidebar-right">
+        <!-- Tile / Spawn Inspector Panel -->
+        <div class="panel-card" id="inspectorPanel">
+          <div class="panel-card-header">
+            <span>Selection Inspector</span>
+            <span id="inspectCoord" style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);">(−, −)</span>
+          </div>
+          <div id="inspectorContent">
+            <div style="color: var(--text-muted); font-style: italic; text-align: center; padding: 10px 0;">
+              Click any tile or spawn on the map to inspect properties.
+            </div>
+          </div>
+        </div>
+
+        <!-- Mob Stat Tuner Panel -->
+        <div class="panel-card" id="mobTunerPanel">
+          <div class="panel-card-header">
+            <span>Mob Stat Tuner</span>
+            <span id="activeMobTunerName" style="color: var(--text-gold);">Wolf</span>
+          </div>
+          <div id="mobTunerContent">
+            <!-- Dynamically populated stats -->
+          </div>
+        </div>
+
+        <!-- Custom Entities Summary -->
+        <div class="panel-card">
+          <div class="panel-card-header">
+            <span>World Edit Statistics</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 6px; font-family: var(--font-mono); font-size: 11px;">
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-muted);">Tile Overrides:</span>
+              <span id="statTileEdits" style="color: var(--text-gold);">0</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-muted);">Custom Mob Spawns:</span>
+              <span id="statMobSpawns" style="color: var(--accent-red);">0</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-muted);">Custom Mob Types:</span>
+              <span id="statCustomMobs" style="color: var(--accent-purple);">0</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-muted);">Custom Tile Types:</span>
+              <span id="statCustomTiles" style="color: var(--accent-blue);">0</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- Status Bar -->
+    <footer>
+      <div class="status-item">
+        <div class="status-badge" id="statusBadge"></div>
+        <span id="statusText">LocalStorage Synced (bravoWorldEdits_v1)</span>
+      </div>
+      <div class="status-item">
+        <span id="coordText">X: 0, Y: 0 | Tile: Grass</span>
+      </div>
+      <div class="status-item">
+        <span>Map Size: 480 × 554 tiles</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Hidden File Input for JSON Import -->
+  <input type="file" id="jsonFileInput" accept=".json,application/json" style="display: none;" />
+
+  <!-- New Custom Tile Modal -->
+  <div class="modal-overlay" id="modalTile">
+    <div class="modal">
+      <div class="modal-header">
+        <span>Create New Custom Tile</span>
+        <button class="btn btn-danger" id="btnCloseTileModal" style="padding: 2px 6px;">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Tile Name</label>
+          <input type="text" class="form-control" id="tileNameInput" placeholder="e.g. Lava Floor, Crystal, Sand" maxlength="12" />
+        </div>
+        <div class="form-group">
+          <label>Tile Color Palette</label>
+          <div class="color-picker-grid" id="tileColorGrid"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Movement Blocking</label>
+            <select class="form-control" id="tileBlockingInput">
+              <option value="false">Walkable (No collision)</option>
+              <option value="true">Blocking (Solid barrier)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>3D Height Profile</label>
+            <select class="form-control" id="tileHeightInput">
+              <option value="0">Flat (0px)</option>
+              <option value="19">Low Box (19px)</option>
+              <option value="41">Tall Box (41px)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="btnCancelTileModal">Cancel</button>
+        <button class="btn btn-primary" id="btnSaveTileModal">✔ Create Custom Tile</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New Custom Mob Entity Modal -->
+  <div class="modal-overlay" id="modalMob">
+    <div class="modal">
+      <div class="modal-header">
+        <span>Create New Entity / Custom Mob</span>
+        <button class="btn btn-danger" id="btnCloseMobModal" style="padding: 2px 6px;">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Entity Name</label>
+          <input type="text" class="form-control" id="mobNameInput" placeholder="e.g. Shadow Wolf, Skeleton King" maxlength="16" />
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Base AI / Model Prototype</label>
+            <select class="form-control" id="mobBaseInput">
+              <!-- Dynamically populated -->
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Spawn Environment</label>
+            <select class="form-control" id="mobCaveInput">
+              <option value="false">Overworld (Grass)</option>
+              <option value="true">Caves / Dungeon</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Tint Color</label>
+          <div class="color-picker-grid" id="mobColorGrid"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Size Scale</label>
+            <select class="form-control" id="mobScaleInput">
+              <option value="0.7">Small (0.7×)</option>
+              <option value="1.0" selected>Medium (1.0×)</option>
+              <option value="1.4">Large (1.4×)</option>
+              <option value="2.0">XL Boss (2.0×)</option>
+              <option value="3.0">Colossus (3.0×)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Base HP</label>
+            <input type="number" class="form-control" id="mobHpInput" value="50" min="5" max="5000" />
+          </div>
+          <div class="form-group">
+            <label>Damage</label>
+            <input type="number" class="form-control" id="mobDmgInput" value="15" min="1" max="500" />
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="btnCancelMobModal">Cancel</button>
+        <button class="btn btn-primary" id="btnSaveMobModal">✔ Create Entity</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/editor.js"></script>
+</body>
+</html>

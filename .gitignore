@@ -1,0 +1,7 @@
+node_modules/
+*.log
+server/data/
+.env
+models_backup_originals/
+.claude/
+VPS_INFO.md
