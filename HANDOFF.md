@@ -314,15 +314,69 @@ plan's original 50fps merge gate is comfortably met.
 **Not started:** GTAO (needs the additive-FX reparent under an `fxGroup` — the
 plan assumed ~8 materials, the real count is **297 additive meshes**).
 
-**Open, from the critic pass (verify each before acting — one of its findings
-was a misdiagnosis):** characters reportedly don't attenuate at night while the
-world goes black; masonry reportedly picks up a red cast at night (suspicious,
-since night ambient `0x0c102b` is blue, so the stated cause can't be right);
-dusk reads neutral where it should be amber; the forest is a visible rectangular
-grid of identical clones (cheap fix: jitter position/rotation/scale per
-instance). Its claim that `calls:1, tris:1` means "dead instrumentation" is
-**wrong** — that's `renderer.info` reflecting the composer's final fullscreen
-pass, which is expected once EffectComposer is in play.
+**Critic pass — status after the 2026-08-08 verification round.** Every item
+below was measured in a real running build (see "Headless measurement rig"),
+not read off the source.
+
+- ✅ **Characters don't attenuate at night — CONFIRMED, root-caused, FIXED.**
+  The hero was not being lit at all, it was **emitting**. See the gotcha entry
+  below; this one is worth reading before touching any model-loading code.
+- ✅ **Masonry red cast at night — NOT A BUG**, exactly as suspected here. On a
+  Human the only active lights at midnight are ambient `#0c102b`, moon
+  `#7799cc` and the grey carry-light. Nothing red exists to cast it. It is
+  Vampire Night Vision on the test character.
+- ✅ **`calls:1, tris:1` is not dead instrumentation** — unchanged, still right.
+- ⬜ **Dusk amber** — not re-measured this round. Note the file contradicts
+  itself: this line says dusk reads neutral, while "Dusk warmth" below records
+  the `horizonF` divisor fix (0.30 → 0.55) with verified per-hour samples. The
+  later fix probably supersedes this, but it wants an eyeball, not a code read.
+- ⬜ **Forest lattice** — not re-measured. The tree `InstancedMesh`es are
+  unnamed, so a variance probe has to find them by geometry, not `name`.
+  "Per-tree variation" below claims this is already done.
+
+**⚠ Two models were 100% SELF-LIT — and it is an ASSET defect, not a code one.**
+`Protag_animations_basic.glb` and `Horse.glb` both declare
+`emissiveFactor [1,1,1]` with an `emissiveTexture` whose index is **the same
+texture object as `baseColorTexture`**. The model therefore emits exactly its
+own albedo and is immune to every light in the scene.
+- Measured before the fix: with **all lights locked to zero intensity and
+  `scene.environment` removed**, the character still rendered at luminance
+  **45** while the ground beside it was **0**. At midnight it was **8.05x the
+  ground** (0.58x at noon). After: **0.0** with lights off, and **0.72x** at
+  midnight. That is the test to repeat — kill the lights and see if it is still
+  there.
+- `simplifyPropMaterial` already strips emissive but **deliberately skips
+  materials carrying an `emissiveMap`**, since a map normally means the thing
+  genuinely glows (19 props depend on that). These two are false positives and
+  cannot be distinguished from a real glow without knowing the asset, so they
+  opt in explicitly: `simplifyPropMaterial(m, {stripEmissiveMap:true})`.
+  **Do not weaken the general rule to catch them.** Originals go to `userData`.
+- ⚠ The protagonist loader was also the **one GLB path that never called
+  `simplifyPropMaterial` at all**; the horse loader had the same gap. If you add
+  another model loader, route it through that function.
+- **This bug hid itself three ways**, which is why it survived a review: the
+  blocky fallback rig *is* lit correctly, so it only appears once the GLB
+  finishes loading async (a noon screenshot taken early looks perfect); it is
+  immune to every lighting knob, so a sweep of the carry-light from 0.35 to 0.08
+  moved character luminance **<4%** and made the lights look innocent; and the
+  bogus emissive is invisible in any material dump that only checks
+  `emissive !== 0 && !emissiveMap`, which is the obvious audit to write.
+- ⚠ **Now that the hero responds to light at all, the carry-light fallback
+  matters and is probably retuned.** `NIGHT_FILL_I` / `CAVE_FILL_I` are split
+  (outdoor night vs cave/interior) and both still sit at the original `0.35`.
+  Tune with `_dev.nightLight({night, cave})`.
+
+**Headless measurement rig (how the above was measured).** The game runs in
+headless Chromium under SwiftShader with `_dev` driven directly and screenshots
+measured per-region — that is what makes claims like "8.05x" possible instead of
+"looks bright". Two traps cost real time and will cost it again:
+- **Boot lands on the character-select overlay**, with the world dimmed behind
+  it. The first measurement pass was reading a UI panel and confidently reported
+  noon and midnight as identically dark. Clear `G.charSelectOpen` and every
+  `*Open` flag, then assert none survived.
+- The **Draco decoder is served from `gstatic`, not jsdelivr**, so every GLB
+  silently fails to decode if only the jsdelivr host is reachable — and the
+  fallback rigs render fine, so the scene looks plausible.
 
 ---
 
