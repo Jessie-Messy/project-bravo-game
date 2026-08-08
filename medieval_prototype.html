@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Medieval Prototype v0.6.1 — 3D</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1712; touch-action: none; }
+  #game3d, #ui { position: absolute; top: 0; left: 0; display: block; }
+  #game3d { z-index: 1; }
+  #ui     { z-index: 2; }
+  #hud {
+    position: fixed; top: 8px; left: 10px; z-index: 3;
+    font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace;
+    color: #e8dcc0; text-shadow: 0 1px 2px #000;
+    pointer-events: none; user-select: none;
+  }
+  #hud b { color: #c8a25a; }
+  /* clock box is canvas-drawn in the band under the title — start the
+     status / multiplayer lines below it so nothing overlaps */
+  #status { color: #90d870; min-height: 1.4em; margin-top: 32px; }
+</style>
+
+<canvas id="game3d"></canvas>
+<canvas id="ui"></canvas>
+<div id="hud">
+  <div><b>Medieval Prototype</b> v0.6.1 &nbsp;<span style="opacity:.55;font-size:11px"><b>Shift+C</b> characters · <b>T</b> help · <b>O</b> bag · <b>I</b> armor · <b>M</b> map</span></div>
+  <div id="status"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="js/game3d.js?v=20260725_4"></script>

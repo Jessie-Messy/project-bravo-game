@@ -1,0 +1,9 @@
+All .glb models in this folder are by Quaternius (https://quaternius.com),
+downloaded via poly.pizza, and licensed CC0 1.0 Universal (public domain):
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Free for personal and commercial use, no attribution required.
+(Credit given anyway because the packs are excellent.)
+
+wolf.glb, spider.glb, rat.glb, orc_enemy.glb, orc.glb,
+yeti.glb, slime.glb, snake.glb, wizard.glb

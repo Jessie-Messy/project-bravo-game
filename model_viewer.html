@@ -1,0 +1,80 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Model Viewer — dev tool</title>
+<style>
+  html,body{margin:0;background:#2a2622;color:#e8dcc0;font:12px ui-monospace,monospace}
+  #grid{position:relative}
+  .lab{position:absolute;z-index:2;padding:2px 6px;background:rgba(0,0,0,.55);pointer-events:none}
+  canvas{display:block}
+</style>
+<div id="grid"><canvas id="c"></canvas></div>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+const FILES = (new URLSearchParams(location.search).get('m') || [
+  'campfire','torch','lantern','Arrows','Backpack_Inventory',
+  'Iron Helm','Iron_Chest_Armor','Iron_Boots_Armor','Iron_Gauntlets_Armor','Iron_Gorget_Armor',
+  'Bone_Helm_Armor','Bone_Chest_Armor','Bone_Leggings_Armor','Bone_Arms_Armor','Bone_Gloves_Armor',
+  'Leather_Helm_Armor','Leather_Gorget_Armor','Leather_Gloves_Armor','Jester','Wizzard'
+].join(',')).split(',');
+
+const P = new URLSearchParams(location.search);
+const COLS = +(P.get('cols')||5), CELL = +(P.get('cell')||240);
+const rows = Math.ceil(FILES.length/COLS);
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setSize(COLS*CELL, rows*CELL);
+renderer.setScissorTest(true);
+
+const draco = new DRACOLoader();
+draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
+const loader = new GLTFLoader(); loader.setDRACOLoader(draco);
+
+const cells = [];
+FILES.forEach((name,i)=>{
+  const scene = new THREE.Scene(); scene.background = new THREE.Color(0x3a352e);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+  const dl = new THREE.DirectionalLight(0xfff2dd, 2.2); dl.position.set(2,3,2); scene.add(dl);
+  const cam = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
+  const cell = {scene, cam, ready:false};
+  cells.push(cell);
+  const lab = document.createElement('div'); lab.className='lab';
+  lab.style.left=(i%COLS)*CELL+'px'; lab.style.top=Math.floor(i/COLS)*CELL+'px';
+  lab.textContent=name; document.getElementById('grid').appendChild(lab);
+  loader.load('models/'+name+'.glb', g=>{
+    const obj=g.scene; obj.updateMatrixWorld(true);
+    const box=new THREE.Box3().setFromObject(obj);
+    const size=box.getSize(new THREE.Vector3()), ctr=box.getCenter(new THREE.Vector3());
+    const r=Math.max(size.x,size.y,size.z);
+    cam.position.set(ctr.x+r*1.1, ctr.y+r*0.8, ctr.z+r*1.5); cam.lookAt(ctr);
+    // ground grid at model's min y
+    const grid=new THREE.GridHelper(r*2, 8, 0x776644, 0x554d3d);
+    grid.position.set(ctr.x, box.min.y, ctr.z); scene.add(grid);
+    scene.add(obj); cell.ready=true;
+  }, undefined, e=>{ lab.textContent = name+' — LOAD FAIL'; console.error(name, e); });
+});
+
+function tick(t){
+  requestAnimationFrame(tick);
+  cells.forEach((cell,i)=>{
+    const x=(i%COLS)*CELL, yRow=Math.floor(i/COLS);
+    const y=(rows-1-yRow)*CELL;   // GL origin bottom-left
+    renderer.setViewport(x,y,CELL,CELL); renderer.setScissor(x,y,CELL,CELL);
+    if(cell.ready){
+      // slow turntable
+      cell.scene.children.forEach(o=>{ if(o.type==='Group'||o.type==='Scene'||o.isObject3D&&o.type==='Object3D') {} });
+      const model=cell.scene.children.find(o=>!o.isLight&&o.type!=='GridHelper');
+      if(model) model.rotation.y = t*0.0004;
+    }
+    renderer.render(cell.scene, cell.cam);
+  });
+}
+tick(0);
+</script>

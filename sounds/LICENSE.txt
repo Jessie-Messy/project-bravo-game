@@ -1,0 +1,16 @@
+All sound files in this folder are CC0 1.0 Universal (public domain):
+https://creativecommons.org/publicdomain/zero/1.0/
+Free for personal and commercial use, no attribution required.
+(Credit given anyway because the packs are excellent.)
+
+From "RPG Sound Pack" by artisticdude, via OpenGameArt.org
+(https://opengameart.org/content/rpg-sound-pack), converted WAV -> OGG:
+  swing.ogg swing2.ogg swing3.ogg magic1.ogg coin.ogg coin2.ogg coin3.ogg
+  cloth.ogg bottle.ogg bubble.ogg wood-small.ogg metal-small1.ogg
+  metal-small2.ogg giant3.ogg giant5.ogg mnstr5.ogg mnstr9.ogg
+
+From "80 CC0 RPG SFX" by rubberduck, via OpenGameArt.org
+(https://opengameart.org/content/80-cc0-rpg-sfx):
+  blade_01-03.ogg metal_01-03.ogg creature_hurt_01-02.ogg
+  creature_die_01.ogg item_misc_02.ogg spell_01.ogg wood_01-03.ogg
+  item_coins_01.ogg item_gem_02.ogg
