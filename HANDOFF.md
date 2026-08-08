@@ -361,10 +361,22 @@ own albedo and is immune to every light in the scene.
   moved character luminance **<4%** and made the lights look innocent; and the
   bogus emissive is invisible in any material dump that only checks
   `emissive !== 0 && !emissiveMap`, which is the obvious audit to write.
-- ⚠ **Now that the hero responds to light at all, the carry-light fallback
-  matters and is probably retuned.** `NIGHT_FILL_I` / `CAVE_FILL_I` are split
-  (outdoor night vs cave/interior) and both still sit at the original `0.35`.
-  Tune with `_dev.nightLight({night, cave})`.
+- ⚠ **The hero is now genuinely dark at night, and cranking the carry-light is
+  NOT the fix.** With the emissive gone the figure sits at ~0.7x the ground at
+  midnight — correct, but hard to see. The obvious response is to raise
+  `NIGHT_FILL_I`; **measured, that makes it worse.** `playerLight` sits ~18u off
+  the ground, so raising it lights the GROUND: at 3.5 the character is a black
+  silhouette in a bright green puddle of lit grass. Readability at night needs
+  light that reaches the figure (mount it at torso height, or a character-only
+  fill / rim), not more intensity on a ground-hugging point light.
+  `NIGHT_FILL_I` / `CAVE_FILL_I` are split (outdoor night vs cave/interior) and
+  both still sit at the original `0.35` — unchanged behaviour. Tune with
+  `_dev.nightLight({night, cave})`.
+- ⚠ **Measurement trap that nearly sold the wrong fix:** a screen-space sample
+  box around the character also catches the ground around it. That is what made
+  the intensity sweep look like it was brightening the *character* when it was
+  brightening the grass. Sample a tight torso box, and **look at the frame** —
+  the puddle is obvious in a screenshot and invisible in the numbers.
 
 **Headless measurement rig (how the above was measured).** The game runs in
 headless Chromium under SwiftShader with `_dev` driven directly and screenshots
