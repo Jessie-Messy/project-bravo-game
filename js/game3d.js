@@ -316,21 +316,13 @@ scene.add(playerLight);
 
 // ── Carry-light fallback (readability, not a real light) ──────────
 // With no torch or lantern the player would be invisible in the dark, so a
-// small point light rides the character. It is an affordance, and it used to
-// be ONE number covering two situations that are nothing alike — calibrated
-// for the darker of them:
-//   • In a cave there is genuinely no other light, so the fill has to carry
-//     the whole figure.
-//   • Outdoors at night the moon and sky ambient already light the world, so
-//     that same cave-strength fill made the character measure **8.05x
-//     brighter than the ground beside it** at midnight (vs 0.58x at noon).
-//     It read as a lit sticker on a black field, not a figure in moonlight.
-// Split, so each can be tuned for its own case. The outdoor one is cool-tinted
-// to sit with the moon (0x7799cc) rather than reading as neutral daylight, and
-// scales with nightFactor so it fades UP through dusk instead of popping on.
+// small point light rides the character. Split into two cases purely so they
+// can be tuned apart — a cave has no other light at all, while outdoors the
+// moon and sky ambient are already lighting the scene. Both currently sit at
+// the original single value; changing them is a deliberate act, not a default.
 // Tune live: _dev.nightLight({night:0.2, cave:0.4}).
-let NIGHT_FILL_I = 0.12;               // outdoors, after dark
-let NIGHT_FILL_COL = 0x8aa0c8;         // cool — moonlight, not daylight
+let NIGHT_FILL_I = 0.35;               // outdoors, after dark
+let NIGHT_FILL_COL = 0xaaaaaa;
 let CAVE_FILL_I = 0.35;                // caves/interiors: nothing else lights you
 let CAVE_FILL_COL = 0xaaaaaa;
 
@@ -2137,10 +2129,7 @@ function updateEnvironmentCycle(dt) {
     playerLight.color.setHex(CAVE_FILL_COL);
     playerLight.distance = TILE * 2.5;
   } else if (nightFactor > 0.01) {
-    // Outdoors after dark the moon and ambient already light the scene — this
-    // only has to keep the silhouette readable. Scaled by nightFactor so it
-    // comes up with the dark rather than switching on at the dusk threshold.
-    playerLight.intensity = NIGHT_FILL_I * nightFactor;
+    playerLight.intensity = NIGHT_FILL_I;
     playerLight.color.setHex(NIGHT_FILL_COL);
     playerLight.distance = TILE * 2.5;
   } else {
@@ -3082,7 +3071,20 @@ gltfLoader.load('models/Protag_animations_basic.glb', gltf=>{
       if(v.y<minY)minY=v.y; if(v.y>maxY)maxY=v.y; } });
   const natH=Math.max(0.01,maxY-minY), sc=CHAR_H/natH;   // scaled to the global CHAR_H
   inner.scale.setScalar(sc); inner.position.y=-minY*sc; inner.rotation.y=Math.PI;
-  inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false; o.material.transparent=true; } });
+  // simplifyPropMaterial, same as every other GLB in the game. Without it the
+  // protagonist was the ONE model that kept its shipped emissive=#ffffff, so
+  // the player character was 100% self-lit: measured at luminance 45 with every
+  // light in the scene locked to zero AND scene.environment removed, while the
+  // ground beside it sat at 0. At midnight that read as 8x brighter than the
+  // ground (0.58x at noon) — a lit sticker on a black field. It also masked
+  // itself: the blocky fallback rig is lit correctly, so the bug only appeared
+  // once the GLB finished loading asynchronously.
+  // This also enrols the character in the day/night IBL fade, since
+  // applyEnvIntensity walks _propMats.
+  inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false;
+    o.material = Array.isArray(o.material) ? o.material.map(simplifyPropMaterial)
+                                           : simplifyPropMaterial(o.material);
+    for(const m of [].concat(o.material)) m.transparent=true; } });
   const obj=new THREE.Group(); obj.add(inner); scene.add(obj); obj.visible=false;
   inner.updateMatrixWorld(true);
   const mixer=new THREE.AnimationMixer(inner);
@@ -4048,7 +4050,11 @@ gltfLoader.load('models/Horse.glb', gltf=>{
   if(!(maxY-minY>0.05)){ const b=new THREE.Box3().setFromObject(inner); minY=b.min.y; maxY=b.max.y; }
   const natH=Math.max(0.01,maxY-minY), HORSE_H=120, sc=HORSE_H/natH;
   inner.scale.setScalar(sc); inner.position.y=-minY*sc; inner.rotation.y=Math.PI;
-  inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false; } });
+  // Same emissive strip as the protagonist and every prop — this loader had the
+  // same gap, so the horse was self-lit at night too.
+  inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false;
+    o.material = Array.isArray(o.material) ? o.material.map(simplifyPropMaterial)
+                                           : simplifyPropMaterial(o.material); } });
   const obj=new THREE.Group(); obj.add(inner); obj.visible=false; scene.add(obj);
   const mixer=new THREE.AnimationMixer(inner);
   const clip=gltf.animations[0]; if(clip) mixer.clipAction(clip).play();
