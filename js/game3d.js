@@ -2795,7 +2795,15 @@ function pickClip(clips, res){ return clips.find(c=>res.test(c.name)) || null; }
 // mirror; tune live with _dev.gfx({metalness, roughness}).
 const PROP_PBR={ metalness:0.70, roughness:0.62, normalScale:1.0 };
 const _propMats=new Set();
-function simplifyPropMaterial(m){
+// opts.stripEmissiveMap — also kill emissive on materials that DO carry an
+// emissiveMap. Normally having a map is the signal that a material genuinely
+// glows, so it's left alone. Some exports from this generator ship
+// emissiveFactor [1,1,1] *plus* a full-coverage emissive texture that is really
+// just a second albedo, which makes the model 100% self-lit and immune to every
+// light in the scene. The protagonist GLB is exactly that, and it can only be
+// told apart from a real glow by knowing the asset — hence an explicit opt-in
+// at the call site rather than a guess in here.
+function simplifyPropMaterial(m, opts){
   _propMats.add(m);
   m.metalness=PROP_PBR.metalness;
   if(!m.roughnessMap) m.roughness=PROP_PBR.roughness;
@@ -2812,9 +2820,13 @@ function simplifyPropMaterial(m){
   // near-black under the old two-light rig. There's a real sky and IBL now, so
   // the workaround costs more than it buys. Materials that genuinely glow keep
   // their emissiveMap and are untouched.
-  if(m.emissive && !m.emissiveMap && m.emissive.getHex()!==0){
+  const forceStrip = !!(opts && opts.stripEmissiveMap);
+  if(m.emissive && m.emissive.getHex()!==0 && (!m.emissiveMap || forceStrip)){
     m.userData._emissiveWas = m.emissive.getHex();
     m.emissive.setHex(0x000000);
+    // emissive is multiplied by emissiveMap, so black alone is enough to kill
+    // the glow — dropping the map too just saves a needless texture fetch.
+    if(forceStrip && m.emissiveMap){ m.userData._emissiveMapWas = m.emissiveMap; m.emissiveMap = null; }
   }
   m.needsUpdate=true;
   return m;
@@ -3082,8 +3094,9 @@ gltfLoader.load('models/Protag_animations_basic.glb', gltf=>{
   // This also enrols the character in the day/night IBL fade, since
   // applyEnvIntensity walks _propMats.
   inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false;
-    o.material = Array.isArray(o.material) ? o.material.map(simplifyPropMaterial)
-                                           : simplifyPropMaterial(o.material);
+    const opt={stripEmissiveMap:true};   // this GLB's emissive texture is a second albedo
+    o.material = Array.isArray(o.material) ? o.material.map(m=>simplifyPropMaterial(m,opt))
+                                           : simplifyPropMaterial(o.material,opt);
     for(const m of [].concat(o.material)) m.transparent=true; } });
   const obj=new THREE.Group(); obj.add(inner); scene.add(obj); obj.visible=false;
   inner.updateMatrixWorld(true);
@@ -4050,11 +4063,13 @@ gltfLoader.load('models/Horse.glb', gltf=>{
   if(!(maxY-minY>0.05)){ const b=new THREE.Box3().setFromObject(inner); minY=b.min.y; maxY=b.max.y; }
   const natH=Math.max(0.01,maxY-minY), HORSE_H=120, sc=HORSE_H/natH;
   inner.scale.setScalar(sc); inner.position.y=-minY*sc; inner.rotation.y=Math.PI;
-  // Same emissive strip as the protagonist and every prop — this loader had the
-  // same gap, so the horse was self-lit at night too.
+  // Same treatment as the protagonist — this loader had the same gap, and
+  // Horse.glb ships the same emissiveFactor [1,1,1] + full emissive texture,
+  // so it was self-lit at night too.
   inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false;
-    o.material = Array.isArray(o.material) ? o.material.map(simplifyPropMaterial)
-                                           : simplifyPropMaterial(o.material); } });
+    const opt={stripEmissiveMap:true};
+    o.material = Array.isArray(o.material) ? o.material.map(m=>simplifyPropMaterial(m,opt))
+                                           : simplifyPropMaterial(o.material,opt); } });
   const obj=new THREE.Group(); obj.add(inner); obj.visible=false; scene.add(obj);
   const mixer=new THREE.AnimationMixer(inner);
   const clip=gltf.animations[0]; if(clip) mixer.clipAction(clip).play();
