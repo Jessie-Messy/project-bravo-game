@@ -557,10 +557,34 @@ pass, which is expected once EffectComposer is in play.
 - **Tier lookup arrays must stay in sync with the recipes** (this bit us hard). The Mithril/Runic session added crafting, shop entries and boss drops that set `swordTier/bowTier` to 4–5 and call `equipArmorPiece(5|6)`, but never extended the arrays those index into. Result: **every endgame weapon and armor piece silently produced `NaN`** damage / damage-reduction. Fixed by extending `TIER_NAMES`, `TIER_MULT`, `ARMOR_MATS`, `ARMOR_DR`, `ARMOR_COLS`. **If you add a tier, grep for every array indexed by that tier.**
 - **Mining yield vs. speed**: ore is granted *per swing* while the node loses `dmgAmt` HP per swing, so scaling only `dmgAmt` makes better pickaxes yield *less* per node. `depleteNode()` now scales yield *and* damage together (same total ore, fewer swings). Verified: wooden = 5 swings/5 stone, runic = 1 swing/5 stone.
 - **Verify handoff claims against the code.** Several items previously marked done here (cyan/purple tier tints, 5× pickaxe speed) were not actually implemented — the hex values appeared nowhere in the source. Spot-check before building on top of a "done" line.
-- ⚠ **OPEN BUG — coloured squares on the ground under trees / rocks / ore.** `TILE_COLORS` is used for two different jobs: the minimap (where a green blob for a tree is correct) *and* the 3D ground canvas (where it is not). Obstacle meshes don't cover their whole tile footprint, so the tile colour shows around the base as a hard square. Measured ground RGB under each, vs grass `77,120,56`:
-  - tree → `30,75,25` (dark green square) · stone → `111,106,99` (grey square)
-  - **iron ore → `2,2,2`** — `TILE_COLORS` has *no* `ORE_IRON` entry, so it hits the `|| [0,0,0]` fallback and paints a near-black square.
-  The squares are hard-edged because structural tiles are deliberately excluded from the warp (`_isSoft`) — their meshes are grid-pinned, so warping their paint would slide it off the mesh. **The fix is not to warp them**, it's that a tree stands *on grass*: the ground canvas should paint an obstacle tile with its surrounding walkable neighbour's colour, leaving `TILE_COLORS` untouched for the minimap.
+- ✅ **FIXED — coloured squares on the ground under trees / rocks / ore.** Was: `TILE_COLORS`
+  did double duty for the minimap (where a green blob for a tree is correct) *and* the 3D
+  ground canvas (where it is not). Obstacle meshes don't cover their whole tile footprint, so
+  the tile colour showed around the base as a hard square — tree `30,75,25`, stone
+  `111,106,99`, and iron ore `2,2,2` because `TILE_COLORS` had no `ORE_IRON` entry and hit the
+  `|| [0,0,0]` fallback.
+  - **The fix, as predicted here, was not to warp them.** A tree stands *on grass*, so
+    `buildGroundUnder()` runs a multi-source BFS out from every walkable tile and fills each
+    obstacle tile with its **nearest ground type** into `groundUnder` (a `Uint16Array`).
+    `paintTerrainRegion` paints `groundUnder`, never `map`. `TILE_COLORS` is untouched, so the
+    minimap still shows a green blob per tree — and `ORE_IRON` gained an entry (`106,86,77`,
+    matching `ironMesh`) so it's no longer a black dot there either.
+  - **This also freed the warp.** No tile carries a structural colour on the ground any more,
+    so boundaries can bend everywhere; the old `_isSoft` structural-exclusion no longer exists.
+    (⚠ the de-blockify section above still mentions `_isSoft` — that text is stale.)
+  - `buildGroundUnder()` is called at boot before the first bake, from `updateTerrPx` (so every
+    chop / wall placement / respawn / editor edit re-derives it — it's a full-map BFS, but only
+    a couple of ms), and from `_dev.warp()`.
+  - **Verified 2026-08-08** by running the real painter source against the real generated map:
+    tree/stone tiles bake to grass `79,122,58` (reference grass `79,122,58`); all **363** ore
+    tiles are in caves and bake to `CAVE_FLOOR` `25,19,17`; **0 of 11,541** obstacle tiles paint
+    their own obstacle colour. Runtime mutation holds too — growing a TREE, STONE then WALL on
+    an open grass tile and chopping back leaves the ground at `78,121,57` throughout.
+  - ⚠ Full-cover tiles (`WALL`/`CAVE_WALL`/`STAINED_GLASS`, via `_isFullCover`) take the flat
+    fill and skip the per-pixel warp — their mesh hides the ground, and the BFS's Voronoi seams
+    through solid rock would otherwise be treated as boundaries and cost the full warp for
+    nothing. **Trees/rocks/ore are deliberately NOT full-cover**, which is the whole reason
+    `groundUnder` exists. Don't add them to that set.
 
 ---
 
