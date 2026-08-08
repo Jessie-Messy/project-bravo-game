@@ -5,16 +5,27 @@ before you stop.** The rule that bit us once already: *commit your work and jot
 your stopping point here before ending a session* — uncommitted work with no
 handoff is invisible to the next session and causes collisions.
 
-- Repo is **local only** (no git remote; deployed to the VPS, never GitHub — see `VPS_INFO.md`).
+- Repo is **on GitHub**: `Jessie-Messy/project-bravo-game`, remote `origin`, base branch
+  **`master`**. (It used to be local-only and VPS-deployed; that note was stale.) VPS
+  deployment is unchanged and still a separate path — `deploy_to_vps.bat` /
+  `deploy_server_to_vps.bat`. ⚠ `VPS_INFO.md` is **gitignored on purpose** (it holds the
+  server details), so it exists only on the owner's machine — don't expect it in a fresh
+  clone, and don't commit it.
 - Run locally: `start_game.bat` (serves on http://localhost:5173, opens `medieval_prototype.html`).
 - Main game code is one big module: `js/game3d.js`. Shared state: `js/state.js`. Tunables: `js/constants.js`.
 
 ---
 
-## ⚠ IN PROGRESS — graphics overhaul (branch `graphics-overhaul`, UNCOMMITTED)
+## Graphics overhaul — COMMITTED and on `master`
+
+⚠ This section used to read "IN PROGRESS — branch `graphics-overhaul`, UNCOMMITTED".
+That is stale and was **not** a warning about lost work: there is no `graphics-overhaul`
+branch anywhere (local or remote), and all of this landed in `master` — `js/render/` is
+committed with all seven modules. Nothing here is at risk; read it as history, not as a
+pile of uncommitted changes to be careful around.
 
 Everything below is verified in-page unless marked otherwise. The sky is now
-working (see "sky exposure" below); the branch renders correctly at every hour.
+working (see "sky exposure" below); it renders correctly at every hour.
 
 New `js/render/` (none of these ever import `game3d.js` — deps are passed in,
 which is what keeps the graph acyclic): `quality.js` (4 tiers, auto-detect,
