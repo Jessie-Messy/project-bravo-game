@@ -339,26 +339,23 @@ let CARRY_Y = 18;
 // silhouette in a green pool). Neither knob was ever going to work.
 //
 // So readability needs a light OFFSET toward the viewer, hitting the faces the
-// camera can actually see. On its own that would light the terrain in front of
-// the player and rebuild the puddle — so it is confined by LAYER: it only
-// affects meshes that opt into CHAR_FILL_LAYER, which is the player's own rig
-// and nothing else in the world. Terrain, grass and props never see it.
-// Tune live: _dev.charFill({i, dist, y}).
-const CHAR_FILL_LAYER = 3;
-// distance 260 (decay 0): reaches the hero from CHAR_FILL_DIST away and fades
-// out before it can reach a cloned remote player standing off elsewhere.
+// camera can actually see.
+//
+// ⚠ It CANNOT be confined to the player with layers. three.js filters lights by
+// the CAMERA's layers, not per-object: `projectObject` only adds a light to the
+// render state when `light.layers.test(camera.layers)` passes, and there is no
+// per-object light mask in the forward renderer. A light parked on its own
+// layer is simply never added — measured, sweeping it 0 → 4.0 moved the torso
+// 0.0 → 0.5, i.e. it was doing nothing at all. So this is an ordinary scene
+// light, and the spill onto terrain is controlled by geometry instead: it sits
+// high and close, with a short `distance`, so its pool is small and soft rather
+// than the hard disc the ground-level carry light makes.
+// Tune live: _dev.nightLight({fill, fillDist, fillY}).
 const charFill = new THREE.PointLight(0x9fb4d8, 0.0, 260, 0);
-charFill.layers.set(CHAR_FILL_LAYER);      // ONLY layer 3 — nothing else is lit
 scene.add(charFill);
 let CHAR_FILL_I = 1.5;      // competes with moonlight only, never with the sun
 let CHAR_FILL_DIST = 90;    // how far toward the camera the light sits
 let CHAR_FILL_Y = 120;      // and how high — above head height, so it rakes down
-// Opt a subtree into the fill. Layer 0 stays enabled, so the camera still draws
-// it exactly as before; this only widens which lights may touch it.
-function enableCharFill(root){
-  if(!root) return;
-  root.traverse(o=>{ if(o.isMesh||o.isSkinnedMesh) o.layers.enable(CHAR_FILL_LAYER); });
-}
 
 // ── Sky + dynamic environment ─────────────────────────────────────
 // Replaces the flat clear colour AND the one-shot 64x256 gradient env map.
@@ -3202,14 +3199,6 @@ gltfLoader.load('models/Protag_animations_basic.glb', gltf=>{
   protag={obj,inner,mixer,actions,cur:null,busyUntil:0,lx:null,lz:null,
     handBone,leftHandBone,weaponSlot,shieldSlot,slots,
     propKind:null,showShield:null,showQuiver:null,wasGhost:false};
-  // Opt the hero into the character fill.
-  // ⚠ `protagTemplate` is `inner`, a child of `obj`, and Object3D.clone() copies
-  // layer masks — so remote players cloned from it inherit this layer. That is
-  // why charFill carries a finite `distance`: it reaches the hero it is parked
-  // next to and dies off well before anyone else. A remote player standing
-  // right beside you catches a little of it, which looks fine. If that ever
-  // stops being true, clear the layer on the clone instead of widening this.
-  enableCharFill(obj);
   protagTemplate=inner; protagClips=gltf.animations;   // remote players clone this
   updateArmorVisuals();                                // show already-equipped armor
 }, undefined, err=>console.warn('protag load failed',err));
@@ -4010,11 +3999,6 @@ const PLR = [0x7d4a2e, 18,34,11, 7];
 const plrGrp = makeRig();
 configureRig(plrGrp, PLR[0], PLR[1],PLR[2],PLR[3],PLR[4], 0, true);
 scene.add(plrGrp);
-// The blocky fallback rig is the player before (and if) the GLB loads, so it
-// gets the character fill too — otherwise readability would depend on whether
-// an async download had finished. makeRig() is shared with mobs and NPCs, so
-// this is opted in HERE, on the player's instance only, not inside makeRig.
-enableCharFill(plrGrp);
 
 // Guards pool — humanoid rigs with sword, configured once
 const GPOOL = 20;
