@@ -1466,11 +1466,20 @@ const campfireMesh = makeMesh(new THREE.BoxGeometry(20, 6, 20), new THREE.MeshSt
 // the origin and overall footprint of the single box it replaces — PLACEABLES
 // rows carry a `y` mount offset and a `scale` tuned against those numbers, so
 // changing the bounds here silently sinks or floats the prop.
+// Parts may carry a colour as the 8th element. One merged geometry can only use
+// ONE material, so the parts are tinted with a vertex-colour attribute instead —
+// that is what lets a chest be warm wood with dark iron bands and a brass lock
+// while still drawing in a single instanced call. Materials that use this must
+// set `vertexColors:true` and keep `color` white, since it multiplies.
 function propGeo(parts){
-  const geos = parts.map(([w,h,d,x,y,z,ry])=>{
+  const geos = parts.map(([w,h,d,x,y,z,ry,col])=>{
     const g = new THREE.BoxGeometry(w,h,d);
     if(ry) g.rotateY(ry);
     g.translate(x,y,z);
+    const n = g.attributes.position.count, c = new Float32Array(n*3);
+    const r=((col>>16)&255)/255, gr=((col>>8)&255)/255, b=(col&255)/255;
+    for(let i=0;i<n;i++){ c[i*3]=r; c[i*3+1]=gr; c[i*3+2]=b; }
+    g.setAttribute('color', new THREE.BufferAttribute(c,3));
     return g;
   });
   const merged = mergeGeometries(geos, false);
@@ -1480,40 +1489,46 @@ function propGeo(parts){
 // Workbench: 32x14x20 overall, origin at the middle of the box it replaces.
 // A plank top with a lip, four legs, a lower shelf and a vice block on one end —
 // enough silhouette to read as a bench from the game's fixed camera angle.
+const WOOD_LT=0xa9764a, WOOD_DK=0x6f4524, IRON_DK=0x3f4348, BRASS=0xb08d3a;
 const workbenchMesh = makeMesh(propGeo([
-  [32, 2.5, 20,   0,  6.0, 0],            // top slab
-  [32, 1.2,  3,   0,  4.4, 8.6],          // front lip
-  [32, 1.2,  3,   0,  4.4,-8.6],          // back lip
-  [ 3,  9,   3, -13.5,-1.5, 7.5],         // legs
-  [ 3,  9,   3,  13.5,-1.5, 7.5],
-  [ 3,  9,   3, -13.5,-1.5,-7.5],
-  [ 3,  9,   3,  13.5,-1.5,-7.5],
-  [26, 1.5, 13,   0, -3.0, 0],            // lower shelf
-  [ 5,  4,   6,  12.0, 9.2, 0],           // vice block on the right end
-  [ 7,  1.4, 1.4, 11.0,11.6, 0],          // vice handle
-]), new THREE.MeshStandardMaterial({color:0x8b5a2b, roughness:0.85, metalness:0.0}), 500);
+  [32, 2.5, 20,   0,  6.0, 0,   0, WOOD_LT],   // top slab — lightest, catches the eye
+  [32, 1.2,  3,   0,  4.4, 8.6, 0, WOOD_DK],   // front lip
+  [32, 1.2,  3,   0,  4.4,-8.6, 0, WOOD_DK],   // back lip
+  [ 3,  9,   3, -13.5,-1.5, 7.5, 0, WOOD_DK],  // legs
+  [ 3,  9,   3,  13.5,-1.5, 7.5, 0, WOOD_DK],
+  [ 3,  9,   3, -13.5,-1.5,-7.5, 0, WOOD_DK],
+  [ 3,  9,   3,  13.5,-1.5,-7.5, 0, WOOD_DK],
+  [26, 1.5, 13,   0, -3.0, 0,   0, WOOD_DK],   // lower shelf
+  [ 5,  4,   6,  12.0, 9.2, 0,  0, IRON_DK],   // vice block on the right end
+  [ 7,  1.4, 1.4, 11.0,11.6, 0, 0, IRON_DK],   // vice handle
+]), new THREE.MeshStandardMaterial({color:0xffffff, vertexColors:true, roughness:0.82, metalness:0.0}), 500);
 const forgeMesh = makeMesh(new THREE.CylinderGeometry(14, 16, 24, 8), new THREE.MeshStandardMaterial({color:0x505050, roughness:0.7, metalness:0.1}), 500);
 // Secure chest: 22x12x16 overall. Body, a stepped lid that reads as a curved
 // hood at this camera distance, iron corner bands, a lock plate and feet.
 // Metalness stays low on the whole thing because it shares one material with
 // the wood — the bands read as iron through their darker colour and the bevel,
 // not through a separate metal shader.
+// ⚠ It renders fine at the old flat dark brown — it was just INVISIBLE against
+// grass: one #5c3c24 block, 36u tall next to a 126u character, on dark green.
+// Verified by tinting it magenta (2674 px on screen) before touching anything.
+// The fix is contrast, not size alone: light wood body, near-black iron bands
+// and a brass lock give it an edge-lit silhouette that separates from the field.
 const secureChestMesh = makeMesh(propGeo([
-  [22,  7,  16,   0, -2.5, 0],            // body
-  [22,  2.5,14,   0,  1.8, 0],            // lid step 1
-  [20,  2,  11,   0,  3.6, 0],            // lid step 2
-  [17,  1.4, 7,   0,  5.0, 0],            // lid crown
-  [ 2,  11,  2, -10.5,-1.0, 7.4],         // corner bands
-  [ 2,  11,  2,  10.5,-1.0, 7.4],
-  [ 2,  11,  2, -10.5,-1.0,-7.4],
-  [ 2,  11,  2,  10.5,-1.0,-7.4],
-  [22,  1.2, 2.4,  0,  1.0, 8.0],         // band across the front seam
-  [ 4,  4,   1.6,  0, -1.0, 8.6],         // lock plate
-  [ 3,  1.6, 3,  -8.5,-6.6, 5.5],         // feet
-  [ 3,  1.6, 3,   8.5,-6.6, 5.5],
-  [ 3,  1.6, 3,  -8.5,-6.6,-5.5],
-  [ 3,  1.6, 3,   8.5,-6.6,-5.5],
-]), new THREE.MeshStandardMaterial({color:0x5c3c24, roughness:0.65, metalness:0.1}), 500);
+  [22,  7,  16,   0, -2.5, 0,   0, WOOD_LT],   // body
+  [22,  2.5,14,   0,  1.8, 0,   0, WOOD_LT],   // lid step 1
+  [20,  2,  11,   0,  3.6, 0,   0, WOOD_LT],   // lid step 2
+  [17,  1.4, 7,   0,  5.0, 0,   0, WOOD_DK],   // lid crown
+  [ 2,  11,  2, -10.5,-1.0, 7.4, 0, IRON_DK],  // corner bands
+  [ 2,  11,  2,  10.5,-1.0, 7.4, 0, IRON_DK],
+  [ 2,  11,  2, -10.5,-1.0,-7.4, 0, IRON_DK],
+  [ 2,  11,  2,  10.5,-1.0,-7.4, 0, IRON_DK],
+  [22,  1.2, 2.4,  0,  1.0, 8.0, 0, IRON_DK],  // band across the front seam
+  [ 4,  4,   1.6,  0, -1.0, 8.6, 0, BRASS],    // lock plate
+  [ 3,  1.6, 3,  -8.5,-6.6, 5.5, 0, IRON_DK],  // feet
+  [ 3,  1.6, 3,   8.5,-6.6, 5.5, 0, IRON_DK],
+  [ 3,  1.6, 3,  -8.5,-6.6,-5.5, 0, IRON_DK],
+  [ 3,  1.6, 3,   8.5,-6.6,-5.5, 0, IRON_DK],
+]), new THREE.MeshStandardMaterial({color:0xffffff, vertexColors:true, roughness:0.6, metalness:0.1}), 500);
 // World treasure chests — brass-banded so they read as loot, not as the
 // player's own storage. Body + lid are separate instanced meshes.
 const lootChestMesh = makeMesh(new THREE.BoxGeometry(24, 13, 17), new THREE.MeshStandardMaterial({color:0x8a6a2a, roughness:0.5, metalness:0.45}), 400);
@@ -1628,7 +1643,7 @@ const PLACEABLES = {
   forge:        { label:'Forge',        emoji:'🏭', invKey:'forge',        mesh:()=>forgeMesh,         y:12, scale:3.0, flame:null,         light:true,  surfaces:['ground'] },
   // 22×12×16 → 66×36×48 ≈ 0.95m wide, 0.5m tall. Knee-high strongbox.
   // Stands anywhere; only gains a lock when it sits inside a house you own.
-  secure_chest: { label:'Secure Chest', emoji:'🧰', invKey:'secure_chest', mesh:()=>secureChestMesh,   y:6,  scale:3.0, flame:null,         light:false, surfaces:['ground','house'] },
+  secure_chest: { label:'Secure Chest', emoji:'🧰', invKey:'secure_chest', mesh:()=>secureChestMesh,   y:6,  scale:3.6, flame:null,         light:false, surfaces:['ground','house'] },
   // h28 → h45 ≈ 0.65m. Held torch was tuned separately (WEAPON_ADJUST); this is
   // the PLACED mesh, and it's what mounts on walls — 45u against a 168u wall.
   torch:        { label:'Torch',        emoji:'🔥', invKey:'torch',        mesh:()=>torchMesh,         y:14, scale:1.6, flame:{y:30,s:1.0}, light:true,  surfaces:['ground','wall'], wallY:WALL_H*0.62,
