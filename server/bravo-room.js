@@ -301,9 +301,17 @@ class BravoRoom extends Room {
       // litAt is an absolute world-clock stamp; burnout is derived from it, so
       // every client agrees without the server ticking anything.
       const litAt = isFinite(+m.litAt) && +m.litAt > 0 ? +m.litAt : 0;
+      // Chest lock. A boolean is all that crosses — chest CONTENTS are never
+      // stored here, so there is nothing item-shaped for a client to inject.
+      const locked = m.locked === true;
+      // Re-sending an object at the same spot is also the UPDATE path (that is
+      // how toggling a chest lock propagates), so preserve the previous owner
+      // instead of reassigning it to whoever last touched it.
+      const prev = this.placedObjects.find(o => Math.hypot(o.x - x, o.y - y) <= 6);
       this.placedObjects = this.placedObjects.filter(o => Math.hypot(o.x - x, o.y - y) > 6);
-      this.placedObjects.push({ id, type, x: Math.round(x), y: Math.round(y), owner: p.name,
-        ...(face ? { face } : {}), ...(litAt ? { litAt } : {}) });
+      this.placedObjects.push({ id, type, x: Math.round(x), y: Math.round(y),
+        owner: (prev && prev.owner) || p.name,
+        ...(face ? { face } : {}), ...(litAt ? { litAt } : {}), ...(locked ? { locked } : {}) });
       this.savePlacedObjects(); this.broadcastPlacedObjects();
       console.log(`[bravo] object placed by ${p.name}: ${type} at ${Math.round(x)},${Math.round(y)}`);
     });
