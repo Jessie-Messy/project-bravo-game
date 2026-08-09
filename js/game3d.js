@@ -325,6 +325,12 @@ let NIGHT_FILL_I = 0.35;               // outdoors, after dark
 let NIGHT_FILL_COL = 0xaaaaaa;
 let CAVE_FILL_I = 0.35;                // caves/interiors: nothing else lights you
 let CAVE_FILL_COL = 0xaaaaaa;
+// Mount height of the carry light above the ground, in world units — the lever
+// that actually matters for night readability, not intensity. At the original
+// 18u it sits at ankle level, so turning it UP floods the ground and leaves the
+// character a silhouette in a bright puddle (measured: at intensity 3.5 the hero
+// is a black shape in a green pool). CHAR_H is 126, so chest height is ~75.
+let CARRY_Y = 18;
 
 // ── Sky + dynamic environment ─────────────────────────────────────
 // Replaces the flat clear colour AND the one-shot 64x256 gradient env map.
@@ -2135,7 +2141,7 @@ function updateEnvironmentCycle(dt) {
   } else {
     playerLight.intensity = 0.0;
   }
-  playerLight.position.set(player.x, heightAt(player.x,player.y) + 18, player.y);
+  playerLight.position.set(player.x, heightAt(player.x,player.y) + CARRY_Y, player.y);
   
   // Placed lights: campfires, forges, torches, hearths, lanterns
   // isLit(), not just "is a light type" — a doused campfire has to go dark.
@@ -3801,11 +3807,12 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     o=o||{};
     if(o.night!==undefined) NIGHT_FILL_I=o.night;
     if(o.cave!==undefined)  CAVE_FILL_I=o.cave;
+    if(o.y!==undefined)     CARRY_Y=o.y;
     if(o.nightCol!==undefined) NIGHT_FILL_COL=o.nightCol;
     if(o.caveCol!==undefined)  CAVE_FILL_COL=o.caveCol;
     return JSON.stringify({night:NIGHT_FILL_I, nightCol:'#'+NIGHT_FILL_COL.toString(16).padStart(6,'0'),
       cave:CAVE_FILL_I, caveCol:'#'+CAVE_FILL_COL.toString(16).padStart(6,'0'),
-      liveIntensity:+playerLight.intensity.toFixed(3),
+      carryY:CARRY_Y, liveIntensity:+playerLight.intensity.toFixed(3),
       liveColor:'#'+playerLight.color.getHexString(), radiusTiles:+(playerLight.distance/TILE).toFixed(2)});
   },
   // Walk-clip rate matching: _dev.gait(110) raises the speed that plays at 1.0x
