@@ -325,12 +325,40 @@ let NIGHT_FILL_I = 0.35;               // outdoors, after dark
 let NIGHT_FILL_COL = 0xaaaaaa;
 let CAVE_FILL_I = 0.35;                // caves/interiors: nothing else lights you
 let CAVE_FILL_COL = 0xaaaaaa;
-// Mount height of the carry light above the ground, in world units — the lever
-// that actually matters for night readability, not intensity. At the original
-// 18u it sits at ankle level, so turning it UP floods the ground and leaves the
-// character a silhouette in a bright puddle (measured: at intensity 3.5 the hero
-// is a black shape in a green pool). CHAR_H is 126, so chest height is ~75.
+// Mount height of the carry light above the ground, in world units. This lights
+// the GROUND around the player — a lantern glow — and it cannot light the player
+// however it is tuned, which is the whole reason charFill below exists.
 let CARRY_Y = 18;
+
+// ── Character fill — night readability ────────────────────────────
+// playerLight sits AT the player, so every surface of the player faces AWAY
+// from it. A light inside an object lights everything except that object.
+// Measured: sweeping the mount height 18 → 45 → 75 → 100 never moved the torso
+// off 0.1, while the grass puddle under it swung 7.9 → 11.4 → 1.6. Raising the
+// intensity instead just grows the puddle (at 3.5 the hero is a black
+// silhouette in a green pool). Neither knob was ever going to work.
+//
+// So readability needs a light OFFSET toward the viewer, hitting the faces the
+// camera can actually see. On its own that would light the terrain in front of
+// the player and rebuild the puddle — so it is confined by LAYER: it only
+// affects meshes that opt into CHAR_FILL_LAYER, which is the player's own rig
+// and nothing else in the world. Terrain, grass and props never see it.
+// Tune live: _dev.charFill({i, dist, y}).
+const CHAR_FILL_LAYER = 3;
+// distance 260 (decay 0): reaches the hero from CHAR_FILL_DIST away and fades
+// out before it can reach a cloned remote player standing off elsewhere.
+const charFill = new THREE.PointLight(0x9fb4d8, 0.0, 260, 0);
+charFill.layers.set(CHAR_FILL_LAYER);      // ONLY layer 3 — nothing else is lit
+scene.add(charFill);
+let CHAR_FILL_I = 1.5;      // competes with moonlight only, never with the sun
+let CHAR_FILL_DIST = 90;    // how far toward the camera the light sits
+let CHAR_FILL_Y = 120;      // and how high — above head height, so it rakes down
+// Opt a subtree into the fill. Layer 0 stays enabled, so the camera still draws
+// it exactly as before; this only widens which lights may touch it.
+function enableCharFill(root){
+  if(!root) return;
+  root.traverse(o=>{ if(o.isMesh||o.isSkinnedMesh) o.layers.enable(CHAR_FILL_LAYER); });
+}
 
 // ── Sky + dynamic environment ─────────────────────────────────────
 // Replaces the flat clear colour AND the one-shot 64x256 gradient env map.
@@ -2142,7 +2170,21 @@ function updateEnvironmentCycle(dt) {
     playerLight.intensity = 0.0;
   }
   playerLight.position.set(player.x, heightAt(player.x,player.y) + CARRY_Y, player.y);
-  
+
+  // Character fill: sit it between the player and the camera so it rakes the
+  // faces actually on screen, and follow the camera as it orbits — a fixed
+  // world offset would swing round to backlight the player on half the turns.
+  // Only competes with moonlight: full strength in the dark, off in daylight.
+  {
+    const gy = heightAt(player.x, player.y);
+    const dx = camera.position.x - player.x, dz = camera.position.z - player.y;
+    const len = Math.hypot(dx, dz) || 1;
+    charFill.position.set(player.x + (dx/len)*CHAR_FILL_DIST, gy + CHAR_FILL_Y,
+                          player.y + (dz/len)*CHAR_FILL_DIST);
+    const dark = (inCave || inHouse) ? 1 : nightFactor;
+    charFill.intensity = CHAR_FILL_I * dark;
+  }
+
   // Placed lights: campfires, forges, torches, hearths, lanterns
   // isLit(), not just "is a light type" — a doused campfire has to go dark.
   const lightSources = placedObjects.filter(o => PLACEABLE_LIGHTS.has(o.type) && isLit(o))
@@ -3160,6 +3202,14 @@ gltfLoader.load('models/Protag_animations_basic.glb', gltf=>{
   protag={obj,inner,mixer,actions,cur:null,busyUntil:0,lx:null,lz:null,
     handBone,leftHandBone,weaponSlot,shieldSlot,slots,
     propKind:null,showShield:null,showQuiver:null,wasGhost:false};
+  // Opt the hero into the character fill.
+  // ⚠ `protagTemplate` is `inner`, a child of `obj`, and Object3D.clone() copies
+  // layer masks — so remote players cloned from it inherit this layer. That is
+  // why charFill carries a finite `distance`: it reaches the hero it is parked
+  // next to and dies off well before anyone else. A remote player standing
+  // right beside you catches a little of it, which looks fine. If that ever
+  // stops being true, clear the layer on the clone instead of widening this.
+  enableCharFill(obj);
   protagTemplate=inner; protagClips=gltf.animations;   // remote players clone this
   updateArmorVisuals();                                // show already-equipped armor
 }, undefined, err=>console.warn('protag load failed',err));
@@ -3808,11 +3858,15 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     if(o.night!==undefined) NIGHT_FILL_I=o.night;
     if(o.cave!==undefined)  CAVE_FILL_I=o.cave;
     if(o.y!==undefined)     CARRY_Y=o.y;
+    if(o.fill!==undefined)  CHAR_FILL_I=o.fill;
+    if(o.fillDist!==undefined) CHAR_FILL_DIST=o.fillDist;
+    if(o.fillY!==undefined) CHAR_FILL_Y=o.fillY;
     if(o.nightCol!==undefined) NIGHT_FILL_COL=o.nightCol;
     if(o.caveCol!==undefined)  CAVE_FILL_COL=o.caveCol;
     return JSON.stringify({night:NIGHT_FILL_I, nightCol:'#'+NIGHT_FILL_COL.toString(16).padStart(6,'0'),
       cave:CAVE_FILL_I, caveCol:'#'+CAVE_FILL_COL.toString(16).padStart(6,'0'),
-      carryY:CARRY_Y, liveIntensity:+playerLight.intensity.toFixed(3),
+      carryY:CARRY_Y, fill:CHAR_FILL_I, fillDist:CHAR_FILL_DIST, fillY:CHAR_FILL_Y,
+      fillLive:+charFill.intensity.toFixed(3), liveIntensity:+playerLight.intensity.toFixed(3),
       liveColor:'#'+playerLight.color.getHexString(), radiusTiles:+(playerLight.distance/TILE).toFixed(2)});
   },
   // Walk-clip rate matching: _dev.gait(110) raises the speed that plays at 1.0x
@@ -3956,6 +4010,11 @@ const PLR = [0x7d4a2e, 18,34,11, 7];
 const plrGrp = makeRig();
 configureRig(plrGrp, PLR[0], PLR[1],PLR[2],PLR[3],PLR[4], 0, true);
 scene.add(plrGrp);
+// The blocky fallback rig is the player before (and if) the GLB loads, so it
+// gets the character fill too — otherwise readability would depend on whether
+// an async download had finished. makeRig() is shared with mobs and NPCs, so
+// this is opted in HERE, on the player's instance only, not inside makeRig.
+enableCharFill(plrGrp);
 
 // Guards pool — humanoid rigs with sword, configured once
 const GPOOL = 20;
