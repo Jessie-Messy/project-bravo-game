@@ -8435,6 +8435,14 @@ G.canvas.addEventListener('wheel',e=>{
       return;
     }
   }
+  // chest open: wheel over its panel scrolls the item list
+  if(G.chestOpen){
+    const {px,py}=chestXY(), H=chestPanelH();
+    if(e.clientX>=px&&e.clientX<=px+CHEST_W&&e.clientY>=py&&e.clientY<=py+H){
+      G.chestScroll=Math.max(0,Math.min(chestMaxScroll(),(G.chestScroll|0)+(e.deltaY>0?1:-1)));
+      return;
+    }
+  }
   // backpack open: wheel over the bag scrolls its grid rows
   if(G.backpackOpen){
     const g=packGridRect();
@@ -9706,21 +9714,34 @@ const CHEST_W=310;
 const CHEST_CAP = 5000;
 const CHEST_HEADH = 62;                       // title + capacity line
 const CHEST_FOOTH = 34;                       // lock button strip
+// BAG_ITEMS is ~29 rows; at BAG_ROWH that is taller than a 800px viewport, so a
+// panel sized to the full list runs off the bottom of the screen and takes the
+// lock strip with it — the button was there and unclickable. The list scrolls
+// instead (same wheel pattern as the pack grid), and the strip is pinned to the
+// bottom of the clamped panel so it is always reachable.
+function chestRowsVisible(){
+  const avail = G.canvas.height - 48 - CHEST_HEADH - CHEST_FOOTH;
+  return Math.max(4, Math.min(BAG_ITEMS.length, Math.floor(avail/BAG_ROWH)));
+}
+function chestPanelH(){ return CHEST_HEADH + chestRowsVisible()*BAG_ROWH + CHEST_FOOTH; }
+function chestMaxScroll(){ return Math.max(0, BAG_ITEMS.length - chestRowsVisible()); }
 function chestXY(){
-  const H=CHEST_HEADH+BAG_ITEMS.length*BAG_ROWH+CHEST_FOOTH;
+  const H=chestPanelH();
   const defaultX = Math.round(G.canvas.width/2 - CHEST_W/2);
   const x = defaultX - 160;
   return panelAt('secure_chest_panel', x, Math.round(G.canvas.height/2 - H/2), CHEST_W, H);
 }
 function chestLockRect(){
-  const {px,py}=chestXY(); const H=CHEST_HEADH+BAG_ITEMS.length*BAG_ROWH+CHEST_FOOTH;
-  return {x:px+BAG_PAD, y:py+H-27, w:CHEST_W-BAG_PAD*2, h:20};
+  const {px,py}=chestXY();
+  return {x:px+BAG_PAD, y:py+chestPanelH()-27, w:CHEST_W-BAG_PAD*2, h:20};
 }
 function chestRects(){
   const {px,py}=chestXY(); const rects=[]; let y=py+CHEST_HEADH-8;
-  for(const it of BAG_ITEMS){
+  const n=chestRowsVisible(), s=Math.max(0,Math.min(chestMaxScroll(),G.chestScroll|0));
+  for(let i=s;i<Math.min(BAG_ITEMS.length,s+n);i++){
+    const it=BAG_ITEMS[i];
     rects.push({
-      k: it.k,
+      k: it.k, it,
       dp1: {x: px + CHEST_W - 130, y, w: 22, h: 20},
       dpA: {x: px + CHEST_W - 104, y, w: 32, h: 20},
       wd1: {x: px + CHEST_W - 64, y, w: 22, h: 20},
@@ -9749,8 +9770,8 @@ function renderChest(){
   ctx.fillText(used+' / '+CHEST_CAP+'   ·   HP '+chest.hp+'/'+chest.maxHp,px+CHEST_W/2,py+50);
   ctx.textAlign='left';
   const rects=chestRects();
-  for(let i=0;i<BAG_ITEMS.length;i++){
-    const it=BAG_ITEMS[i],r=rects[i],y=r.dp1.y;
+  for(let i=0;i<rects.length;i++){
+    const r=rects[i],it=r.it,y=r.dp1.y;
     ctx.fillStyle='#e8dcc0';ctx.font='12px ui-monospace,Menlo,Consolas,monospace';
     if(it.thumb&&drawLootThumb(it.thumb,px+BAG_PAD,y-2,20,20)) ctx.fillText(it.lab,px+BAG_PAD+24,y+15);
     else ctx.fillText(it.ic+' '+it.lab,px+BAG_PAD,y+15);
@@ -9769,6 +9790,16 @@ function renderChest(){
     btn(r.dpA, '+All', hasInv && room);
     btn(r.wd1, '-1', hasChest);
     btn(r.wdA, '-All', hasChest);
+  }
+  // Scroll indicator — without it a clamped list looks like the whole list.
+  const maxS=chestMaxScroll();
+  if(maxS>0){
+    const s=Math.max(0,Math.min(maxS,G.chestScroll|0));
+    const trackY=py+CHEST_HEADH-8, trackH=chestRowsVisible()*BAG_ROWH;
+    const thumbH=Math.max(18, trackH*chestRowsVisible()/BAG_ITEMS.length);
+    ctx.fillStyle='rgba(40,34,26,.7)';ctx.fillRect(px+CHEST_W-6,trackY,4,trackH);
+    ctx.fillStyle='#8a7c5c';
+    ctx.fillRect(px+CHEST_W-6, trackY+(trackH-thumbH)*(s/maxS), 4, thumbH);
   }
   // Lock strip. Only live inside a house you own — elsewhere it explains itself
   // rather than sitting there greyed out with no reason given.
@@ -9804,8 +9835,8 @@ function handleChestClick(e){
     return true;
   }
   const rects = chestRects();
-  for(let i=0;i<BAG_ITEMS.length;i++){
-    const r=rects[i],k=BAG_ITEMS[i].k;
+  for(let i=0;i<rects.length;i++){
+    const r=rects[i],k=r.k;
     const hit=b=>e.clientX>=b.x&&e.clientX<=b.x+b.w&&e.clientY>=b.y&&e.clientY<=b.y+b.h;
     if (hit(r.dp1)) {
       const have = inv[k] || 0;
@@ -9891,6 +9922,7 @@ function openSecureChest(chest) {
   }
   closeShopPanels();
   G.chestOpen = true;
+  G.chestScroll = 0;              // always open at the top of the list
   G.activeChest = chest;
   G.backpackOpen = true;
   snd.pickup();
