@@ -1154,11 +1154,23 @@ function rebuildGrass(){
   const ptx = Math.floor(player.x/TILE), pty = Math.floor(player.y/TILE);
   let i = 0;
   const cap = GRASS_MAX;
+  // Rebuilt from scratch each pass rather than cached behind a dirty flag —
+  // placedObjects is a few dozen entries at most, and a stale set here would
+  // leave grass growing through a chest (or a bald patch where one used to be)
+  // with nothing to point at.
+  const placedTiles = new Set();
+  for(const o of placedObjects)
+    placedTiles.add(Math.floor(o.x/TILE) + ',' + Math.floor(o.y/TILE));
   for(let ty = pty-radius; ty <= pty+radius && i < cap; ty++){
     const row = map[ty]; if(!row) continue;
     for(let tx = ptx-radius; tx <= ptx+radius && i < cap; tx++){
       if(row[tx] !== T.GRASS) continue;
       if(!tileInView(tx, ty)) continue;          // cone-culled like the obstacles
+      // Keep grass off tiles carrying a placed object. Blades are waist-high on
+      // a knee-high prop, so a chest dropped in open country is swallowed whole
+      // — verified: it renders (instance count confirms) and is still invisible.
+      // Clearing its own tile reads as trampled ground under the object.
+      if(placedTiles.has(tx + ',' + ty)) continue;
       const d = Math.hypot(tx-ptx, ty-pty);
       if(d > radius) continue;
       const dr = d/radius;
@@ -5239,6 +5251,7 @@ function placePlaceable(type, tx, ty, quiet, hit){
   if(m.face){ o.face=m.face; o.mountY=m.mountY; }        // wall mount
   if(type==='secure_chest'){ o.owner=playerName(); o.items={}; o.hp=150; o.maxHp=150; }
   placedObjects.push(o); placedObjectsDirty=true;
+  _grassDirty=true;        // the new object's tile must stop growing grass through it
   netObjectPlace(o);
   addFloater(m.x,m.y-12,def.emoji+' '+def.label+(m.face?' mounted':' placed'));
   snd.craft();
@@ -5366,6 +5379,7 @@ function removePlacedObject(obj, returnItem = true) {
   if (idx !== -1) {
     placedObjects.splice(idx, 1);
     placedObjectsDirty = true;
+    _grassDirty = true;      // grass grows back where the object stood
   }
   netObjectRemove(obj.x, obj.y);
   if (returnItem) {
