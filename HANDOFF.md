@@ -503,6 +503,45 @@ measured per-region — that is what makes claims like "8.05x" possible instead 
   - `litAt` crosses the wire alongside `face` — same three sites as Phase 3.
 - Dev: `_dev.burns()` (state of everything), `_dev.burn(i,sec)` (back-date so it expires in `sec`, negative = overdue), `_dev.sweep()`, `_dev.relight(i)`, `_dev.pickTest(i)`.
 - Dev: `_dev.craft(id)`, `_dev.hold(type)`, `_dev.placeAt(type,dtx,dty)`, `_dev.placeBlocker(type,dtx,dty)`, `_dev.removePlaced(i)` — these drive the *real* functions, so a green result means the real path works.
+- ✅ **Phase 5 (2026-08-09) — chest as real storage, workbench as a real station.**
+  - **Chest stands anywhere now.** `surfaces` was evaluated as an if/else chain, so
+    `'house'` silently meant *house ONLY* and listing both was impossible. Ground and
+    house are independent permissions now; `secure_chest` carries both.
+  - **Capacity** `CHEST_CAP` total units, with a bar and used/cap readout. `+All`
+    deposits **partially** when the lot would overflow. ⚠ The **pack is uncapped**, so
+    this is a real bound on the chest rather than "bigger than the pack" — if the pack
+    ever gains a cap, revisit this number so the chest stays the upgrade.
+  - **Lock** only while the chest is in a house you own. ⚠ The house test is part of the
+    **access check**, not just the toggle: a chest locked indoors and later moved outside
+    must not stay sealed forever.
+  - **Workbench/forge/anvil answer `E`** and open the craft panel. Before this a bench
+    had *no* interaction at all — it was purely a proximity test unlocking `adv` recipes
+    in the `C` panel, which is why it read as scenery.
+  - ⚠ **The chest panel was taller than the viewport.** ~29 `BAG_ITEMS` rows at
+    `BAG_ROWH` is ~850px against an 800px screen, so the bottom rows and the whole lock
+    strip sat off-screen — the button existed and could never be clicked. The list is
+    clamped and wheel-scrolled now (same pattern as the pack grid) with the strip pinned
+    to the bottom. **Every placement and open test passed while this was broken**; it
+    only showed up in a screenshot of the panel.
+  - ⚠ **Grass swallowed the props.** A placed chest was invisible in open country — not a
+    rebuild failure (instance counts confirmed it was drawing), just 120 blades/tile of
+    waist-high grass over a knee-high object. `rebuildGrass` now skips tiles carrying a
+    placed object. The occupied-tile set is rebuilt each pass rather than cached, because
+    a stale one leaves grass growing through a chest with nothing to point at.
+  - **Art:** both were single boxes. Now merged multi-part geometry via `propGeo()` —
+    ⚠ **merged, not grouped**: these are `InstancedMesh`es and a Group would multiply
+    draw calls by the part count. Both keep the bounds of the box they replaced, because
+    the registry's `y` and `scale` are tuned against those numbers.
+  - ⚠ **Chest CONTENTS are client-side only.** The server stores `id/type/x/y/owner/face/
+    litAt` and nothing item-shaped, so `items` lives in the local save; two players
+    sharing a chest online would each see their own. `locked` *does* cross the wire —
+    `object_place` doubles as the update path since the server drops anything within 6
+    units of the incoming point, and it now preserves the previous `owner` on such an
+    update instead of reassigning it to whoever last touched it.
+  - ◐ **NEEDS VISUAL SIGN-OFF:** the workbench is confirmed good in-game (plank top,
+    legs, shelf, vice all read at camera distance). The **chest geometry has not been
+    eyeballed up close** — it is confirmed *drawing* and its grass patch clears, but
+    every capture attempt framed it badly. Stand next to one and look before trusting it.
 
 ### Worn armor (paper-doll)
 - Only **helms, gorgets, chest pieces** render on the animated player (the limb pieces deformed badly worn — see "Lootable gear" below for where they went instead).
