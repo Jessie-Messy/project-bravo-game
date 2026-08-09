@@ -327,35 +327,10 @@ let CAVE_FILL_I = 0.35;                // caves/interiors: nothing else lights y
 let CAVE_FILL_COL = 0xaaaaaa;
 // Mount height of the carry light above the ground, in world units. This lights
 // the GROUND around the player — a lantern glow — and it cannot light the player
-// however it is tuned, which is the whole reason charFill below exists.
+// however it is tuned — see the night-readability notes in HANDOFF.md before
+// reaching for this knob, because three separate approaches through it failed.
 let CARRY_Y = 18;
 
-// ── Character fill — night readability ────────────────────────────
-// playerLight sits AT the player, so every surface of the player faces AWAY
-// from it. A light inside an object lights everything except that object.
-// Measured: sweeping the mount height 18 → 45 → 75 → 100 never moved the torso
-// off 0.1, while the grass puddle under it swung 7.9 → 11.4 → 1.6. Raising the
-// intensity instead just grows the puddle (at 3.5 the hero is a black
-// silhouette in a green pool). Neither knob was ever going to work.
-//
-// So readability needs a light OFFSET toward the viewer, hitting the faces the
-// camera can actually see.
-//
-// ⚠ It CANNOT be confined to the player with layers. three.js filters lights by
-// the CAMERA's layers, not per-object: `projectObject` only adds a light to the
-// render state when `light.layers.test(camera.layers)` passes, and there is no
-// per-object light mask in the forward renderer. A light parked on its own
-// layer is simply never added — measured, sweeping it 0 → 4.0 moved the torso
-// 0.0 → 0.5, i.e. it was doing nothing at all. So this is an ordinary scene
-// light, and the spill onto terrain is controlled by geometry instead: it sits
-// high and close, with a short `distance`, so its pool is small and soft rather
-// than the hard disc the ground-level carry light makes.
-// Tune live: _dev.nightLight({fill, fillDist, fillY}).
-const charFill = new THREE.PointLight(0x9fb4d8, 0.0, 260, 0);
-scene.add(charFill);
-let CHAR_FILL_I = 1.5;      // competes with moonlight only, never with the sun
-let CHAR_FILL_DIST = 90;    // how far toward the camera the light sits
-let CHAR_FILL_Y = 120;      // and how high — above head height, so it rakes down
 
 // ── Sky + dynamic environment ─────────────────────────────────────
 // Replaces the flat clear colour AND the one-shot 64x256 gradient env map.
@@ -2168,19 +2143,7 @@ function updateEnvironmentCycle(dt) {
   }
   playerLight.position.set(player.x, heightAt(player.x,player.y) + CARRY_Y, player.y);
 
-  // Character fill: sit it between the player and the camera so it rakes the
-  // faces actually on screen, and follow the camera as it orbits — a fixed
-  // world offset would swing round to backlight the player on half the turns.
-  // Only competes with moonlight: full strength in the dark, off in daylight.
-  {
-    const gy = heightAt(player.x, player.y);
-    const dx = camera.position.x - player.x, dz = camera.position.z - player.y;
-    const len = Math.hypot(dx, dz) || 1;
-    charFill.position.set(player.x + (dx/len)*CHAR_FILL_DIST, gy + CHAR_FILL_Y,
-                          player.y + (dz/len)*CHAR_FILL_DIST);
-    const dark = (inCave || inHouse) ? 1 : nightFactor;
-    charFill.intensity = CHAR_FILL_I * dark;
-  }
+
 
   // Placed lights: campfires, forges, torches, hearths, lanterns
   // isLit(), not just "is a light type" — a doused campfire has to go dark.
@@ -3847,15 +3810,11 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     if(o.night!==undefined) NIGHT_FILL_I=o.night;
     if(o.cave!==undefined)  CAVE_FILL_I=o.cave;
     if(o.y!==undefined)     CARRY_Y=o.y;
-    if(o.fill!==undefined)  CHAR_FILL_I=o.fill;
-    if(o.fillDist!==undefined) CHAR_FILL_DIST=o.fillDist;
-    if(o.fillY!==undefined) CHAR_FILL_Y=o.fillY;
     if(o.nightCol!==undefined) NIGHT_FILL_COL=o.nightCol;
     if(o.caveCol!==undefined)  CAVE_FILL_COL=o.caveCol;
     return JSON.stringify({night:NIGHT_FILL_I, nightCol:'#'+NIGHT_FILL_COL.toString(16).padStart(6,'0'),
       cave:CAVE_FILL_I, caveCol:'#'+CAVE_FILL_COL.toString(16).padStart(6,'0'),
-      carryY:CARRY_Y, fill:CHAR_FILL_I, fillDist:CHAR_FILL_DIST, fillY:CHAR_FILL_Y,
-      fillLive:+charFill.intensity.toFixed(3), liveIntensity:+playerLight.intensity.toFixed(3),
+      carryY:CARRY_Y, liveIntensity:+playerLight.intensity.toFixed(3),
       liveColor:'#'+playerLight.color.getHexString(), radiusTiles:+(playerLight.distance/TILE).toFixed(2)});
   },
   // Walk-clip rate matching: _dev.gait(110) raises the speed that plays at 1.0x
