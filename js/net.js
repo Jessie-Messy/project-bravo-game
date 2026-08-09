@@ -40,15 +40,71 @@ export function playerName() {
   return n;
 }
 
-// Per-device secret that claims our name on the server the first time we
-// join with it; the server rejects later joins under this name without it.
-function playerToken() {
-  let t = localStorage.getItem('bravoToken');
-  if (!t) {
-    t = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
-    localStorage.setItem('bravoToken', t);
+// ── Accounts ──────────────────────────────────────────────────────
+// Identity used to be a random per-device token in localStorage. That token IS
+// the identity, and it cannot leave the browser that made it — so logging in
+// from a second computer generated a new one, the server saw it did not match
+// the name's claim, and refused the join. You could not reach your own
+// character from another machine. Now the account lives on the server and you
+// carry a username and password instead.
+//
+// The session token below is still cached in localStorage, but only as a
+// convenience so a reload doesn't re-prompt; losing it costs a re-login, not a
+// character.
+export const auth = { username: null, session: null, characters: [] };
+
+function authOrigin() {
+  const h = location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1' || location.port === '5173')
+    return location.protocol + '//' + h + ':2567';
+  return location.origin;                    // production: same host as the game
+}
+async function authPost(path, body) {
+  try {
+    const r = await fetch(authOrigin() + path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, error: j.error || ('server said ' + r.status) };
+    return j;
+  } catch (e) {
+    return { ok: false, error: 'cannot reach the server' };
   }
-  return t;
+}
+function rememberSession(j) {
+  auth.username = j.username; auth.session = j.token; auth.characters = j.characters || [];
+  try { localStorage.setItem('bravoSession', JSON.stringify({ u: j.username, t: j.token })); } catch (_) {}
+  return { ok: true };
+}
+export async function accountRegister(username, password) {
+  const j = await authPost('/auth/register', { username, password });
+  return j.ok ? rememberSession(j) : j;
+}
+export async function accountLogin(username, password) {
+  const j = await authPost('/auth/login', { username, password });
+  return j.ok ? rememberSession(j) : j;
+}
+// Re-use a cached session on reload. Returns false if it expired, in which case
+// the login screen must be shown again.
+export async function accountResume() {
+  let c = null;
+  try { c = JSON.parse(localStorage.getItem('bravoSession') || 'null'); } catch (_) {}
+  if (!c || !c.t) return false;
+  const j = await authPost('/auth/characters', { token: c.t });
+  if (!j.ok) { try { localStorage.removeItem('bravoSession'); } catch (_) {} return false; }
+  auth.username = j.username; auth.session = c.t; auth.characters = j.characters || [];
+  return true;
+}
+export async function accountRefreshCharacters() {
+  if (!auth.session) return [];
+  const j = await authPost('/auth/characters', { token: auth.session });
+  if (j.ok) auth.characters = j.characters || [];
+  return auth.characters;
+}
+export function accountLogout() {
+  auth.username = auth.session = null; auth.characters = [];
+  try { localStorage.removeItem('bravoSession'); } catch (_) {}
 }
 
 function serverUrl() {
@@ -92,7 +148,11 @@ export async function initNet(getSelfFn) {
   try {
     const Colyseus = await loadLib();
     const client = new Colyseus.Client(serverUrl());
-    const room = await client.joinOrCreate('bravo', { name: playerName(), token: playerToken() });
+    // No session → stay offline rather than joining anonymously. Joining
+    // without an account would let the world hand out a character name that
+    // nobody owns, which is what the account system exists to prevent.
+    if (!auth.session) { net.status = 'offline'; net.error = 'not logged in'; return; }
+    const room = await client.joinOrCreate('bravo', { name: playerName(), session: auth.session });
     net.room = room; net.selfId = room.sessionId; net.status = 'online';
     lastSent = null;                       // force an immediate first send
     room.state.players.onAdd((p, id) => {

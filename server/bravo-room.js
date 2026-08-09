@@ -6,6 +6,7 @@
 const { Room } = require('colyseus');
 const { Schema, MapSchema, defineTypes } = require('@colyseus/schema');
 const storage = require('./storage.js');
+const accounts = require('./accounts.js');
 const { MobSim, world } = require('./mobs.js');
 
 // Must match the client's constants.js
@@ -450,20 +451,34 @@ class BravoRoom extends Room {
     console.log(`[bravo] world room created (storage: ${storage.backend})`);
   }
 
-  // Name claiming: the first join with a name stores the client's secret
-  // token; later joins must present the same token or they're rejected.
-  // Stops anyone from logging in as another playtester and inheriting
-  // their position/stats.
+  // Character identity is an ACCOUNT now, not a browser-local token.
+  //
+  // The old scheme stored a random token in localStorage and treated it as the
+  // identity. That token could not leave the machine that generated it, so a
+  // player logging in from a second computer presented a new token, failed the
+  // match against their own claimed name, and was refused — the exact thing
+  // accounts are here to fix. See accounts.js.
+  //
+  // The client logs in over HTTP first (POST /auth/login) and passes the
+  // resulting session here. Legacy tokened names are migrated on first
+  // account login below, so existing characters are not stranded.
   onAuth(client, options) {
     const name = BravoRoom.cleanName(options && options.name);
-    const token = (options && typeof options.token === 'string') ? options.token.slice(0, 64) : '';
-    const saved = storage.getToken(name);
-    if (saved && saved !== token) {
-      console.warn(`[bravo] REJECTED join as protected name "${name}"`);
-      throw new Error('name-protected');
+    const session = (options && typeof options.session === 'string') ? options.session : '';
+    const user = accounts.sessionUser(session);
+    if (!user) {
+      console.warn(`[bravo] REJECTED join as "${name}" — no valid session`);
+      throw new Error('not-logged-in');
     }
-    if (!saved && token) storage.setToken(name, token);
-    return true;
+    // Claim on first use; refuse if the name belongs to a different account.
+    if (!accounts.claimCharacter(name, user)) {
+      console.warn(`[bravo] REJECTED "${user}" joining as "${name}" — owned by another account`);
+      throw new Error('character-owned');
+    }
+    // The character's legacy browser token is now meaningless — the account
+    // owns it. Clearing it stops the old check from ever rejecting the owner.
+    if (storage.getToken(name)) storage.setToken(name, '');
+    return { username: user, character: name };
   }
 
   static cleanName(raw) {

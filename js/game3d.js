@@ -21,6 +21,8 @@ import { TILE, MAP_W, MAP_H, T, BLOCKING, CITY,
   DUNGEON_X0, DUNGEON_Y0, DUNGEON_W, DUNGEON_H,
   RACES, getXpForLevel,
 } from './constants.js';
+import { ensureAccount } from './login.js';
+import { auth as netAuth } from './net.js';
 import { AccountManager, renderCharSelect, renderCharCreator, handleCharSelectClick, handleCharCreatorClick, openCreator, hideNameInput } from './char_creator.js';
 import { addPlayerXp, generateLootDrop, getEquipmentStats, socketGem } from './loot_system.js';
 import { G, map, resourceHp, respawnAt, origTile, playerPlacedWalls, player,
@@ -11516,6 +11518,21 @@ function loop(t=0){
 G.gameTime = worldNow();   // start on the shared clock, not at 00:00
 findClearSpawn();
 const acc = AccountManager.getAccount();
+// ── Account gate ──────────────────────────────────────────────────
+// Log in BEFORE the character list is shown. The account owns the characters,
+// so a fresh machine must be able to see the ones it already has rather than
+// an empty slot screen that invites you to re-create a character you own —
+// which used to overwrite the server's copy of it.
+const accountMode = await ensureAccount();
+if(accountMode === 'online'){
+  // Seed local slots from the server's list. Selecting one joins under that
+  // name, and the server answers the join with that character's save blob
+  // (see net.onSave), which is what actually carries your items across
+  // machines — the slot here is just the picker entry.
+  try{
+    for(const name of (netAuth.characters||[])) AccountManager.ensureSlotForName(name);
+  }catch(e){ console.warn('[account] could not seed character slots', e); }
+}
 const activeSlot = AccountManager.getActiveSlot();
 if(activeSlot && activeSlot.saveBlob) {
   loadGame(activeSlot.saveBlob);
