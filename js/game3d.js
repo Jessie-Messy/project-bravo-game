@@ -47,6 +47,10 @@ import { createWaterMaterial } from './render/water.js';
 import { createComposer } from './render/composer.js';
 import { makeBladeGeometry, makeBladeTexture, makeGrassMaterial } from './render/grass.js';
 import { makeConiferCanopy, makeTrunk } from './render/trees.js';
+// Placed props are InstancedMeshes — one geometry each, drawn in a single call —
+// so a prop built from several boxes has to be MERGED, not grouped. Grouping
+// would multiply the draw calls by the part count and break instancing outright.
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createHeightField } from './render/terrain.js';
 
 // ── Dual-canvas setup ─────────────────────────────────────────────
@@ -1444,9 +1448,60 @@ const caveMesh  = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardM
 const customMesh = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.6, metalness:0.0, transparent:true, opacity:0.85}), 4000);
 const ironMesh = makeMesh(new THREE.DodecahedronGeometry(STONE_R), new THREE.MeshStandardMaterial({color:0x6a564d, roughness:0.42, metalness:0.88, map:rockTex}), 1500);
 const campfireMesh = makeMesh(new THREE.BoxGeometry(20, 6, 20), new THREE.MeshStandardMaterial({color:0x5c3c24, roughness:0.9, metalness:0.0}), 500);
-const workbenchMesh = makeMesh(new THREE.BoxGeometry(32, 14, 20), new THREE.MeshStandardMaterial({color:0x8b5a2b, roughness:0.85, metalness:0.0}), 500);
+// ── Built props ───────────────────────────────────────────────────
+// Boxes merged into ONE geometry (see the mergeGeometries import). Parts are
+// [w,h,d, x,y,z, ry?] in the prop's own local space, and the whole thing keeps
+// the origin and overall footprint of the single box it replaces — PLACEABLES
+// rows carry a `y` mount offset and a `scale` tuned against those numbers, so
+// changing the bounds here silently sinks or floats the prop.
+function propGeo(parts){
+  const geos = parts.map(([w,h,d,x,y,z,ry])=>{
+    const g = new THREE.BoxGeometry(w,h,d);
+    if(ry) g.rotateY(ry);
+    g.translate(x,y,z);
+    return g;
+  });
+  const merged = mergeGeometries(geos, false);
+  for(const g of geos) g.dispose();
+  return merged;
+}
+// Workbench: 32x14x20 overall, origin at the middle of the box it replaces.
+// A plank top with a lip, four legs, a lower shelf and a vice block on one end —
+// enough silhouette to read as a bench from the game's fixed camera angle.
+const workbenchMesh = makeMesh(propGeo([
+  [32, 2.5, 20,   0,  6.0, 0],            // top slab
+  [32, 1.2,  3,   0,  4.4, 8.6],          // front lip
+  [32, 1.2,  3,   0,  4.4,-8.6],          // back lip
+  [ 3,  9,   3, -13.5,-1.5, 7.5],         // legs
+  [ 3,  9,   3,  13.5,-1.5, 7.5],
+  [ 3,  9,   3, -13.5,-1.5,-7.5],
+  [ 3,  9,   3,  13.5,-1.5,-7.5],
+  [26, 1.5, 13,   0, -3.0, 0],            // lower shelf
+  [ 5,  4,   6,  12.0, 9.2, 0],           // vice block on the right end
+  [ 7,  1.4, 1.4, 11.0,11.6, 0],          // vice handle
+]), new THREE.MeshStandardMaterial({color:0x8b5a2b, roughness:0.85, metalness:0.0}), 500);
 const forgeMesh = makeMesh(new THREE.CylinderGeometry(14, 16, 24, 8), new THREE.MeshStandardMaterial({color:0x505050, roughness:0.7, metalness:0.1}), 500);
-const secureChestMesh = makeMesh(new THREE.BoxGeometry(22, 12, 16), new THREE.MeshStandardMaterial({color:0x5c3c24, roughness:0.65, metalness:0.1}), 500);
+// Secure chest: 22x12x16 overall. Body, a stepped lid that reads as a curved
+// hood at this camera distance, iron corner bands, a lock plate and feet.
+// Metalness stays low on the whole thing because it shares one material with
+// the wood — the bands read as iron through their darker colour and the bevel,
+// not through a separate metal shader.
+const secureChestMesh = makeMesh(propGeo([
+  [22,  7,  16,   0, -2.5, 0],            // body
+  [22,  2.5,14,   0,  1.8, 0],            // lid step 1
+  [20,  2,  11,   0,  3.6, 0],            // lid step 2
+  [17,  1.4, 7,   0,  5.0, 0],            // lid crown
+  [ 2,  11,  2, -10.5,-1.0, 7.4],         // corner bands
+  [ 2,  11,  2,  10.5,-1.0, 7.4],
+  [ 2,  11,  2, -10.5,-1.0,-7.4],
+  [ 2,  11,  2,  10.5,-1.0,-7.4],
+  [22,  1.2, 2.4,  0,  1.0, 8.0],         // band across the front seam
+  [ 4,  4,   1.6,  0, -1.0, 8.6],         // lock plate
+  [ 3,  1.6, 3,  -8.5,-6.6, 5.5],         // feet
+  [ 3,  1.6, 3,   8.5,-6.6, 5.5],
+  [ 3,  1.6, 3,  -8.5,-6.6,-5.5],
+  [ 3,  1.6, 3,   8.5,-6.6,-5.5],
+]), new THREE.MeshStandardMaterial({color:0x5c3c24, roughness:0.65, metalness:0.1}), 500);
 // World treasure chests — brass-banded so they read as loot, not as the
 // player's own storage. Body + lid are separate instanced meshes.
 const lootChestMesh = makeMesh(new THREE.BoxGeometry(24, 13, 17), new THREE.MeshStandardMaterial({color:0x8a6a2a, roughness:0.5, metalness:0.45}), 400);
@@ -1560,7 +1615,8 @@ const PLACEABLES = {
   // r14/16 h24 → r42/48 h72 ≈ 1.35m wide, 1m tall. Chest-high stone forge.
   forge:        { label:'Forge',        emoji:'🏭', invKey:'forge',        mesh:()=>forgeMesh,         y:12, scale:3.0, flame:null,         light:true,  surfaces:['ground'] },
   // 22×12×16 → 66×36×48 ≈ 0.95m wide, 0.5m tall. Knee-high strongbox.
-  secure_chest: { label:'Secure Chest', emoji:'🧰', invKey:'secure_chest', mesh:()=>secureChestMesh,   y:6,  scale:3.0, flame:null,         light:false, surfaces:['house'] },
+  // Stands anywhere; only gains a lock when it sits inside a house you own.
+  secure_chest: { label:'Secure Chest', emoji:'🧰', invKey:'secure_chest', mesh:()=>secureChestMesh,   y:6,  scale:3.0, flame:null,         light:false, surfaces:['ground','house'] },
   // h28 → h45 ≈ 0.65m. Held torch was tuned separately (WEAPON_ADJUST); this is
   // the PLACED mesh, and it's what mounts on walls — 45u against a 168u wall.
   torch:        { label:'Torch',        emoji:'🔥', invKey:'torch',        mesh:()=>torchMesh,         y:14, scale:1.6, flame:{y:30,s:1.0}, light:true,  surfaces:['ground','wall'], wallY:WALL_H*0.62,
@@ -5149,9 +5205,17 @@ function placementBlocker(type, tx, ty, hit){
   if(house&&!canBuildInHouse(house)) return 'owner or friends only!';
   if(_isFullCover(t)){
     if(!def.surfaces.includes('wall')) return 'cannot mount that on a wall';
-  } else if(def.surfaces.includes('house')){
-    if(!house||t!==T.PATH) return 'must place inside a house';
-  } else if(!PLACE_GROUND.has(t)) return 'cannot place there';
+  } else {
+    // 'ground' and 'house' are not exclusive — the chest allows both, so it can
+    // stand anywhere AND be locked down indoors. Checked as two independent
+    // permissions rather than an if/else chain, which is what made 'house' mean
+    // "house ONLY" before.
+    const okGround = def.surfaces.includes('ground') && PLACE_GROUND.has(t);
+    const okHouse  = def.surfaces.includes('house')  && house && t===T.PATH;
+    if(!okGround && !okHouse)
+      return def.surfaces.includes('house') && !def.surfaces.includes('ground')
+        ? 'must place inside a house' : 'cannot place there';
+  }
   const m=placementSpot(type,tx,ty,hit);
   if(Math.hypot(m.x-player.x,m.y-player.y)>HARVEST_RANGE) return 'too far away';
   // One object per spot. Without this you could stack an unbounded pile on a
@@ -5279,9 +5343,19 @@ function placeItem(wx,wy){
 // (The server whitelists what it stores; see bravo-room.js object_place.)
 function netObjectPlace(o) {
   if (net.status === 'online' && net.room) {
-    net.room.send('object_place', { type:o.type, x:o.x, y:o.y, face:o.face||null, litAt:o.litAt||0 });
+    net.room.send('object_place', { type:o.type, x:o.x, y:o.y, face:o.face||null, litAt:o.litAt||0,
+                                    locked:!!o.locked });
   }
 }
+// Push a change made to an object that is ALREADY placed (currently the chest
+// lock). object_place is idempotent by position — the server drops anything
+// within 6 units of the incoming point before pushing — so re-sending is the
+// update path and no new message type is needed.
+// ⚠ Chest CONTENTS deliberately do not go through here: the server stores no
+// item data, so `items` lives in the local save only. Two players sharing one
+// chest online would each see their own contents. Making that authoritative
+// needs the server to arbitrate transfers, which is a bigger change.
+function syncPlacedObject(o){ netObjectPlace(o); }
 function netObjectRemove(x, y) {
   if (net.status === 'online' && net.room) {
     net.room.send('object_remove', { x, y });
@@ -7900,6 +7974,19 @@ window.addEventListener('keydown',e=>{
         openSecureChest(nearbyChest);
         return;
       }
+      // A workbench had no interaction at all — it was only ever a proximity
+      // check that unlocked `adv` recipes in the C panel, so walking up to one
+      // and pressing E did nothing and it read as scenery. E now opens the
+      // crafting panel at the bench, which is where you already are.
+      const nearbyBench = placedObjects.find(o => (o.type==='workbench'||o.type==='forge'||o.type==='anvil')
+        && Math.hypot(o.x-player.x, o.y-player.y)<TILE*2.5);
+      if(nearbyBench){
+        closeShopPanels();
+        G.craftOpen = true;
+        snd.pickup();
+        addFloater(nearbyBench.x, nearbyBench.y-16, (PLACEABLES[nearbyBench.type]||{}).label||'workbench');
+        return;
+      }
       const _doorIdx = getNearbyHouseDoorIndex();
       if(_doorIdx !== -1){ toggleHouseDoor(_doorIdx); return; }   // E opens/closes the door (all platforms)
       const nearbySignIdx = getNearbyHouseSignIndex();
@@ -9612,14 +9699,25 @@ function drawUiDragGhost(){
 }
 
 const CHEST_W=310;
+// Total item units a chest holds. The pack is uncapped, so this is not a
+// "bigger number than the pack" — it is deliberately large enough that bulk
+// storage never nags in normal play, while still being a real bound so a chest
+// reads as a container rather than a void. Shown in the title as used/cap.
+const CHEST_CAP = 5000;
+const CHEST_HEADH = 62;                       // title + capacity line
+const CHEST_FOOTH = 34;                       // lock button strip
 function chestXY(){
-  const H=52+BAG_ITEMS.length*BAG_ROWH+18;
+  const H=CHEST_HEADH+BAG_ITEMS.length*BAG_ROWH+CHEST_FOOTH;
   const defaultX = Math.round(G.canvas.width/2 - CHEST_W/2);
   const x = defaultX - 160;
   return panelAt('secure_chest_panel', x, Math.round(G.canvas.height/2 - H/2), CHEST_W, H);
 }
+function chestLockRect(){
+  const {px,py}=chestXY(); const H=CHEST_HEADH+BAG_ITEMS.length*BAG_ROWH+CHEST_FOOTH;
+  return {x:px+BAG_PAD, y:py+H-27, w:CHEST_W-BAG_PAD*2, h:20};
+}
 function chestRects(){
-  const {px,py}=chestXY(); const rects=[]; let y=py+44;
+  const {px,py}=chestXY(); const rects=[]; let y=py+CHEST_HEADH-8;
   for(const it of BAG_ITEMS){
     rects.push({
       k: it.k,
@@ -9633,13 +9731,23 @@ function chestRects(){
   return rects;
 }
 function renderChest(){
-  const ctx=G.ctx; const {px,py}=chestXY(); const H=52+BAG_ITEMS.length*BAG_ROWH+18;
+  const ctx=G.ctx; const {px,py}=chestXY();
+  const H=CHEST_HEADH+BAG_ITEMS.length*BAG_ROWH+CHEST_FOOTH;
   const chest = G.activeChest;
   if (!chest) { G.chestOpen = false; return; }
   ctx.fillStyle='rgba(12,14,24,.97)';ctx.fillRect(px,py,CHEST_W,H);
-  ctx.strokeStyle='#a890d0';ctx.lineWidth=2;ctx.strokeRect(px,py,CHEST_W,H);
+  ctx.strokeStyle=chest.locked?'#f0c040':'#a890d0';ctx.lineWidth=2;ctx.strokeRect(px,py,CHEST_W,H);
   ctx.fillStyle='#b8e8b0';ctx.font='bold 14px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';
-  ctx.fillText('🔒 SECURE CHEST (HP: '+chest.hp+'/'+chest.maxHp+')',px+CHEST_W/2,py+22);ctx.textAlign='left';
+  ctx.fillText((chest.locked?'🔒':'🧰')+' SECURE CHEST',px+CHEST_W/2,py+22);
+  // Capacity bar — the one number that tells you whether to stop hauling.
+  const used=chestUsed(chest), frac=Math.min(1,used/CHEST_CAP);
+  const bw=CHEST_W-BAG_PAD*2, bx=px+BAG_PAD, by=py+30;
+  ctx.fillStyle='rgba(40,34,26,.8)';ctx.fillRect(bx,by,bw,8);
+  ctx.fillStyle=frac>0.95?'#d05050':frac>0.8?'#d0a040':'#70b860';ctx.fillRect(bx,by,bw*frac,8);
+  ctx.strokeStyle='rgba(120,100,70,.5)';ctx.lineWidth=1;ctx.strokeRect(bx,by,bw,8);
+  ctx.fillStyle='#9a8f78';ctx.font='10px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillText(used+' / '+CHEST_CAP+'   ·   HP '+chest.hp+'/'+chest.maxHp,px+CHEST_W/2,py+50);
+  ctx.textAlign='left';
   const rects=chestRects();
   for(let i=0;i<BAG_ITEMS.length;i++){
     const it=BAG_ITEMS[i],r=rects[i],y=r.dp1.y;
@@ -9656,37 +9764,73 @@ function renderChest(){
     };
     const hasInv = (inv[it.k] || 0) > 0;
     const hasChest = chestCount > 0;
-    btn(r.dp1, '+1', hasInv);
-    btn(r.dpA, '+All', hasInv);
+    const room = chestUsed(chest) < CHEST_CAP;
+    btn(r.dp1, '+1', hasInv && room);
+    btn(r.dpA, '+All', hasInv && room);
     btn(r.wd1, '-1', hasChest);
     btn(r.wdA, '-All', hasChest);
   }
+  // Lock strip. Only live inside a house you own — elsewhere it explains itself
+  // rather than sitting there greyed out with no reason given.
+  const lr=chestLockRect(), lh=chestLockHouse(chest);
+  ctx.fillStyle=lh?(chest.locked?'rgba(90,72,20,.9)':'rgba(40,34,26,.8)'):'rgba(30,26,22,.6)';
+  ctx.fillRect(lr.x,lr.y,lr.w,lr.h);
+  ctx.strokeStyle=lh?(chest.locked?'#f0c040':'rgba(120,100,70,.5)'):'rgba(80,70,55,.35)';
+  ctx.lineWidth=1;ctx.strokeRect(lr.x,lr.y,lr.w,lr.h);
+  ctx.fillStyle=lh?(chest.locked?'#ffe9a0':'#c8bda0'):'#6b6355';
+  ctx.font='11px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';
+  ctx.fillText(lh ? (chest.locked ? '🔒 LOCKED — click to unlock'
+                                  : '🔓 UNLOCKED — click to lock down')
+                  : 'lock needs a house you own',
+               lr.x+lr.w/2, lr.y+14);
+  ctx.textAlign='left';
 }
 function handleChestClick(e){
   const chest = G.activeChest;
   if (!chest) return false;
+  const hitR=b=>e.clientX>=b.x&&e.clientX<=b.x+b.w&&e.clientY>=b.y&&e.clientY<=b.y+b.h;
+  const lr=chestLockRect();
+  if(hitR(lr)){
+    const lh=chestLockHouse(chest);
+    if(!lh){ addFloater(chest.x,chest.y-16,'only lockable in your own house'); snd.hurt(); }
+    else{
+      chest.locked=!chest.locked;
+      if(!chest.owner) chest.owner=playerName();
+      snd.pickup();
+      addFloater(chest.x,chest.y-16, chest.locked?'🔒 locked down':'🔓 unlocked');
+      syncPlacedObject(chest);          // `locked` has to reach the other clients
+      saveGame(true);
+    }
+    return true;
+  }
   const rects = chestRects();
   for(let i=0;i<BAG_ITEMS.length;i++){
     const r=rects[i],k=BAG_ITEMS[i].k;
     const hit=b=>e.clientX>=b.x&&e.clientX<=b.x+b.w&&e.clientY>=b.y&&e.clientY<=b.y+b.h;
     if (hit(r.dp1)) {
       const have = inv[k] || 0;
-      if (have > 0) {
+      const room = CHEST_CAP - chestUsed(chest);
+      if (have > 0 && room > 0) {
         inv[k] = have - 1;
         chest.items[k] = (chest.items[k] || 0) + 1;
         if (k === 'gold') snd.gold(); else snd.pickup();
         saveGame(true);
-      }
+      } else if (have > 0) { addFloater(chest.x, chest.y-16, 'chest is full'); snd.hurt(); }
       return true;
     }
     if (hit(r.dpA)) {
       const have = inv[k] || 0;
-      if (have > 0) {
-        inv[k] = 0;
-        chest.items[k] = (chest.items[k] || 0) + have;
+      const room = CHEST_CAP - chestUsed(chest);
+      // Partial deposit rather than refusing the lot — being told "full" while
+      // there is room for 40 of your 50 planks would be worse than moving 40.
+      const n = Math.min(have, Math.max(0, room));
+      if (n > 0) {
+        inv[k] = have - n;
+        chest.items[k] = (chest.items[k] || 0) + n;
         if (k === 'gold') snd.gold(); else snd.pickup();
+        if (n < have) addFloater(chest.x, chest.y-16, 'chest full — moved '+n);
         saveGame(true);
-      }
+      } else if (have > 0) { addFloater(chest.x, chest.y-16, 'chest is full'); snd.hurt(); }
       return true;
     }
     if (hit(r.wd1)) {
@@ -9712,11 +9856,34 @@ function handleChestClick(e){
   }
   return true;
 }
+// A chest can only be LOCKED while it stands inside a house you own — that is
+// the whole point of the feature: out in the open anyone can reach it, indoors
+// it is yours. Returns the house so callers can show why the button is off.
+function chestLockHouse(chest){
+  const h = getHouseContaining(Math.floor(chest.x/TILE), Math.floor(chest.y/TILE));
+  if(!h) return null;
+  const me = playerName();
+  return (h.owner === me || !h.owner) ? h : null;
+}
+function chestUsed(chest){
+  let n = 0; for(const k in (chest.items||{})) n += chest.items[k]||0; return n;
+}
 function openSecureChest(chest) {
   const tx = Math.floor(chest.x/TILE), ty = Math.floor(chest.y/TILE);
   const h = getHouseContaining(tx, ty);
   const myName = playerName();
-  const hasAccess = net.status !== 'online' || !chest.owner || chest.owner === myName || (h && (h.owner === myName || (h.friends||[]).includes(myName)));
+  // An explicit lock only means anything indoors — a locked chest that ends up
+  // outside a house (house removed, chest picked up and re-placed) must not
+  // stay sealed forever, so the house test is part of the condition, not just
+  // of the toggle that sets it.
+  const owned = !chest.owner || chest.owner === myName;
+  const friend = h && (h.owner === myName || (h.friends||[]).includes(myName));
+  if (chest.locked && h && !owned && !friend) {
+    addFloater(chest.x, chest.y-16, '🔒 locked — ' + (chest.owner || 'secure') + "'s chest");
+    snd.hurt();
+    return;
+  }
+  const hasAccess = net.status !== 'online' || owned || friend;
   if (!hasAccess) {
     addFloater(chest.x, chest.y-16, '🔒 locked — ' + (chest.owner || 'secure') + "'s chest");
     snd.hurt();
@@ -11222,6 +11389,10 @@ if(MP_ENABLED){
   net.onHouses=list=>applyServerHouses(list);       // shared houses
   net.onPlacedObjects=list=>{                       // shared persistent placed items (torches, lanterns, forges, etc.)
     if(Array.isArray(list)){
+      // Snapshot BEFORE clearing: chest contents are client-side only, so they
+      // have to be carried across the rebuild. Looking them up after the clear
+      // would silently empty every chest on each server broadcast.
+      const prevList = placedObjects.slice();
       placedObjects.length=0;
       for(const o of list){
         const p={id:o.id,type:o.type,x:o.x,y:o.y,owner:o.owner};
@@ -11235,6 +11406,15 @@ if(MP_ENABLED){
         // litAt is what makes burnout agree across clients — it's an absolute
         // world-clock stamp, so everyone derives the same remaining fuel.
         if(o.litAt>0) p.litAt=o.litAt;
+        // Chest lock state. Contents are NOT synced (see syncPlacedObject), so
+        // carry over whatever this client already had for that chest rather than
+        // wiping it every time the server re-broadcasts the list.
+        if(o.locked) p.locked=true;
+        if(o.type==='secure_chest'){
+          const prev=prevList.find(q=>q.type==='secure_chest'&&Math.hypot(q.x-o.x,q.y-o.y)<6);
+          p.items=(prev&&prev.items)||{};
+          p.hp=(prev&&prev.hp)||150; p.maxHp=(prev&&prev.maxHp)||150;
+        }
         placedObjects.push(p);
       }
       placedObjectsDirty=true;
