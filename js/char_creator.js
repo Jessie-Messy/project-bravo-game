@@ -36,6 +36,31 @@ export const AccountManager = {
     return acc;
   },
 
+  // Make sure a character the SERVER says we own has a slot to click on.
+  // On a new machine the local slot list is empty, so without this the select
+  // screen offers only "create", and creating a character you already own used
+  // to push a fresh save over the server's copy of it. The slot carries no
+  // saveBlob on purpose: picking it joins the world under that name and the
+  // server answers with the real save (net.onSave), which is the copy that
+  // actually has your items.
+  ensureSlotForName(name) {
+    if (!name) return;
+    const acc = this.getAccount();
+    if (!acc) return;
+    if (acc.slots.some(s => s && s.name === name)) return;   // already listed
+    let idx = acc.slots.findIndex(s => !s);
+    if (idx === -1) { acc.slots.push(null); idx = acc.slots.length - 1; }
+    acc.slots[idx] = {
+      id: 'slot_' + idx, name,
+      gender: 'male', race: 'Human',
+      stats: { str: 10, dex: 10, int: 10, vit: 10 },
+      saveBlob: null,                       // ← filled from the server on join
+      fromServer: true,
+      createdAt: Date.now(),
+    };
+    this.saveAccount(acc);
+  },
+
   saveAccount(acc) {
     try {
       localStorage.setItem(ACCOUNT_KEY, JSON.stringify(acc));
