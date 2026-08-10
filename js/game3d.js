@@ -5,6 +5,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { netRejoinAsActiveCharacter } from './net.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave,
   netHousePlace, netHouseUpdate, netHouseRemove,
   netDropAdd, netDropTake, netTradeReq, netTradeAccept, netTradeOffer, netTradeConfirm, netTradeCancel,
@@ -10760,6 +10761,16 @@ function render3D(t){
       if (slot && slot.saveBlob) {
         loadGame(slot.saveBlob);
       }
+      // Move the world connection onto the character just picked. The socket is
+      // opened at boot, before any character exists, so without this you play
+      // as the previously-active one and save over ITS blob. For a slot seeded
+      // from the server (no local blob) this re-join is also what fetches the
+      // real save — net.onSave applies it when the server answers.
+      if (slot && slot.name) {
+        player.name = slot.name;
+        try { localStorage.setItem('bravoName', slot.name); } catch (_) {}
+        netRejoinAsActiveCharacter();
+      }
       G.charSelectOpen = false;
       addFloater(player.x, player.y - 40, `✨ Playing as ${player.name} (${player.race})`);
     }, (slotIdx) => {
@@ -10785,6 +10796,10 @@ function render3D(t){
       player.weapon = 'axe';
       recomputeDerivedStats();
 
+      // Claim the new character on the server BEFORE the first save, so the
+      // save lands on this character's row rather than the previous one's.
+      try { localStorage.setItem('bravoName', player.name); } catch (_) {}
+      netRejoinAsActiveCharacter();
       saveGame(true);
       G.charCreatorOpen = false;
       G.charSelectOpen = false;
