@@ -3887,6 +3887,13 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     return JSON.stringify({ampC:WARP_AMP_C, ampF:WARP_AMP_F, cellC:WARP_CELL_C,
       cellF:WARP_CELL_F, hash:WARP_HASH, reachTiles:WARP_R, rebakeMs:+(performance.now()-t0).toFixed(0)});
   },
+  // Save observability. The autosave is silent by design, so when a character
+  // fails to persist there is nothing to look at — which is exactly the hole
+  // that hid the cross-machine bug. saveNow() forces the real save path;
+  // saveState() reports why the timer has or hasn't fired.
+  saveNow(){ saveGame(true); return 'save sent (net '+net.status+')'; },
+  saveState(){ return JSON.stringify({ netStatus:net.status, autoSaveT:+_autoSaveT.toFixed(2),
+    firesAt:20, playerDead:!!player.dead, name:player.name }); },
   // Carry-light fallback. _dev.nightLight({night:0.2, cave:0.4}) tunes the two
   // cases independently; no args just reports. `ratio` is the thing being
   // calibrated: character luminance over ground luminance in the same frame —
