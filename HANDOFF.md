@@ -608,6 +608,80 @@ measured per-region — that is what makes claims like "8.05x" possible instead 
 - Own instanced mesh rebuilt alongside `rebuildWalls`; placement is a **deterministic hash of tile+face**, so windows never flicker or reshuffle as the render window slides.
 - **Player-placed walls are skipped** — those get used as fences and keeps, and punching windows in them unasked would be worse than plain.
 
+### Accounts — a character follows you between computers (2026-08-10, Headline)
+**Log in with a username and password; the server owns your characters.** Before
+this, identity was a random token generated in the browser and kept in
+localStorage. That token *was* the identity, so it could never leave the machine
+that made it: a second computer generated a new one, the server compared it to
+the name's stored claim, and **refused the join**. You could not reach your own
+character from another machine.
+- `server/accounts.js` — accounts + character ownership. Passwords are
+  **scrypt-hashed with a per-account salt** (node's own `crypto`, no new
+  dependency), compared in constant time, and a *missing* account still pays the
+  hash cost so "no such user" and "wrong password" are indistinguishable. Same
+  SQLite-or-JSON dual backend as `storage.js`.
+- **HTTP auth before the room join** (`/auth/register`, `/auth/login`,
+  `/auth/characters`) so the login screen can show a real reason and list your
+  characters without a join opaquely succeeding. Per-IP throttled — scrypt is
+  deliberately slow, so unbounded attempts are a guessing oracle *and* a CPU DoS.
+- `onAuth` verifies the session and claims the character for that account,
+  refusing a name owned by another. Legacy browser tokens are cleared on first
+  account login so they can never reject the rightful owner.
+- `js/login.js` is **DOM, not canvas** — deliberately. Password masking,
+  clipboard, autofill and mobile keyboards come free from a real `<input>`.
+  Offline play is offered so single-player never needs a server.
+- ⚠ **On the VPS, nginx must proxy the `/auth/*` routes to the world server**,
+  the same way it already proxies `/bravo-ws`. The client derives the auth URL
+  from `location.origin` in production; without the proxy rule login fails with
+  "cannot reach the server".
+
+**⚠⚠ THREE bugs sat between "logged in" and "has your stuff". All three were
+invisible until a character was actually loaded on a second machine, and TWO
+predate the account work** — they were masked because every client also had the
+character in localStorage, so the local copy quietly covered for the server's
+copy never arriving. Server-owned characters removed that cover.
+1. **The join used the wrong name.** `playerName()` read `localStorage.bravoName`
+   — a key nothing ever wrote except its own random fallback. Picking "Gideon"
+   still joined as "Traveler1234", so the server claimed *that* name and returned
+   *its* empty save. The active character slot is the authority now, and
+   selecting or creating a character calls `netRejoinAsActiveCharacter()`: the
+   socket opens at boot before any character exists, so without a re-join you
+   play as the previous character **and save over its blob**.
+2. **The save raced the client's handlers.** The server pushed the blob from
+   `onJoin`, while the client was still inside `joinOrCreate()` with no
+   `onMessage` handlers attached — delivered to nobody, dropped. The client now
+   sends **`request_save`** once its handlers are up. Keep both: the push is
+   harmless and wins for fast clients, the request is what makes it deterministic.
+3. **The payload is a STRING, not an object.** `storage.saveBlob` writes
+   `JSON.stringify` into a TEXT column and the server sends that string back
+   verbatim; `loadGame()` takes a parsed object and, handed a string, walks
+   properties that don't exist **inside a try/catch that swallows it**. Every
+   layer logged success and the data was discarded at the last step.
+   `net.onSave` now accepts either shape.
+- **Verified end to end**: two isolated browser profiles (separate localStorage
+  = genuinely different machines), same account — machine A set gold 4841 /
+  planks 77 and saved, machine B logged in and read **4841 / 77**. Also verified
+  from an empty database: register → creator opens.
+- **Save observability** (this is what finally made it debuggable): the server
+  logs `save ok: <name> (N bytes)`, `save sent on request:`, `no stored save
+  for`, and `SAVE REJECTED` with a reason. Client-side `_dev.saveNow()` forces
+  the real save path and `_dev.saveState()` reports net status, the autosave
+  timer and whether the player is flagged dead.
+- ⚠ **The autosave interval is frame-rate dependent, not wall-clock.**
+  `autoSaveTick` accumulates `adt`, which is **clamped to 0.1/frame**, so at
+  60fps "20 seconds" is ~20s but a throttled or backgrounded tab stretches it
+  arbitrarily. Under software rendering it measured **0.02 per real second** —
+  ~15 minutes to fire, which looked exactly like "saving is broken" for several
+  test rounds. There is also **no save on tab close**. A `beforeunload` save and
+  a wall-clock timer are worth doing.
+- ⚠ **This is sync, not anti-cheat.** The client still computes loot, XP and
+  inventory and tells the server what it holds. Making it authoritative means
+  moving transactions server-side (see the chest note) — a separate project.
+- ◐ **Not done:** chest contents are still client-side (deliberately deferred);
+  server-seeded character slots show placeholder details (Human · male, all 10s)
+  until the save arrives, because `ensureSlotForName` only knows the name —
+  `/auth/characters` should return race/gender/level too.
+
 ### Shared world clock (server-authoritative time)
 - `G.gameTime` was a **per-session counter starting at 0**, so every browser began its own day at 00:00 on load — two players side by side saw different skies, and a reload reset your day.
 - Now derived from **wall-clock seconds** (`worldNow()` = `Date.now()/1000 + worldTimeOffset + _timeShift`), re-derived every frame. Epoch seconds tick at exactly the rate the cycle wants (`DAY_CYCLE_SEC` real seconds = one game day) and, being absolute, make the **moon phase agree for everyone** too.
