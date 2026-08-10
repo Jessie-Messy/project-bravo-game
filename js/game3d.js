@@ -1460,20 +1460,29 @@ function treeLeanAxis(tx,ty,out){
   const a=treeFallAngleFor(tx,ty);
   return out.set(Math.sin(a), 0, -Math.cos(a)).normalize();   // ⟂ to the fall direction, so the top tips toward it
 }
-function makeTreeActor(){
+function makeTreeActor(vIdx){
   // Same maps as the standing trees, so a felled trunk matches the forest.
   const tMat=new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0, transparent:true});
-  const cMat=new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0, transparent:true});
-  // Shares the standing forest's merged geometry, so a tree doesn't change
-  // shape at the moment it topples.
-  const trunk=new THREE.Mesh(_trunkGeo, tMat); trunk.position.y=TRUNKH/2; trunk.castShadow=true;
-  const canopy=new THREE.Mesh(_canopyGeo, cMat); canopy.position.y=TRUNKH+TOPH/2; canopy.castShadow=true;
+  const cMat=new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0, transparent:true, vertexColors:true});
+  // Shares the standing forest's merged geometry so a tree doesn't change shape
+  // at the moment it topples. ⚠ There are TREE_VARIANTS crowns now, so the pool
+  // carries one actor per variant and spawnFallingTree picks the one matching
+  // the tile — otherwise every felled tree morphs into variant 0 as it falls.
+  const v=vIdx%TREE_VARIANTS;
+  const trunk=new THREE.Mesh(_trunkGeos[v], tMat); trunk.position.y=TRUNKH/2; trunk.castShadow=true;
+  const canopy=new THREE.Mesh(_canopyGeos[v], cMat); canopy.position.y=TRUNKH+TOPH/2; canopy.castShadow=true;
   const grp=new THREE.Group(); grp.add(trunk,canopy); grp.visible=false; grp.frustumCulled=false; scene.add(grp);
-  return {grp, tMat, cMat, active:false, t:0, dur:0.8, startLean:0, axis:new THREE.Vector3(), tint:null};
+  return {grp, tMat, cMat, variant:v, active:false, t:0, dur:0.8, startLean:0, axis:new THREE.Vector3(), tint:null};
 }
-const _treeActors = Array.from({length:10}, makeTreeActor);
+// Two actors per variant: enough that a couple of trees can fall at once
+// without a felled trunk changing species mid-topple.
+const _treeActors = Array.from({length:TREE_VARIANTS*2}, (_,k)=>makeTreeActor(k));
 function spawnFallingTree(tx,ty,tint){
-  const a=_treeActors.find(x=>!x.active) || _treeActors[0];
+  // Prefer a free actor of the SAME variant as the standing tree; fall back to
+  // any free one rather than dropping the animation.
+  const want=Math.min(TREE_VARIANTS-1, (_gHash(tx,ty,21)*TREE_VARIANTS)|0);
+  const a=_treeActors.find(x=>!x.active && x.variant===want)
+        || _treeActors.find(x=>!x.active) || _treeActors[0];
   a.active=true; a.t=0; a.dur=0.8;
   a.grp.position.set(tx*TILE+TILE/2, 0, ty*TILE+TILE/2);
   treeLeanAxis(tx,ty,a.axis);
