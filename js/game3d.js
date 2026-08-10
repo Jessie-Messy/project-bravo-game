@@ -1110,7 +1110,7 @@ const GRASS_CFG = {
   low:    { radius: 0,  perTile: 0   },
   // Raised ~1.5x with the thinner blade above: a narrower blade covers less, so
   // holding the old counts would thin the field rather than refine it.
-  medium: { radius: 22, perTile: 90  },
+  medium: { radius: 22, perTile: 130 },
   high:   { radius: 30, perTile: 180 },
   ultra:  { radius: 38, perTile: 280 },
 };
@@ -1219,7 +1219,13 @@ function rebuildGrass(){
         // Height variety is what stops a field reading as mown turf. The cubic
         // bias keeps most blades short with a few tall ones standing proud.
         const hv = (0.62 + rr*rr*rr*1.05) * Math.max(0.05, rimH);
-        _gScale.set(1, 1, 1).multiplyScalar(TILE*0.26*hv);
+        // Height and girth must NOT scale together. A uniform multiply makes a
+        // tall blade proportionally fat, which is the opposite of a real sward
+        // and reads as a bunch of leaves; sqrt on x/z keeps tall blades slender
+        // while short ones stay stocky. The shader's per-blade width spread
+        // cannot do this — it cannot see the instance's height.
+        const hw = Math.sqrt(hv);
+        _gScale.set(TILE*0.26*hw, TILE*0.26*hv, TILE*0.26*hw);
         _gM4.compose(_gPos, _gQ, _gScale);
         grassMesh.setMatrixAt(i, _gM4);
         // Tint follows the same low-frequency idea as the terrain macro noise,
