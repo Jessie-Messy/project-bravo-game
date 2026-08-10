@@ -49,7 +49,8 @@ import { createSky } from './render/sky.js';
 import { createWaterMaterial } from './render/water.js';
 import { createComposer } from './render/composer.js';
 import { makeBladeGeometry, makeBladeTexture, makeGrassMaterial } from './render/grass.js';
-import { makeConiferCanopy, makeTrunk, makeBroadleafCanopy, makeBroadleafTrunk } from './render/trees.js';
+import { makeConiferCanopy, makeTrunk, makeBroadleafCanopy, makeBroadleafTrunk,
+         makeBroadleafCanopySet, makeBroadleafTrunkSet } from './render/trees.js';
 // Placed props are InstancedMeshes — one geometry each, drawn in a single call —
 // so a prop built from several boxes has to be MERGED, not grouped. Grouping
 // would multiply the draw calls by the part count and break instancing outright.
@@ -1376,10 +1377,27 @@ const wallMesh  = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardM
 // Broadleaf, not conifer — the painted reference is a deciduous wood: clumped
 // crowns with lit tops and shaded undersides, on forking trunks. The conifer
 // builders are still exported and can be swapped back in here.
-const _canopyGeo = makeBroadleafCanopy(THREE, { height:TOPH, radius:TILE*0.86, lobes:7, seed:20260801 });
-const _trunkGeo  = makeBroadleafTrunk(THREE, { height:TRUNKH, top:7, bottom:13, limbs:3, seed:4242 });
-const trunkMesh = makeMesh(_trunkGeo,  new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0}), nTree+4000);
-const topMesh   = makeMesh(_canopyGeo, new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0}), nTree+4000);
+// FIVE distinct crowns, not one. An InstancedMesh draws a single geometry, so
+// every tree sharing one mesh is literally the same tree — position jitter,
+// spin and scale cannot disguise a repeated silhouette, and that repetition is
+// what reads as artificial in a wood. Five variants means five draw calls for
+// the entire forest, which is nothing next to what it buys.
+const TREE_VARIANTS = 5;
+const _canopyGeos = makeBroadleafCanopySet(THREE, { height:TOPH, radius:TILE*0.86, count:TREE_VARIANTS, seed:20260801 });
+const _trunkGeos  = makeBroadleafTrunkSet(THREE,  { height:TRUNKH, top:7, bottom:13, count:TREE_VARIANTS, seed:4242 });
+// Per-variant meshes. Capacity is split across them with headroom, since the
+// tile hash will not distribute perfectly evenly over a windowed region.
+const _treeCap = Math.ceil((nTree+4000) / TREE_VARIANTS) + 512;
+// vertexColors: the canopy carries a baked top-lit gradient (pale crown, deep
+// underside). Without it the lobe undersides face away from every light and the
+// whole crown renders as one flat dark mass.
+const trunkMeshes = _trunkGeos.map(g => makeMesh(g,
+  new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0}), _treeCap));
+const topMeshes = _canopyGeos.map(g => makeMesh(g,
+  new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0, vertexColors:true}), _treeCap));
+// Kept so the many existing single-mesh references still resolve; variant 0 is
+// the representative one for anything that only needs a material or a handle.
+const trunkMesh = trunkMeshes[0], topMesh = topMeshes[0];
 // ── Canopy wind ───────────────────────────────────────────────────
 // A forest of perfectly still cones reads as scenery, not as a place. This is
 // the cheapest possible fix: a vertex-shader sway, no CPU cost per tree and no
@@ -1396,7 +1414,7 @@ const topMesh   = makeMesh(_canopyGeo, new THREE.MeshStandardMaterial({map:leafT
 // we want to bend, and it keeps leaning (felled) trees correct for free.
 const _windU = { value: 0 };
 const WIND_AMP = 7.0;   // world units of tip travel at full sway
-topMesh.material.onBeforeCompile = (shader) => {
+const _applyCanopyWind = (mat) => { mat.onBeforeCompile = (shader) => {
   shader.uniforms.uWindTime = _windU;
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', '#include <common>\nuniform float uWindTime;')
@@ -1415,9 +1433,15 @@ topMesh.material.onBeforeCompile = (shader) => {
         transformed.x += sway * w;
         transformed.z += sway * w * 0.6;
       }`);
-};
+}; };
+// ⚠ Every variant needs its own patched material, and each needs a DISTINCT
+// cache key or three reuses one compiled program across them.
+topMeshes.forEach((m, i) => { _applyCanopyWind(m.material); m.material.customProgramCacheKey = () => 'canopy-wind-v' + i; });
 
-const treeInstTile = [];   // instance index → packed ty*MAP_W+tx, so a canopy raycast maps back to a tile
+// Per-VARIANT instance→tile maps. With one mesh this was a flat array; a hit now
+// has to be resolved against the mesh it came from, or a canopy click maps to
+// whatever tile happened to share that instance index in another variant.
+const treeInstTiles = Array.from({length:TREE_VARIANTS}, () => []);
 const wallInstTile = [];   // same idea for walls, so clicking a wall FACE finds its tile
 const caveInstTile = [];
 
@@ -1857,7 +1881,11 @@ function rebuildWalls() {
   wallMesh.computeBoundingSphere();   // raycast early-outs on this; stale = missed clicks
 }
 function rebuildTrees() {
-  let i=0; const cap=trunkMesh.instanceMatrix.count, b=_obsBounds();
+  // One counter per variant. `i` is still the running total, used only for the
+  // window cap and the debug count.
+  const vi = new Array(TREE_VARIANTS).fill(0);
+  for(const a of treeInstTiles) a.length = 0;
+  let i=0; const cap=_treeCap*TREE_VARIANTS, b=_obsBounds();
   for(let ty=b.ty0;ty<=b.ty1&&i<cap;ty++) for(let tx=b.tx0;tx<=b.tx1&&i<cap;tx++) {
     if(map[ty][tx]!==T.TREE) continue;
     if(!tileInView(tx,ty)) continue;
@@ -1873,6 +1901,12 @@ function rebuildTrees() {
     // the whole forest twitch as you walk.
     // Jitter stays inside ~a third of a tile so the trunk still sits in the tile
     // that blocks movement — collision is tile-based and is NOT jittered here.
+    // Variant from the TILE hash, like every other per-tree value here: the
+    // window rebuilds constantly and a tree that changed species as you walked
+    // would be far worse than a repeated one.
+    const _tv=Math.min(TREE_VARIANTS-1, (_gHash(tx,ty,21)*TREE_VARIANTS)|0);
+    const _ti=vi[_tv];
+    if(_ti>=_treeCap) continue;
     const jx=(_gHash(tx,ty,11)-0.5)*TILE*0.34;
     const jz=(_gHash(tx,ty,12)-0.5)*TILE*0.34;
     const cx=tx*TILE+TILE/2+jx, cz=ty*TILE+TILE/2+jz;
@@ -1890,26 +1924,25 @@ function rebuildTrees() {
       _leanQ.multiply(_yQ);                  // spin first, then topple
       _leanOff.set(0,th/2,0).applyQuaternion(_leanQ);
       _pos.set(cx+_leanOff.x,gy+_leanOff.y,cz+_leanOff.z);
-      _m4.compose(_pos,_leanQ,_sc1); trunkMesh.setMatrixAt(i,_m4);
+      _m4.compose(_pos,_leanQ,_sc1); trunkMeshes[_tv].setMatrixAt(_ti,_m4);
       _leanOff.set(0,th+oh/2,0).applyQuaternion(_leanQ);
       _pos.set(cx+_leanOff.x,gy+_leanOff.y,cz+_leanOff.z);
-      _m4.compose(_pos,_leanQ,_sc1); topMesh.setMatrixAt(i,_m4);
+      _m4.compose(_pos,_leanQ,_sc1); topMeshes[_tv].setMatrixAt(_ti,_m4);
     } else {
       // Sunk a little: the flared trunk base must bury itself in the slope or
       // an uphill tree shows daylight under its upper side.
       _pos.set(cx,gy+th/2-3,cz);
-      _m4.compose(_pos,_yQ,_sc1); trunkMesh.setMatrixAt(i,_m4);
+      _m4.compose(_pos,_yQ,_sc1); trunkMeshes[_tv].setMatrixAt(_ti,_m4);
       _pos.set(cx,gy+th+oh/2-3,cz);
-      _m4.compose(_pos,_yQ,_sc1); topMesh.setMatrixAt(i,_m4);
+      _m4.compose(_pos,_yQ,_sc1); topMeshes[_tv].setMatrixAt(_ti,_m4);
     }
-    treeInstTile[i]=ty*MAP_W+tx;   // packed int: no per-rebuild object churn
-    i++;
+    treeInstTiles[_tv][_ti]=ty*MAP_W+tx;   // packed int: no per-rebuild object churn
+    vi[_tv]++; i++;
   }
-  treeInstTile.length=i;
-  markInst(trunkMesh,i); markInst(topMesh,i);
+  for(let v=0;v<TREE_VARIANTS;v++){ markInst(trunkMeshes[v],vi[v]); markInst(topMeshes[v],vi[v]); }
   // canopy-chop raycast early-outs on the bounding sphere — refresh it so it
   // matches the new windowed instances (else chopping misses after moving).
-  trunkMesh.computeBoundingSphere(); topMesh.computeBoundingSphere();
+  for(let v=0;v<TREE_VARIANTS;v++){ trunkMeshes[v].computeBoundingSphere(); topMeshes[v].computeBoundingSphere(); }
 }
 function rebuildStones() {
   let i=0; const cap=stoneMesh.instanceMatrix.count, b=_obsBounds();
@@ -4544,14 +4577,20 @@ function worldToScreen(wx, wy, wh=20) {
 // Which tree is the pointer actually over? Raycasts the trunk+canopy meshes
 // so tapping the tall leafy top counts as hitting that tree, not the empty
 // ground its silhouette overlaps. Returns {tx,ty} or null.
-const _treeRayMeshes = [topMesh, trunkMesh];
+const _treeRayMeshes = [...topMeshes, ...trunkMeshes];
 function pickTreeTile(sx, sy) {
   _ndc.set((sx/innerWidth)*2-1, -(sy/innerHeight)*2+1);
   _ray.setFromCamera(_ndc, camera);
   const hits = _ray.intersectObjects(_treeRayMeshes, false);
   for (const h of hits) {
     if (h.instanceId==null) continue;
-    const packed = treeInstTile[h.instanceId];
+    // Resolve against the mesh that was actually hit — instance indices are
+    // per-variant now, so the old flat lookup would map a click to whichever
+    // tile shared that index in a different variant.
+    let vIdx = topMeshes.indexOf(h.object);
+    if(vIdx < 0) vIdx = trunkMeshes.indexOf(h.object);
+    if(vIdx < 0) continue;
+    const packed = treeInstTiles[vIdx][h.instanceId];
     if (packed==null) continue;
     const tx=packed%MAP_W, ty=(packed/MAP_W)|0;   // unpack int → tile
     if (map[ty] && map[ty][tx]===T.TREE) return {tx,ty};
