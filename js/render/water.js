@@ -118,8 +118,10 @@ varying vec3 vWorld;
 // The shallow end is deliberately far brighter than the deep end -- that spread
 // is what makes a river read as water over a visible bed instead of a flat
 // coloured ribbon.
-const vec3 DEEP_COL    = vec3( 0.0132, 0.0243, 0.1526 );
-const vec3 SHALLOW_COL = vec3( 0.0723, 0.6795, 0.6104 );
+// DEEP is a mid indigo-blue, NOT a near-black navy. In the reference even the
+// channel centre stays luminous; darkening it just produces a black ribbon.
+const vec3 DEEP_COL    = vec3( 0.0250, 0.0500, 0.2750 );
+const vec3 SHALLOW_COL = vec3( 0.0900, 0.7200, 0.6400 );
 
 // Coverage -> depth. The ramp only occupies the WEDGE band, so both stops sit
 // inside it; pushing the far stop to 1.0 flattened the whole river to "deep"
@@ -128,8 +130,15 @@ const vec3 SHALLOW_COL = vec3( 0.0723, 0.6795, 0.6104 );
 // map's rivers is roughly 0.52-0.75, not 0.34-0.90, because the field is
 // blurred and then floored at WFIELD_KEEP. With the old stops a river never
 // got past the shallow half of the ramp and read uniformly pale.
-const float DEPTH_LO = 0.30;
-const float DEPTH_HI = 0.66;
+// ⚠ Retuned AGAIN, and the reason is the one already recorded in HANDOFF.md:
+// real river coverage only spans ~0.52-0.75, because the field is blurred then
+// floored at WFIELD_KEEP. With the ramp ending at 0.66 nearly the whole river
+// sat at or past the DEEP stop, so repainting SHALLOW changed nothing visible
+// and repainting DEEP darkened the entire river. The ramp now STARTS at the
+// bottom of the real range and ends far beyond its top, so the surface spends
+// most of its width in the turquoise half and only the middle approaches deep.
+const float DEPTH_LO = 0.52;
+const float DEPTH_HI = 1.15;
 
 // Foam sits just INSIDE the bank. The painted contour is at coverage 0.5,
 // where the quad is already half transparent -- foam centred there mostly
