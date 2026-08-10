@@ -106,6 +106,108 @@ export function makeConiferCanopy(THREE, { height = 100, radius = 34, tiers = 4,
 }
 
 /**
+ * BROADLEAF canopy — clustered lobes, not stacked skirts.
+ *
+ * A conifer reads as a silhouette of gaps between drooping tiers. A broadleaf
+ * reads as MASS: several overlapping rounded clumps that together make one
+ * irregular blob, with the lobes deep enough that the lit tops and shaded
+ * undersides separate. That separation is what gives a painted-looking tree its
+ * volume, and a single sphere never has it however you shade it.
+ *
+ * Lobes are low-poly icosahedra: at this camera distance the facets read as
+ * brush planes rather than as a low-poly artifact, and they cost a fraction of
+ * a smooth sphere. Flattened slightly (y*0.82) because real crowns are wider
+ * than they are tall, and a stack of true spheres reads as grapes.
+ *
+ * Same two constraints as the conifer, both load-bearing:
+ *   • merged to ONE BufferGeometry — topMesh is a single InstancedMesh
+ *   • centred on the origin, spanning -height/2 .. +height/2, or the wind
+ *     shader's `(transformed.y + TOPH*0.5) / TOPH` bends from the wrong place
+ */
+export function makeBroadleafCanopy(THREE, { height = 100, radius = 34, lobes = 7, seed = 5150 } = {}){
+  const rand = rng(seed);
+  const parts = [];
+
+  // One broad lobe low and central carries the mass; the rest ring it and climb,
+  // which is what makes the crown read as one clump rather than a bouquet.
+  for(let i = 0; i < lobes; i++){
+    const first = i === 0;
+    // Normalised height: lower lobes are bigger, upper ones smaller and tighter.
+    const t = first ? 0.18 : 0.15 + (i / lobes) * 0.85;
+    const r = radius * (first ? 0.74 : 0.40 + (1 - t) * 0.34) * (0.85 + rand() * 0.3);
+
+    // Ring placement, jittered. Upper lobes pull toward the axis so the crown
+    // closes at the top instead of staying a torus.
+    const ang = first ? 0 : (i / (lobes - 1)) * Math.PI * 2 + rand() * 0.9;
+    const spread = first ? 0 : radius * (0.52 - t * 0.34) * (0.7 + rand() * 0.6);
+
+    const g = new THREE.IcosahedronGeometry(r, 1);   // detail 1: 42 verts, plenty
+    g.scale(1, 0.82, 1);                             // crowns are wider than tall
+    // Perturb the hull so no two lobes share an outline and the merged
+    // silhouette stops looking like assembled primitives.
+    const pos = g.attributes.position;
+    for(let v = 0; v < pos.count; v++){
+      const k = 1 + (rand() - 0.5) * 0.30;
+      pos.setXYZ(v, pos.getX(v) * k, pos.getY(v) * k, pos.getZ(v) * k);
+    }
+    pos.needsUpdate = true;
+
+    g.translate(Math.cos(ang) * spread,
+                -height * 0.5 + t * height * 0.86,
+                Math.sin(ang) * spread);
+    parts.push(g);
+  }
+
+  const merged = mergeGeometries(parts, false);
+  for(const g of parts) g.dispose();
+  if(!merged) throw new Error('makeBroadleafCanopy: mergeGeometries failed');
+  merged.computeVertexNormals();
+  merged.computeBoundingSphere();
+  return merged;
+}
+
+/**
+ * Trunk that FORKS. A broadleaf's trunk splits into a few leaning limbs that
+ * disappear into the crown; a bare cylinder under a round canopy reads as a
+ * lollipop. The limbs only have to exist where the crown does not quite cover
+ * them — mostly the lower half — so they are cheap cylinders, leaned and
+ * merged in with the shaft.
+ */
+export function makeBroadleafTrunk(THREE, { height = 72, top = 7, bottom = 13, limbs = 3, seed = 777 } = {}){
+  const rand = rng(seed);
+  const parts = [];
+  const shaft = new THREE.CylinderGeometry(top, bottom, height, 8, 1, true);
+  parts.push(shaft);
+
+  const flareH = height * 0.18;
+  const flare = new THREE.CylinderGeometry(bottom, bottom * 1.6, flareH, 8, 1, true);
+  flare.translate(0, -height * 0.5 + flareH * 0.5, 0);
+  roughenCone(flare, rand, 0.10);
+  parts.push(flare);
+
+  // Limbs spring from the upper third and lean outward, ending where the crown
+  // will swallow them.
+  for(let i = 0; i < limbs; i++){
+    const len = height * (0.40 + rand() * 0.22);
+    const g = new THREE.CylinderGeometry(top * 0.42, top * 0.78, len, 6, 1, true);
+    const ang = (i / limbs) * Math.PI * 2 + rand() * 0.7;
+    const lean = 0.52 + rand() * 0.28;               // radians from vertical
+    g.translate(0, len * 0.5, 0);                    // pivot at the limb's base
+    g.rotateZ(lean);
+    g.rotateY(ang);
+    g.translate(0, height * 0.16 + rand() * height * 0.12, 0);
+    parts.push(g);
+  }
+
+  const merged = mergeGeometries(parts, false);
+  for(const g of parts) g.dispose();
+  if(!merged) throw new Error('makeBroadleafTrunk: mergeGeometries failed');
+  merged.computeVertexNormals();
+  merged.computeBoundingSphere();
+  return merged;
+}
+
+/**
  * Trunk with a root flare. The old cylinder met the ground at a hard edge,
  * which is very visible now that grass is dense enough to sit against it.
  * Also merged to one geometry.
