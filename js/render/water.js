@@ -112,8 +112,14 @@ varying vec3 vWorld;
 // Deep is the print's own base navy (#0f2447) taken to linear; shallow is
 // warmer and lighter so the banks read as knee-deep rather than as the same
 // cold channel water pushed up against the grass.
-const vec3 DEEP_COL    = vec3( 0.0261, 0.0648, 0.0684 );
-const vec3 SHALLOW_COL = vec3( 0.0703, 0.2051, 0.2158 );
+// Repainted toward the illustrated reference: bright turquoise shallows falling
+// to a cool indigo in the channel, rather than navy-to-teal. Values are LINEAR
+// (sRGB #48d8cf and #1d2a6b), so they look darker here than the hex suggests.
+// The shallow end is deliberately far brighter than the deep end -- that spread
+// is what makes a river read as water over a visible bed instead of a flat
+// coloured ribbon.
+const vec3 DEEP_COL    = vec3( 0.0132, 0.0243, 0.1526 );
+const vec3 SHALLOW_COL = vec3( 0.0723, 0.6795, 0.6104 );
 
 // Coverage -> depth. The ramp only occupies the WEDGE band, so both stops sit
 // inside it; pushing the far stop to 1.0 flattened the whole river to "deep"
@@ -278,12 +284,16 @@ void main() {
 
     // Foam picks up the sun's tint so it goes amber at dusk with everything
     // else, and never brighter than the ambient allows at night.
-    vec3 foamCol = mix( vec3( 0.78 ), uSunColor, 0.22 ) * mix( 0.22, 1.0, uDayF );
-    col = mix( col, foamCol, clamp( foam * 0.38, 0.0, 1.0 ) );
+    // The painted reference has NO white surf line -- the shore is a bright
+    // turquoise shallow that just gets paler, so the foam is retuned from
+    // whitewater into a light aquamarine wash and its strength cut by more than
+    // half. A white band at this saturation reads as sea foam on a river.
+    vec3 foamCol = mix( vec3( 0.62, 0.93, 0.88 ), uSunColor, 0.18 ) * mix( 0.22, 1.0, uDayF );
+    col = mix( col, foamCol, clamp( foam * 0.16, 0.0, 1.0 ) );
 
     // Whitewater is denser than open water. Still multiplied by coverage
     // below, so the silhouette is untouched.
-    foamAlpha = clamp( foam * 0.30, 0.0, 0.30 );
+    foamAlpha = clamp( foam * 0.14, 0.0, 0.16 );
   }
 
   // -- Alpha -------------------------------------------------------

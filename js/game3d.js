@@ -49,7 +49,7 @@ import { createSky } from './render/sky.js';
 import { createWaterMaterial } from './render/water.js';
 import { createComposer } from './render/composer.js';
 import { makeBladeGeometry, makeBladeTexture, makeGrassMaterial } from './render/grass.js';
-import { makeConiferCanopy, makeTrunk } from './render/trees.js';
+import { makeConiferCanopy, makeTrunk, makeBroadleafCanopy, makeBroadleafTrunk } from './render/trees.js';
 // Placed props are InstancedMeshes — one geometry each, drawn in a single call —
 // so a prop built from several boxes has to be MERGED, not grouped. Grouping
 // would multiply the draw calls by the part count and break instancing outright.
@@ -1107,9 +1107,11 @@ const groundDetail = makeCanvasTex(128,128,(x,w,h)=>{
 // density for ground that's only a few pixels tall on screen.
 const GRASS_CFG = {
   low:    { radius: 0,  perTile: 0   },
-  medium: { radius: 22, perTile: 60  },
-  high:   { radius: 30, perTile: 120 },
-  ultra:  { radius: 38, perTile: 190 },
+  // Raised ~1.5x with the thinner blade above: a narrower blade covers less, so
+  // holding the old counts would thin the field rather than refine it.
+  medium: { radius: 22, perTile: 90  },
+  high:   { radius: 30, perTile: 180 },
+  ultra:  { radius: 38, perTile: 280 },
 };
 const _grassCfg = () => GRASS_CFG[getTier()] || GRASS_CFG.medium;
 // Sized empirically, NOT as radius² × perTile. That worst case assumes every
@@ -1120,7 +1122,12 @@ const _grassCfg = () => GRASS_CFG[getTier()] || GRASS_CFG.medium;
 // unusually open vista just thins slightly rather than breaking.
 const GRASS_MAX = 260000;
 
-const grassGeo = makeBladeGeometry(THREE, { height: 1, width: 0.22, curve: 0.24 });
+// Blade width sits BETWEEN ours and the painted reference. The reference's
+// grass is essentially a fine pile with no readable individual blades; at 0.22
+// ours read as separate spikes. 0.15 keeps a blade legible up close while the
+// field reads as texture at distance. Going finer without raising density just
+// opens gaps and shows the ground through.
+const grassGeo = makeBladeGeometry(THREE, { height: 1, width: 0.15, curve: 0.26 });
 const _grassMat = makeGrassMaterial(THREE, { map: makeBladeTexture(THREE), windAmount: 4.0 });
 const grassMesh = new THREE.InstancedMesh(grassGeo, _grassMat.material, GRASS_MAX);
 grassMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(GRASS_MAX*3), 3);
@@ -1217,8 +1224,13 @@ function rebuildGrass(){
         // Tint follows the same low-frequency idea as the terrain macro noise,
         // so patches of grass agree with the ground they stand in instead of
         // floating over it as a separate green.
+        // Two frequencies: a broad patch tone (>>2 = ~4-tile cells) plus a
+        // per-blade jitter. The reference's ground swings from warm yellow-green
+        // to deep shadowed green across a single clearing; one flat tint is what
+        // made ours read as astroturf.
         const t = _gHash(tx>>2, ty>>2, 7);
-        _gCol.setRGB(0.78 + t*0.34, 0.86 + t*0.22, 0.70 + t*0.20);
+        const j = _gHash(tx, ty, k*3+2) * 0.16 - 0.08;
+        _gCol.setRGB(0.70 + t*0.62 + j, 0.80 + t*0.34 + j*0.6, 0.56 + t*0.30 + j*0.4);
         grassMesh.setColorAt(i, _gCol);
         i++;
       }
@@ -1357,8 +1369,11 @@ const wallMesh  = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardM
 // Stacked-skirt canopy and flared trunk instead of a bare cone on a cylinder.
 // Both merge down to ONE geometry each, so this is the same two draw calls the
 // primitives cost — the tier count is free.
-const _canopyGeo = makeConiferCanopy(THREE, { height:TOPH, radius:TILE*0.72, tiers:4, seed:20260801 });
-const _trunkGeo  = makeTrunk(THREE, { height:TRUNKH, top:9, bottom:12, seed:4242 });
+// Broadleaf, not conifer — the painted reference is a deciduous wood: clumped
+// crowns with lit tops and shaded undersides, on forking trunks. The conifer
+// builders are still exported and can be swapped back in here.
+const _canopyGeo = makeBroadleafCanopy(THREE, { height:TOPH, radius:TILE*0.86, lobes:7, seed:20260801 });
+const _trunkGeo  = makeBroadleafTrunk(THREE, { height:TRUNKH, top:7, bottom:13, limbs:3, seed:4242 });
 const trunkMesh = makeMesh(_trunkGeo,  new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0}), nTree+4000);
 const topMesh   = makeMesh(_canopyGeo, new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0}), nTree+4000);
 // ── Canopy wind ───────────────────────────────────────────────────
