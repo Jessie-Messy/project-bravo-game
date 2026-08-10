@@ -124,7 +124,8 @@ export function makeConiferCanopy(THREE, { height = 100, radius = 34, tiers = 4,
  *   • centred on the origin, spanning -height/2 .. +height/2, or the wind
  *     shader's `(transformed.y + TOPH*0.5) / TOPH` bends from the wrong place
  */
-export function makeBroadleafCanopy(THREE, { height = 100, radius = 34, lobes = 7, seed = 5150 } = {}){
+export function makeBroadleafCanopy(THREE, { height = 100, radius = 34, lobes = 7, seed = 5150,
+                                             lean = 0, spreadBias = 1, topHeavy = 0.5 } = {}){
   const rand = rng(seed);
   const parts = [];
 
@@ -133,13 +134,17 @@ export function makeBroadleafCanopy(THREE, { height = 100, radius = 34, lobes = 
   for(let i = 0; i < lobes; i++){
     const first = i === 0;
     // Normalised height: lower lobes are bigger, upper ones smaller and tighter.
-    const t = first ? 0.18 : 0.15 + (i / lobes) * 0.85;
+    // topHeavy pushes lobe mass up the crown (0 = broad and low, 1 = tall and
+    // clustered near the leader). This is what makes variants read as different
+    // SPECIES rather than the same tree at different sizes.
+    const t = first ? 0.10 + topHeavy * 0.22
+                    : (0.15 + (i / lobes) * 0.85) * (0.72 + topHeavy * 0.5);
     const r = radius * (first ? 0.74 : 0.40 + (1 - t) * 0.34) * (0.85 + rand() * 0.3);
 
     // Ring placement, jittered. Upper lobes pull toward the axis so the crown
     // closes at the top instead of staying a torus.
     const ang = first ? 0 : (i / (lobes - 1)) * Math.PI * 2 + rand() * 0.9;
-    const spread = first ? 0 : radius * (0.52 - t * 0.34) * (0.7 + rand() * 0.6);
+    const spread = first ? 0 : radius * (0.52 - t * 0.34) * (0.7 + rand() * 0.6) * spreadBias;
 
     const g = new THREE.IcosahedronGeometry(r, 1);   // detail 1: 42 verts, plenty
     g.scale(1, 0.82, 1);                             // crowns are wider than tall
@@ -152,9 +157,13 @@ export function makeBroadleafCanopy(THREE, { height = 100, radius = 34, lobes = 
     }
     pos.needsUpdate = true;
 
-    g.translate(Math.cos(ang) * spread,
-                -height * 0.5 + t * height * 0.86,
-                Math.sin(ang) * spread);
+    const yy = -height * 0.5 + t * height * 0.86;
+    // Lean grows with height, so the crown drifts rather than shearing off the
+    // trunk. Real trees rarely sit plumb over their own base.
+    const leanK = lean * (yy + height * 0.5) / height;
+    g.translate(Math.cos(ang) * spread + leanK * radius,
+                yy,
+                Math.sin(ang) * spread + leanK * radius * 0.4);
     parts.push(g);
   }
 
@@ -162,8 +171,71 @@ export function makeBroadleafCanopy(THREE, { height = 100, radius = 34, lobes = 
   for(const g of parts) g.dispose();
   if(!merged) throw new Error('makeBroadleafCanopy: mergeGeometries failed');
   merged.computeVertexNormals();
+
+  // Bake a top-lit gradient into vertex colours: pale at the crown, deep in the
+  // underside. Sunlight alone cannot do this — the lobe undersides face down and
+  // away from every light, so they render as one flat dark mass with no read of
+  // the clumps inside it. Painting it into the geometry costs nothing per frame
+  // and survives instancing, which a per-object tint could not.
+  const pos = merged.attributes.position;
+  const col = new Float32Array(pos.count * 3);
+  for(let v = 0; v < pos.count; v++){
+    const h = (pos.getY(v) + height * 0.5) / height;      // 0 underside .. 1 crown
+    const k = 0.52 + Math.pow(Math.max(0, Math.min(1, h)), 0.75) * 0.78;
+    // Slightly warmer as it lightens, cooler in shadow — a flat grey ramp reads
+    // as dirt on the leaves rather than as light on them.
+    col[v*3]   = k * 1.02;
+    col[v*3+1] = k;
+    col[v*3+2] = k * 0.88;
+  }
+  merged.setAttribute('color', new THREE.BufferAttribute(col, 3));
   merged.computeBoundingSphere();
   return merged;
+}
+
+/**
+ * A set of genuinely different crowns.
+ *
+ * ⚠ An InstancedMesh draws ONE geometry, so every tree sharing `topMesh` is
+ * literally the same crown — jitter, spin and scale cannot hide that, and a
+ * wood of one repeated silhouette is the thing that reads as artificial. Real
+ * trees of a species look alike, not identical. Each variant here gets its own
+ * InstancedMesh (a handful of draw calls for the whole forest), and trees pick
+ * one by tile hash.
+ */
+export function makeBroadleafCanopySet(THREE, { height = 100, radius = 34, count = 5, seed = 5150 } = {}){
+  const shapes = [
+    { lobes: 7, spreadBias: 1.15, topHeavy: 0.30, lean:  0.00 },  // broad, low, spreading oak
+    { lobes: 6, spreadBias: 0.72, topHeavy: 0.78, lean:  0.05 },  // tall and narrow
+    { lobes: 8, spreadBias: 1.00, topHeavy: 0.50, lean: -0.12 },  // full, leaning
+    { lobes: 5, spreadBias: 0.88, topHeavy: 0.62, lean:  0.14 },  // sparse, open
+    { lobes: 9, spreadBias: 1.05, topHeavy: 0.42, lean: -0.04 },  // dense and round
+  ];
+  const out = [];
+  for(let i = 0; i < count; i++){
+    const sh = shapes[i % shapes.length];
+    out.push(makeBroadleafCanopy(THREE, {
+      height: height * (0.86 + (i % 3) * 0.11),
+      radius: radius * (0.84 + ((i + 1) % 3) * 0.13),
+      seed: seed + i * 7919, ...sh,
+    }));
+  }
+  return out;
+}
+
+/** Matching trunk variants — different taper, flare and limb counts. */
+export function makeBroadleafTrunkSet(THREE, { height = 72, top = 7, bottom = 13, count = 5, seed = 777 } = {}){
+  const out = [];
+  for(let i = 0; i < count; i++){
+    out.push(makeBroadleafTrunk(THREE, {
+      height: height * (0.88 + (i % 3) * 0.09),
+      top:    top    * (0.85 + ((i + 2) % 3) * 0.15),
+      bottom: bottom * (0.90 + (i % 2) * 0.20),
+      limbs:  2 + (i % 3),
+      seed:   seed + i * 104729,
+    }));
+  }
+  return out;
 }
 
 /**
