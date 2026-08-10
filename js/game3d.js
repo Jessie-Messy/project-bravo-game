@@ -11512,7 +11512,20 @@ if(MP_ENABLED){
   net.onWorldTime=m=>{ if(m&&m.t) setServerWorldTime(m.t); };
   net.onSave=blob=>{
     if(!blob) return;
-    loadGame(blob);
+    // ⚠ The server stores the save as a JSON STRING (storage.saveBlob writes
+    // JSON.stringify into a TEXT column) and sends that string back verbatim.
+    // loadGame() takes a parsed OBJECT — handed a string it walks properties
+    // that don't exist and quietly loads nothing. Measured: the server logged
+    // "save sent on request: Gideon", the client was online as Gideon, and the
+    // character still came up with default 20 gold. Silent, because loadGame
+    // swallows its own errors. Accept either shape.
+    let s = blob;
+    if(typeof s === 'string'){
+      try { s = JSON.parse(s); }
+      catch(e){ console.warn('[net] server save was unparseable', e); return; }
+    }
+    loadGame(s);
+    recomputeDerivedStats();
     addFloater(player.x,player.y-40,'☁ progress restored from server');
   };
   // shared ground drops
