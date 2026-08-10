@@ -1230,7 +1230,11 @@ function rebuildGrass(){
         // made ours read as astroturf.
         const t = _gHash(tx>>2, ty>>2, 7);
         const j = _gHash(tx, ty, k*3+2) * 0.16 - 0.08;
-        _gCol.setRGB(0.70 + t*0.62 + j, 0.80 + t*0.34 + j*0.6, 0.56 + t*0.30 + j*0.4);
+        // Broad-patch amplitude kept LOW: at 0.62 the 4-tile cells read as
+        // distinct moss blobs with visible seams, not as a meadow. Most of the
+        // variety comes from the per-blade jitter, which breaks up tone without
+        // drawing patch boundaries.
+        _gCol.setRGB(0.86 + t*0.26 + j, 0.92 + t*0.14 + j*0.6, 0.70 + t*0.14 + j*0.4);
         grassMesh.setColorAt(i, _gCol);
         i++;
       }
