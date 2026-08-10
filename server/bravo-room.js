@@ -190,8 +190,19 @@ class BravoRoom extends Room {
       if (!p || typeof blob !== 'object' || blob === null) return;
       try {
         const str = JSON.stringify(blob);
-        if (str.length > 200000) return;
+        // ⚠ This used to `return` silently on an oversized blob, and
+        // storage.saveBlob has the same guard. A player's progress could be
+        // dropped on every single save with no error anywhere — the character
+        // simply never persisted, which is indistinguishable from "the feature
+        // does not work". Log both outcomes so the path is observable.
+        if (str.length > 200000) {
+          console.warn(`[bravo] SAVE REJECTED for ${p.name}: ${str.length} bytes exceeds 200000`);
+          client.send('save_result', { ok: false, error: 'save too large', bytes: str.length });
+          return;
+        }
         storage.saveBlob(p.name, str);
+        console.log(`[bravo] save ok: ${p.name} (${str.length} bytes)`);
+        client.send('save_result', { ok: true, bytes: str.length });
         if (typeof blob.px === 'number' && isFinite(blob.px)) p.x = Math.max(0, Math.min(MAP_W * TILE, blob.px));
         if (typeof blob.py === 'number' && isFinite(blob.py)) p.y = Math.max(0, Math.min(MAP_H * TILE, blob.py));
         if (typeof blob.hp === 'number' && isFinite(blob.hp)) p.hp = Math.max(0, Math.min(9999, blob.hp | 0));
