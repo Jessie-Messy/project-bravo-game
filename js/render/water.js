@@ -120,8 +120,13 @@ varying vec3 vWorld;
 // coloured ribbon.
 // DEEP is a mid indigo-blue, NOT a near-black navy. In the reference even the
 // channel centre stays luminous; darkening it just produces a black ribbon.
-const vec3 DEEP_COL    = vec3( 0.0250, 0.0500, 0.2750 );
-const vec3 SHALLOW_COL = vec3( 0.0900, 0.7200, 0.6400 );
+// Palette and ramp are UNIFORMS, not constants: matching a painted reference is
+// iterative, and recompiling to try a colour means a full reload per guess.
+// Tune live with _dev.water({shallow, deep, lo, hi}); defaults below.
+uniform vec3  uDeepCol;
+uniform vec3  uShallowCol;
+uniform float uDepthLo;
+uniform float uDepthHi;
 
 // Coverage -> depth. The ramp only occupies the WEDGE band, so both stops sit
 // inside it; pushing the far stop to 1.0 flattened the whole river to "deep"
@@ -137,8 +142,7 @@ const vec3 SHALLOW_COL = vec3( 0.0900, 0.7200, 0.6400 );
 // and repainting DEEP darkened the entire river. The ramp now STARTS at the
 // bottom of the real range and ends far beyond its top, so the surface spends
 // most of its width in the turquoise half and only the middle approaches deep.
-const float DEPTH_LO = 0.52;
-const float DEPTH_HI = 1.15;
+
 
 // Foam sits just INSIDE the bank. The painted contour is at coverage 0.5,
 // where the quad is already half transparent -- foam centred there mostly
@@ -203,8 +207,8 @@ void main() {
   vec3 texel = texture2D( uMap, vMapUv * uMapRepeat + uMapOffset ).rgb;
   float texL = dot( texel, vec3( 0.2126, 0.7152, 0.0722 ) );
 
-  float depth = smoothstep( DEPTH_LO, DEPTH_HI, cov );
-  vec3 depthCol = mix( SHALLOW_COL, DEEP_COL, depth );
+  float depth = smoothstep( uDepthLo, uDepthHi, cov );
+  vec3 depthCol = mix( uShallowCol, uDeepCol, depth );
 
   // Multiplying the print into the ramp was the first attempt and it crushed
   // the shallows to mud, because the print is mostly dark navy by area. Mixing
@@ -397,6 +401,14 @@ export function createWaterMaterial( { THREE, renderer, waterTex, maskTex, setti
     uGlint:   { value: s.waterGlint ? 1 : 0 },
     uFresnel: { value: s.waterFresnel ? 1 : 0 },
     uFoam:    { value: s.waterFoam ? 1 : 0 },
+    // Linear-space defaults: sRGB #48d8cf shallow, a mid indigo deep. The ramp
+    // stops match the REAL coverage range a river occupies (~0.52-0.75), not
+    // 0..1 -- see the note in HANDOFF.md; assuming 0..1 pins the whole surface
+    // to the deep stop and makes the shallow colour unreachable.
+    uShallowCol: { value: new THREE.Vector3( 0.0900, 0.7200, 0.6400 ) },
+    uDeepCol:    { value: new THREE.Vector3( 0.0250, 0.0500, 0.2750 ) },
+    uDepthLo:    { value: 0.52 },
+    uDepthHi:    { value: 1.15 },
   } );
 
   if ( waterTex && waterTex.repeat ) uniforms.uMapRepeat.value.copy( waterTex.repeat );
@@ -497,5 +509,21 @@ export function createWaterMaterial( { THREE, renderer, waterTex, maskTex, setti
     uniforms.uEnvMap.value = null;
   }
 
-  return { material, update, setSettings, dispose };
+  // Live palette control for matching reference art without a rebuild.
+  function setPalette(o){
+    o = o || {};
+    const U = material.uniforms;
+    const toLin = hex => {                    // sRGB hex -> linear vec3
+      const c = new THREE.Color(hex); c.convertSRGBToLinear();
+      return new THREE.Vector3(c.r, c.g, c.b);
+    };
+    if(o.shallow !== undefined) U.uShallowCol.value.copy(toLin(o.shallow));
+    if(o.deep    !== undefined) U.uDeepCol.value.copy(toLin(o.deep));
+    if(o.lo      !== undefined) U.uDepthLo.value = o.lo;
+    if(o.hi      !== undefined) U.uDepthHi.value = o.hi;
+    return { shallow:U.uShallowCol.value.toArray().map(n=>+n.toFixed(3)),
+             deep:U.uDeepCol.value.toArray().map(n=>+n.toFixed(3)),
+             lo:U.uDepthLo.value, hi:U.uDepthHi.value };
+  }
+  return { material, update, setSettings, setPalette, dispose };
 }

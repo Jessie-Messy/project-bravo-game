@@ -3906,6 +3906,13 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     return JSON.stringify({ampC:WARP_AMP_C, ampF:WARP_AMP_F, cellC:WARP_CELL_C,
       cellF:WARP_CELL_F, hash:WARP_HASH, reachTiles:WARP_R, rebakeMs:+(performance.now()-t0).toFixed(0)});
   },
+  // Water palette, live. Matching painted reference art is iterative and a
+  // recompile per guess is hopeless — this is the same "tune it in place" idea
+  // as _dev.warp / _dev.macro. Takes sRGB hex, converts to linear internally.
+  //   _dev.water({shallow:'#48d8cf', deep:'#1d2a6b', lo:0.52, hi:1.15})
+  // ⚠ lo/hi are COVERAGE stops and the real range a river occupies is roughly
+  // 0.52-0.75, NOT 0..1. Set hi below ~0.8 and the whole surface pins to deep.
+  water(o){ return JSON.stringify(water.setPalette(o)); },
   // Save observability. The autosave is silent by design, so when a character
   // fails to persist there is nothing to look at — which is exactly the hole
   // that hid the cross-machine bug. saveNow() forces the real save path;
