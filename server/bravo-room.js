@@ -183,6 +183,20 @@ class BravoRoom extends Room {
       this.broadcast('pvp_hit', { from: client.sessionId, to: '' + m.t, w: m.w, dmg: cfg.dmg });
     });
 
+    // Explicit save fetch. onJoin also pushes the blob, but that send happens
+    // while the client is still inside joinOrCreate() and has not yet attached
+    // its onMessage handlers — the message lands with nobody listening and is
+    // dropped. Measured: the server stored the right save and logged the join,
+    // and the joining client still showed a default character. The client asks
+    // for it once its handlers are up, which removes the race entirely.
+    this.onMessage('request_save', (client) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p) return;
+      const blob = storage.loadBlob(p.name);
+      if (blob) { client.send('save', blob); console.log(`[bravo] save sent on request: ${p.name}`); }
+      else console.log(`[bravo] no stored save for ${p.name} (new character)`);
+    });
+
     // full-save sync: the client streams its whole save blob; we persist it
     // and mirror x/y/hp/kills/deaths onto the schema so they survive here too
     this.onMessage('save', (client, blob) => {

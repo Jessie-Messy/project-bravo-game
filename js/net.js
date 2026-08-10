@@ -224,6 +224,13 @@ export async function initNet(getSelfFn) {
       if (net.chatLog.length > 50) net.chatLog.shift();
       if (net.onChat) net.onChat({ name: '', text: m.text, feed: true });
     });
+    // Ask for our save now that every handler above is attached.
+    // ⚠ The server also pushes it from onJoin, but that send happens while we
+    // are still inside joinOrCreate() with no handlers registered, so it is
+    // delivered to nobody and dropped. That is why a character could join with
+    // the right name, against a server holding the right save, and still come
+    // up with a default inventory. Do not remove this in favour of the push.
+    room.send('request_save');
     room.onLeave(() => {
       net.status = 'off'; net.room = null;
       net.remotes.clear(); net.mobs.clear(); updateCount();
