@@ -29,9 +29,28 @@ let getSelf = null, sendAcc = 0, lastSent = null, retryT = null;
 const params = new URLSearchParams(location.search);
 export const MP_ENABLED = params.get('mp') !== 'off';
 
+// The name we join the world under. This MUST be the selected character, not a
+// separate per-browser nickname.
+//
+// ⚠ It used to read only `bravoName`, a key nothing ever wrote except the
+// random fallback below. So picking "Gideon" on the select screen still joined
+// as "Traveler1234": the server claimed THAT name for your account and sent
+// back Traveler's (empty) save — the character you picked never loaded, which
+// defeats the entire point of server-side characters. The active slot is the
+// authority; `bravoName` is only a fallback for a session with no character.
+export function activeCharacterName() {
+  try {
+    const acc = JSON.parse(localStorage.getItem('bravo_account_v1') || 'null');
+    const s = acc && acc.slots && acc.slots[acc.activeSlot || 0];
+    if (s && s.name) return ('' + s.name).slice(0, 16);
+  } catch (_) {}
+  return null;
+}
 export function playerName() {
   const q = params.get('name');
   if (q && q.trim()) return q.trim().slice(0, 16);
+  const chosen = activeCharacterName();
+  if (chosen) return chosen;
   let n = localStorage.getItem('bravoName');
   if (!n) {
     n = 'Traveler' + (1000 + Math.floor(Math.random() * 9000));
@@ -141,9 +160,23 @@ function scheduleRetry() {
   retryT = setTimeout(() => { retryT = null; if (net.status !== 'online') initNet(getSelf); }, 20000);
 }
 
+// Re-join under whatever character is active now. The world connection is
+// opened at boot, BEFORE the player has picked a character, so the first join
+// uses whatever name was active last time (or none). Selecting a character has
+// to move the connection to that character, or you would be standing in the
+// world under the previous one and saving over its blob.
+export async function netRejoinAsActiveCharacter() {
+  if (!MP_ENABLED || !auth.session) return;
+  const want = playerName();
+  if (net.room && net.joinedAs === want) return;      // already the right one
+  try { if (net.room) await net.room.leave(); } catch (_) {}
+  net.room = null; net.remotes.clear();
+  await initNet(getSelf);
+}
+
 export async function initNet(getSelfFn) {
   if (!MP_ENABLED) return;
-  getSelf = getSelfFn;
+  if (getSelfFn) getSelf = getSelfFn;
   net.status = 'connecting';
   try {
     const Colyseus = await loadLib();
@@ -152,8 +185,10 @@ export async function initNet(getSelfFn) {
     // without an account would let the world hand out a character name that
     // nobody owns, which is what the account system exists to prevent.
     if (!auth.session) { net.status = 'offline'; net.error = 'not logged in'; return; }
-    const room = await client.joinOrCreate('bravo', { name: playerName(), session: auth.session });
+    const joinName = playerName();
+    const room = await client.joinOrCreate('bravo', { name: joinName, session: auth.session });
     net.room = room; net.selfId = room.sessionId; net.status = 'online';
+    net.joinedAs = joinName;               // so a character switch knows to re-join
     lastSent = null;                       // force an immediate first send
     room.state.players.onAdd((p, id) => {
       if (id !== room.sessionId) net.remotes.set(id, p);
