@@ -99,7 +99,12 @@ function fromLegacyBlob(name, account, blob) {
 
   if (typeof blob.px === 'number') d.position.x = blob.px;
   if (typeof blob.py === 'number') d.position.y = blob.py;
-  d.vitals.hp = n(blob.hp, 100);
+  // ⚠ HP arrives as a FLOAT: regeneration ticks accumulate fractions, so a
+  // healthy character saves as 100.09985000000003. Stored raw, that logs a
+  // divergence on literally every save and drowns the signal this log exists
+  // for. A health value with 14 decimal places is a client-side artifact, not
+  // state worth arbitrating, so the document holds an integer.
+  d.vitals.hp = Math.round(n(blob.hp, 100));
 
   d.items = Object.assign({}, blob.inv || {});
   // Gold lives in `inv.gold` in the blob but is a wallet concept — separating it
@@ -217,14 +222,25 @@ function ensure(name, account, legacyBlobStr) {
 function diff(doc, blob) {
   const out = [];
   const n = v => (typeof v === 'number' && isFinite(v)) ? v : 0;
-  const cmp = (label, a, b) => { if (a !== b) out.push(`${label}: doc=${a} client=${b}`); };
+  // ⚠ A field the client did NOT SEND is not a divergence — it is silence.
+  // Coercing absent to 0 makes every optional field report a fake delta, and a
+  // log that cries wolf on correct behaviour is worse than no log: the real
+  // signal (an unmodelled mutation) gets lost in it.
+  const cmp = (label, a, b, raw) => {
+    if (raw === undefined || raw === null) return;
+    if (a !== b) out.push(`${label}: doc=${a} client=${b}`);
+  };
 
-  cmp('gold', n(doc.wallet.gold), n(blob.inv && blob.inv.gold));
-  cmp('bank', n(doc.wallet.bank), n(blob.bank && blob.bank.gold));
-  cmp('level', n(doc.progress.level), n(blob.level));
-  cmp('xp', n(doc.progress.xp), n(blob.xp));
-  cmp('hp', n(doc.vitals.hp), n(blob.hp));
+  const rawGold = blob.inv ? blob.inv.gold : undefined;
+  const rawBank = blob.bank ? blob.bank.gold : undefined;
+  cmp('gold', n(doc.wallet.gold), n(rawGold), rawGold);
+  cmp('bank', n(doc.wallet.bank), n(rawBank), rawBank);
+  cmp('level', n(doc.progress.level), n(blob.level), blob.level);
+  cmp('xp', n(doc.progress.xp), n(blob.xp), blob.xp);
+  // Compare vitals at integer resolution for the same reason.
+  cmp('hp', Math.round(n(doc.vitals.hp)), Math.round(n(blob.hp)), blob.hp);
 
+  if (!blob.inv) return out;          // no inventory sent → nothing to compare
   const bi = Object.assign({}, blob.inv || {}); delete bi.gold;
   const keys = new Set([...Object.keys(doc.items || {}), ...Object.keys(bi)]);
   for (const k of keys) {
