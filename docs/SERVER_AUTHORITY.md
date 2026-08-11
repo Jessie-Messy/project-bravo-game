@@ -107,13 +107,55 @@ That is what keeps it feeling responsive — see the latency note at the bottom.
 
 ---
 
+## Decisions taken
+
+Recorded because each one removes a constraint the plan above was written to
+respect, and a later session that does not know they were decided will pay for
+the constraint again.
+
+**Offline play is a demo/tutorial only.** This retires the "Traps" bullet below
+that demanded the transaction functions be pure over the document so the same
+code could run on both sides. Offline is now a tutorial sandbox whose result is
+not imported into a real character, so transactions can live on the server
+alone, in whatever form suits the server. That is a large simplification and it
+should be taken: a dual-side transaction layer is roughly twice the code and
+every divergence between the two halves is an exploit.
+
+*Consequence to hold on to:* nothing a player does offline may ever be promoted
+into an online character. The moment that becomes a feature request, the purity
+constraint comes back with it.
+
+**Kills and deaths are server-owned, and they are reputation.** They feed a
+notoriety/stature system where guards and NPCs treat you according to who you
+are. That makes them the one category the client must never author — posting
+your own kill count would be posting your own standing with every faction. They
+are in the document now (`standing: { kills, deaths, notoriety }`, schema v2)
+even though nothing reads them yet, because retrofitting them once players have
+histories means either discarding those histories or seeding them from client
+numbers, and the second is the trust hole the whole plan exists to close.
+
+*Not yet decided, and does not need to be:* how notoriety is computed. The
+document holds the raw counts; any curve over them can change later without a
+migration.
+
+**Document writes batch on a timer (2s), not per transaction.** Delegated, and
+chosen for playtesting: `better-sqlite3` writes are synchronous on the same
+thread as the mob AI, so per-transaction writes would put a disk write in the
+path of every pickup during a fight. 2s bounds the worst-case loss to a couple
+of actions — acceptable while testing, and small enough that a tester will not
+notice a rollback — while collapsing a busy fight's writes into one. It must be
+paired with a flush on disconnect and on room dispose, or the batch window
+becomes a reliable way to lose the last two seconds of every session.
+
+---
+
 ## Traps specific to this codebase
 
-- **Offline play must keep working.** `?mp=off` and a dropped connection are
-  both supported today. The document model needs a local implementation of the
-  same transactions so single-player is not a second code path with different
-  rules. Design the transaction functions to be *pure* over the document so the
-  same code runs on both sides.
+- ~~**Offline play must keep working.**~~ **RETIRED** — see Decisions above.
+  Offline is a demo/tutorial only, so the transactions do not need to be pure
+  over the document and there is no second implementation to keep in step. A
+  dropped connection still has to fail gracefully; it just no longer has to keep
+  authoring a real character.
 - **`state.js` is edited by multiple sessions** and both `player{}` and `G{}`
   accumulate fields. The character document must not become a mirror of every
   ad-hoc field added there — model deliberately, and keep the rest local.

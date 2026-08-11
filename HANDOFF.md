@@ -16,6 +16,31 @@ handoff is invisible to the next session and causes collisions.
 
 ---
 
+## Where this stands (latest session)
+
+**Production, pre-beta.** Not a prototype any more — the standing instruction is
+to build so nothing has to be redone.
+
+- **Trees: fixed.** Canopies were being built in several disconnected pieces
+  (leaf balls in the sky) and read as broccoli from the game camera. Both fixed;
+  crowns now have a solved mass count, a welded chain, a real scale hierarchy and
+  per-tree colour. See the first four gotchas below — they are the transferable
+  lessons, not tree trivia. Guard: `tools/check_canopy.mjs`.
+- **Server authority: Phase 0 done** (`docs/SERVER_AUTHORITY.md`) — character
+  document + divergence logging, shadow copy only, nothing authoritative yet.
+  **Phase 1 (the transaction API) is the next piece of work.**
+- **Three architecture decisions are recorded** in `docs/SERVER_AUTHORITY.md`
+  under "Decisions taken": offline is demo/tutorial only (this *retires* the
+  dual-side-purity constraint — a large simplification), kills/deaths are
+  server-owned reputation feeding notoriety (`standing`, schema v2), and document
+  writes batch on a 2s timer. Read them before designing Phase 1; each one
+  removes a constraint the plan was originally written to respect.
+- **Blocked on the owner — deploy.** `deploy_server_to_vps.bat`, restart, and
+  ⚠ **nginx must proxy `/auth/*`** the way it already proxies `/bravo-ws`, or
+  accounts will 404 in production while working perfectly locally.
+
+---
+
 ## Graphics overhaul — COMMITTED and on `master`
 
 ⚠ This section used to read "IN PROGRESS — branch `graphics-overhaul`, UNCOMMITTED".
@@ -753,6 +778,32 @@ copy never arriving. Server-owned characters removed that cover.
 ---
 
 ## Known gotchas / things that bit us
+- ⚠ **Overhead renders cannot validate 3D art. Take a low shot.** Four of the five
+  tree canopy variants were built in *more than one piece* — one was in three — so the
+  wood had leaf balls hanging in the sky with nothing under them. Every overhead 3/4
+  render looked correct, because from above a detached lobe still lands on the crown's
+  footprint. It only showed in a deliberate low-pitch shot, and only for whichever
+  trees happened to be in frame. `tools/check_canopy.mjs` now asserts it geometrically
+  (one connected blob + inside the height box) in about a second with no renderer —
+  **run it after any change to `js/render/trees.js`.** It needs a local three.js:
+  `node tools/check_canopy.mjs /path/to/three/build`.
+- ⚠ **Measure procedural art at the dimensions the GAME builds it at.** The same
+  canopy check passed at the probe's convenient `height:100, radius:34` and failed at
+  the real `TOPH:146, TILE*0.86:41.3` — the shape table scales height and radius
+  *independently*, so a variant that is 1.10× tall and 0.74× wide has a completely
+  different mass-count requirement. A probe with tidy round numbers is not a probe.
+- ⚠ **A "fit to box" solve that picks its extremes before scaling is wrong.** It
+  bit twice in one session: the canopy fit chose the highest/lowest lobe from the
+  unscaled layout, then moved everything, and a lobe with a lower centre but a bigger
+  radius overtook the one the solve was pinned to. Once it undershot 20%, once it
+  overshot 13%, and both times it read as a bad constant. Iterate to a fixed point
+  (re-pick the extremes under the current fit, re-solve, ~3 passes) and it stays
+  correct when the layout changes.
+- ⚠ **The fit can be "satisfied" by the very lobe that is broken.** The canopy
+  reached its height box only because a *detached* lobe was sitting at the extreme.
+  Fixing the detachment made the fit numbers look worse, which is the fit finally
+  measuring the real crown. A geometric invariant that passes because of a defect is
+  worse than no invariant.
 - **`constants.js` crash**: an unclosed object literal in `RACES` (missing `}`) took the whole game down (every module failed to import). If the game shows a blank page, syntax-check `constants.js` first: `node --input-type=module -e "import('./js/constants.js').then(()=>console.log('ok')).catch(e=>console.log(e.message))"`.
 - **Naming collisions across sessions**: my char-panel `CHAR_W/CHAR_H` collided with the existing character-model-height `CHAR_H`. Renamed panel consts to `CHARP_W/CHARP_H`. Grep before adding top-level consts.
 - **`state.js` is edited by multiple sessions** — merge its `player{}` and `G{}` carefully; both sessions add fields there.
