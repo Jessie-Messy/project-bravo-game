@@ -7,6 +7,7 @@ const { Room } = require('colyseus');
 const { Schema, MapSchema, defineTypes } = require('@colyseus/schema');
 const storage = require('./storage.js');
 const accounts = require('./accounts.js');
+const character = require('./character.js');
 const { MobSim, world } = require('./mobs.js');
 
 // Must match the client's constants.js
@@ -197,6 +198,19 @@ class BravoRoom extends Room {
       else console.log(`[bravo] no stored save for ${p.name} (new character)`);
     });
 
+    // The document, on request. Same reason request_save exists: a send from
+    // onJoin lands before the client has attached its handlers and is dropped.
+    this.onMessage('request_character', (client) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p) return;
+      try {
+        const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', storage.loadBlob(p.name));
+        client.send('character_state', doc);
+      } catch (e) {
+        console.warn(`[character] request failed for ${p.name}: ${e.message}`);
+      }
+    });
+
     // full-save sync: the client streams its whole save blob; we persist it
     // and mirror x/y/hp/kills/deaths onto the schema so they survive here too
     this.onMessage('save', (client, blob) => {
@@ -217,6 +231,19 @@ class BravoRoom extends Room {
         storage.saveBlob(p.name, str);
         console.log(`[bravo] save ok: ${p.name} (${str.length} bytes)`);
         client.send('save_result', { ok: true, bytes: str.length });
+        // PHASE 0 divergence log. Every field listed here is a mutation the
+        // client performed that the server did not model -- which is exactly
+        // the list Phase 1's transaction API has to cover. Phase 1 should not
+        // start on a field while it is still noisy here.
+        try {
+          const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', null);
+          const d = character.diff(doc, blob);
+          if (d.length) console.log(`[character] DIVERGENCE ${p.name}: ${d.slice(0, 12).join(' | ')}`
+            + (d.length > 12 ? ` (+${d.length - 12} more)` : ''));
+          character.save(p.name, character.adoptFromBlob(doc, blob));
+        } catch (e) {
+          console.warn(`[character] shadow update failed for ${p.name}: ${e.message}`);
+        }
         if (typeof blob.px === 'number' && isFinite(blob.px)) p.x = Math.max(0, Math.min(MAP_W * TILE, blob.px));
         if (typeof blob.py === 'number' && isFinite(blob.py)) p.y = Math.max(0, Math.min(MAP_H * TILE, blob.py));
         if (typeof blob.hp === 'number' && isFinite(blob.hp)) p.hp = Math.max(0, Math.min(9999, blob.hp | 0));
@@ -524,6 +551,17 @@ class BravoRoom extends Room {
     this.state.players.set(client.sessionId, p);
     const blob = storage.loadBlob(name);   // server-side save (source of truth online)
     if (blob) client.send('save', blob);
+    // PHASE 0 (docs/SERVER_AUTHORITY.md): build the server-side character
+    // document, importing from the legacy blob the first time we see this
+    // character. Nothing is authoritative yet -- the client still writes its own
+    // save and still wins. This is a shadow copy whose only job right now is to
+    // exist and to be compared against, so Phase 1 is built on a complete
+    // picture rather than on guesses about what the client mutates.
+    try {
+      character.ensure(name, (client.auth && client.auth.username) || '', blob);
+    } catch (e) {
+      console.warn(`[character] ensure failed for ${name}: ${e.message}`);
+    }
     // Authoritative world clock, so every client shares one sky. Clients used
     // to start their own day at 00:00 on page load, meaning two players stood
     // side by side in different lighting.

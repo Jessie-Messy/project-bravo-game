@@ -18,6 +18,8 @@ export const net = {
   onHouses: null,       // full shared-house list from the server
   onPlacedObjects: null, // persistent shared placed objects from the server (torches, lanterns, etc.)
   onSave: null,         // server-side save blob to apply on join
+  character: null,      // PHASE 0 shadow document (not authoritative yet)
+  onCharacter: null,
   onWorldTime: null,    // authoritative world clock {t} — keeps everyone's sky in sync
   onDropAdd: null, onDropGone: null, onDropGot: null,   // shared ground drops
   onTradeInvite: null, onTradeStart: null, onTradeUpdate: null, onTradeDone: null, onTradeEnd: null,
@@ -224,6 +226,12 @@ export async function initNet(getSelfFn) {
       if (net.chatLog.length > 50) net.chatLog.shift();
       if (net.onChat) net.onChat({ name: '', text: m.text, feed: true });
     });
+    // PHASE 0 (docs/SERVER_AUTHORITY.md): pull the server's character document
+    // alongside the save. Nothing reads it authoritatively yet -- it is a shadow
+    // copy, and having the client hold it makes the divergence visible on this
+    // side too rather than only in the server log.
+    room.onMessage('character_state', doc => { net.character = doc; if (net.onCharacter) net.onCharacter(doc); });
+    room.send('request_character');
     // Ask for our save now that every handler above is attached.
     // ⚠ The server also pushes it from onJoin, but that send happens while we
     // are still inside joinOrCreate() with no handlers registered, so it is
