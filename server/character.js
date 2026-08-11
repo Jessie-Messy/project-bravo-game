@@ -21,7 +21,7 @@ const JSON_FILE = path.join(DATA_DIR, 'characters.json');
 // Bump when the shape changes and add a migration step. A character written by
 // an older server must keep loading — beta players will have documents from
 // every version we ship.
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 let db = null;
 try {
@@ -79,6 +79,15 @@ function blank(name, account) {
     gear:     { items: [], equipped: { weapon: null, armor: null } },
     artifacts:{ inv: [], equipped: {} },
     flags:    { dungeonBest: 1, floorBossesDown: {}, chestsLooted: {}, contractRank: 0 },
+    // ⚠ Server-owned from the start, and deliberately here before anything reads
+    // it. Kills and deaths feed a notoriety/stature system where guards and NPCs
+    // react to who you are, which makes them REPUTATION, not statistics — the
+    // one category a client must never be able to author, since posting your own
+    // kill count would be posting your own standing with every faction.
+    // Modelling them now costs nothing; retrofitting them after players have
+    // histories means either discarding those histories or trusting client
+    // numbers to seed them.
+    standing: { kills: 0, deaths: 0, notoriety: 0 },
   };
 }
 
@@ -166,6 +175,15 @@ function migrate(d) {
   // Never mutate in place without raising the version — a half-migrated
   // document that still claims the old version is unrecoverable.
   d.schemaVersion = d.schemaVersion || 1;
+  // v1 → v2: standing (kills/deaths/notoriety). Purely additive, so existing
+  // documents take the zeroed record. Deliberately NOT seeded from the client
+  // save even though the client has been counting kills locally — see the note
+  // on `standing` in blank(): seeding reputation from a client number is the
+  // same trust hole as letting the client post it.
+  if (d.schemaVersion < 2) {
+    d.standing = { kills: 0, deaths: 0, notoriety: 0 };
+    d.schemaVersion = 2;
+  }
   return d;
 }
 
