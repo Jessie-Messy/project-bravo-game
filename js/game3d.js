@@ -1401,6 +1401,18 @@ const trunkMeshes = _trunkGeos.map(g => makeMesh(g,
   new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0}), _treeCap));
 const topMeshes = _canopyGeos.map(g => makeMesh(g,
   new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0, vertexColors:true}), _treeCap));
+// ⚠ Per-TREE colour, on top of the per-lobe bake. Five variants is enough
+// silhouette variety, but every crown still came out the same VALUE, and from
+// the overhead camera a stand of same-valued crowns fuses into one green mat
+// with no gap between one tree and the next — measured as the single worst
+// thing about the forest, ahead of crown shape. instanceColor multiplies the
+// vertex colours in the shader, so a hash-driven jitter per tile separates
+// neighbours for free. Real stands vary far more than this; ±9% value is the
+// most that stays inside one species.
+topMeshes.forEach(m => {
+  m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(_treeCap*3), 3);
+  m.instanceColor.setUsage(THREE.DynamicDrawUsage);
+});
 // Kept so the many existing single-mesh references still resolve; variant 0 is
 // the representative one for anything that only needs a material or a handle.
 const trunkMesh = trunkMeshes[0], topMesh = topMeshes[0];
@@ -1461,6 +1473,7 @@ const TREE_MAX_LEAN = 0.34;          // how far a near-dead standing tree tilts 
 const TREE_FALL_ANGLE = Math.PI * 0.5;   // flat on the ground
 const _leanQ = new THREE.Quaternion(), _leanAxis = new THREE.Vector3(), _leanOff = new THREE.Vector3();
 const _yQ = new THREE.Quaternion();   // per-tree spin, see rebuildTrees
+const _treeCol = new THREE.Color();   // scratch for per-tree crown tint
 function treeFallAngleFor(tx,ty){ return _terrNoise(tx*13+1, ty*7+3) * Math.PI * 2; }
 function treeLeanAxis(tx,ty,out){
   const a=treeFallAngleFor(tx,ty);
@@ -1951,10 +1964,20 @@ function rebuildTrees() {
       _pos.set(cx,gy+th+oh/2-3,cz);
       _m4.compose(_pos,_yQ,_sc1); topMeshes[_tv].setMatrixAt(_ti,_m4);
     }
+    // Per-tree crown colour (see the instanceColor note at the mesh). Value and
+    // hue come off the same tile hash as everything else here, so a tree keeps
+    // its colour as the window rebuilds under the player.
+    const _cv = 0.91 + _gHash(tx,ty,16)*0.18;          // value: ±9%
+    const _ch = (_gHash(tx,ty,17)-0.5)*0.10;           // hue: lime ↔ blue-green
+    _treeCol.setRGB(_cv*(1+_ch), _cv, _cv*(1-_ch*1.2));
+    topMeshes[_tv].setColorAt(_ti,_treeCol);
     treeInstTiles[_tv][_ti]=ty*MAP_W+tx;   // packed int: no per-rebuild object churn
     vi[_tv]++; i++;
   }
-  for(let v=0;v<TREE_VARIANTS;v++){ markInst(trunkMeshes[v],vi[v]); markInst(topMeshes[v],vi[v]); }
+  for(let v=0;v<TREE_VARIANTS;v++){
+    markInst(trunkMeshes[v],vi[v]); markInst(topMeshes[v],vi[v]);
+    _markAttr(topMeshes[v].instanceColor, vi[v]*3);    // 3 floats per colour
+  }
   // canopy-chop raycast early-outs on the bounding sphere — refresh it so it
   // matches the new windowed instances (else chopping misses after moving).
   for(let v=0;v<TREE_VARIANTS;v++){ trunkMeshes[v].computeBoundingSphere(); topMeshes[v].computeBoundingSphere(); }
