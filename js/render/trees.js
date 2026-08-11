@@ -180,61 +180,101 @@ export function makeBroadleafCanopy(THREE, { height = 100, radius = 34, lobes = 
   // apart vertically — a holey crown that still didn't reach the top of the box.
   const RY = height * (0.42 + topHeavy * 0.20);
   const nOuter = Math.max(4, lobes - 1);
-  // Fewer, bigger majors. Painted foliage has a SCALE HIERARCHY — two or three
-  // masses that carry the form and a scatter of small accents on top of them.
-  // An even mix of middling clumps averages back out into one bumpy surface.
-  const nMajor = Math.max(2, Math.ceil(nOuter * 0.40));
+  // ⚠ MEASURED: the previous split (nMajor = 40% of the shell, majors at 0.50·r
+  // and minors at 0.26·r, both sitting at place≈0.62) rendered the whole wood as
+  // BROCCOLI — from the game's overhead 3/4 camera every crown was a dozen
+  // similar bumps, each with its own lit cap, and no tree had a silhouette. The
+  // sizes were within ~2× of each other, which is not a hierarchy: a hierarchy
+  // needs the accents to be too small to compete with the masses.
+  //
+  // What replaces it is a different STRUCTURE, not different numbers:
+  //   • a few big majors sunk INTO the core so they fuse into one mass, and
+  //   • small accents pushed right out to the rim, where all they do is nibble
+  //     the outline.
+  // From above that reads as one lobed dome with a ragged edge — a painted tree
+  // — instead of a shell of separate balls.
+  //
+  // ⚠ The COUNT is SOLVED, not chosen. A connected chain of masses can only span
+  // so much: each weld step below covers 0.80·(r₁+r₂) ≈ 1.41·r̄ once the 0.88 y
+  // squash is counted, plus about 1.14·radius of end caps. The crown must span
+  // wantHi-wantLo = 1.10·height. Set the count below what that needs and the
+  // crown CANNOT be continuous at any placement — which is exactly how leaf balls
+  // ended up hanging in the sky.
+  //
+  // This has to be a formula rather than a constant because the shape table
+  // varies height and radius independently: the "upright column" variant is
+  // 1.10× tall and 0.74× wide, so it needs six masses where the broad oak needs
+  // three. A flat cap of 4 (an attempt to fight a broccoli look) left it
+  // physically unable to hold together — and it measured fine at the probe's
+  // dimensions while failing at the game's, which is why the check below runs at
+  // the real TOPH and TILE values.
+  //
+  // Broccoli was never caused by the count anyway — it was caused by every lobe
+  // being the same SIZE. Six big overlapping masses read as one lobed blob;
+  // twelve middling ones read as gravel.
+  const rBar   = 0.58 * radius;                       // mean major radius, empirical
+  const needed = Math.ceil((1.10 * height - 1.14 * radius) / Math.max(1e-3, 1.41 * rBar));
+  const nMajor = Math.max(4, Math.min(8, Math.max(Math.round(nOuter * 0.55), needed)));
 
   // The core: one broad mass low in the crown that everything else sits on.
   spec.push({ x: 0, y: -height * 0.10, z: 0,
-              r: radius * (0.58 + (1 - topHeavy) * 0.12), det: 1, flat: 0.86 });
+              r: radius * (0.64 + (1 - topHeavy) * 0.12), det: 1, flat: 0.86 });
 
-  for(let i = 0; i < nOuter; i++){
-    // Golden-angle spiral over the dome. The old placement put every lobe on one
-    // ring (`ang = i/(n-1) * 2π`), which from a 57° camera reads as a torus of
-    // bumps with a bald patch on top; a spiral spreads clumps over the whole
-    // upper surface, so the crown has clumps against the sky AND clumps at the
-    // skirt, which is what makes it read as a dome of separate masses.
-    const u  = (i + 0.5) / nOuter;
-    const cy = 1 - u * (1.25 + droop * 0.55);        // +1 crown .. ~-0.6 skirt
+  // ── The masses ──────────────────────────────────────────────────
+  // Golden-angle spiral over the dome. The old placement put every lobe on one
+  // ring (`ang = i/(n-1) * 2π`), which from a 57° camera reads as a torus of
+  // bumps with a bald patch on top; a spiral spreads the masses over the whole
+  // upper surface, so the crown has mass against the sky AND mass at the skirt.
+  //
+  // ⚠ Built BOTTOM-UP (u runs 1→0), and that ordering is what keeps the crown
+  // tall. The weld below attaches each mass to the nearest one already placed,
+  // so build order is chain order. Top-down put the highest mass first with only
+  // the low-sitting core to attach to, and the weld dragged it down to the core —
+  // the tall narrow variants lost 37 units off the top and came out as shrubs.
+  // Bottom-up, each mass attaches to the one just beneath it and the chain climbs.
+  const masses = [spec[0]];
+  for(let i = 0; i < nMajor; i++){
+    const u  = 1 - (i + 0.5) / nMajor;
+    const cy = 1 - u * (1.25 + droop * 0.55);        // ~-0.6 skirt .. +1 crown
     const sy = Math.sqrt(Math.max(0, 1 - cy * cy));
     const th = i * 2.399963 + rand() * 0.55;         // golden angle, jittered
 
-    // Big and small clumps INTERLEAVED around the spiral (Bresenham-style), not
-    // big-then-small: a crown whose large masses are all on one side reads as a
-    // mistake rather than as character.
-    const major = ((i * nMajor) % nOuter) < nMajor;
-
-    // ⚠ Clump radius is the knob that decides whether the crown reads as MASSES
-    // or as SPECKLE, and 0.36/0.23 was on the wrong side of it. On a shell of
-    // ~11 clumps the mean centre-to-centre spacing is about 0.7·radius, so any
-    // clump narrower than that leaves its neighbours standing apart: the render
-    // came back as a pepper of small pale caps over dark gaps rather than a few
-    // big lobes. These overlap by roughly a third, which is what fuses them into
-    // one lobed surface while still leaving a crease between.
-    const r = radius * (major ? 0.50 : 0.26) * (1 + (1 - cy) * 0.18) * (0.86 + rand() * 0.28);
-    // Sit the clump most of the way out along the crown surface so it BULGES
-    // past the core rather than sinking into it — the gap between neighbouring
-    // bulges is the shadow that separates them.
-    const place = 0.62 + rand() * 0.16;
-    // One clump in five breaks ranks and stands proud of the crown surface. A
-    // crown whose lobes all sit on one shell has a circular outline however
-    // lumpy it is, and a wood of circles is the repetition the eye catches from
-    // the game camera — where you mostly see crowns from ABOVE, so the outline
-    // is nearly all of what a tree is.
-    const rogue = rand() < 0.20;
-    const out   = place * (cy < 0 ? 1 + droop * 0.34 : 1) * (rogue ? 1.26 : 1);
-    spec.push({
+    // Majors are nearly 4× the accents, not 2×. That gap is the whole point: at
+    // 2× the eye counts twelve bumps, at 4× it reads three masses with texture
+    // on them.
+    const r = radius * 0.56 * (1 + (1 - cy) * 0.18) * (0.86 + rand() * 0.28);
+    // ⚠ Majors sit CLOSE IN — they must fuse with the core into one mass. A
+    // major parked out at 0.62 stands off as its own ball, which is what made
+    // the crown a shell of separate spheres.
+    const place = 0.42 + rand() * 0.12;
+    // ⚠ HORIZONTAL placement and VERTICAL placement are not the same number, and
+    // sharing one was a measured mistake: pulling the majors in also pulled them
+    // DOWN, which left the low-sitting core owning the crown's whole visible top
+    // surface. The core is deep on the height ramp, so the wood came back a stop
+    // darker and muddier than the version it replaced — a lighting regression
+    // caused entirely by a geometry change. Majors keep their height while they
+    // move in, so they still bulge above the core and catch the top light.
+    const placeY = 0.74 + rand() * 0.14;
+    const out = place * (cy < 0 ? 1 + droop * 0.34 : 1);
+    const m = {
       x: Math.cos(th) * sy * RX * out,
-      y: cy * RY * place * (0.92 + rand() * 0.16) + (rogue ? r * 0.30 : 0),
+      y: cy * RY * placeY * (0.92 + rand() * 0.16),
       z: Math.sin(th) * sy * RX * out,
       // Skirt clumps keep their bellies. Squashing the underside is right for
       // the clumps you see from above, but doing it to the skirt as well cut the
       // whole crown off flat and made the tree a mushroom cap on a pole — very
       // obvious from any low camera angle.
-      r: r * (rogue ? 0.84 : 1), det: major ? 1 : 0, flat: cy < 0 ? 0.95 : 0.74,
-    });
+      r, det: 1, flat: cy < 0 ? 0.95 : 0.74,
+    };
+    spec.push(m); masses.push(m);
   }
+
+  // ⚠ ORDERING, and it is load-bearing: masses are laid out, then FITTED to the
+  // height box, then welded together, and only then do the accents get placed
+  // onto the final mass positions. The fit rescales y, so anything anchored to a
+  // mass before the fit gets pulled off it by (kY-1)·offset; and the weld has to
+  // run after the fit for the same reason. Placing accents last is what makes
+  // "an accent is always attached" true rather than usually true.
 
   // Fit the crown to the height box. Parameter combinations that fill only two
   // thirds of it made the tree look stunted (game3d still positions the canopy
@@ -250,16 +290,19 @@ export function makeBroadleafCanopy(THREE, { height = 100, radius = 34, lobes = 
   // ⚠ Solve the stretch on the CENTRES ALONE, discounting the two extreme lobes'
   // radii. The obvious version — kY = wantSpan / (yHi - yLo) — is wrong, because
   // scaling the centres by kY does not scale the lobe radii with them, so the
-  // crown always came out (kY-1)·radii SHORT: measured 54 units of a 67-unit
-  // target at the top, which looked like the clamp binding and was not.
-  let loI = spec[0], hiI = spec[0], loV = Infinity, hiV = -Infinity;
+  // crown always came out (kY-1)·radii SHORT.
+  //
+  // ⚠ And solve it ITERATIVELY. A single pass picks the extreme lobes from the
+  // UNSCALED layout and then moves everything, which changes which lobe is
+  // extreme — a lobe with a lower centre but a bigger radius overtakes the one
+  // the solve was pinned to, and the crown misses its box in whichever direction
+  // that swap went. That is not a tuning error, it is the single-pass solve being
+  // wrong whenever the layout changes, and it bit twice (once short at the top,
+  // then 13% long once the accents moved out to the rim). Re-picking the extremes
+  // under the current fit and re-solving converges in two or three passes and
+  // stays correct for any future layout.
   const belowOf = s => s.r * 0.88 * s.flat * 1.12;
   const aboveOf = s => s.r * 0.88 * 1.12;
-  for(const s of spec){
-    const lo = s.y - belowOf(s), hi = s.y + aboveOf(s);
-    if(lo < loV){ loV = lo; loI = s; }
-    if(hi > hiV){ hiV = hi; hiI = s; }
-  }
   // ⚠ The crown deliberately hangs BELOW its own box. At -0.52 the skirt stopped
   // level with the top of the trunk, which from a low camera is a cap on a pole:
   // 40% of every tree was bare bole. A broadleaf's foliage starts around a third
@@ -267,10 +310,85 @@ export function makeBroadleafCanopy(THREE, { height = 100, radius = 34, lobes = 
   // Nothing breaks — the wind shader's hFrac clamps to 0 down there, and a
   // skirt clump that doesn't sway is correct anyway.
   const wantLo = -height * 0.64, wantHi = height * 0.46;
-  const span  = (wantHi - aboveOf(hiI)) - (wantLo + belowOf(loI));
-  const kY = Math.max(0.70, Math.min(2.20, span / Math.max(1e-3, hiI.y - loI.y)));
-  const offY = wantLo + belowOf(loI) - kY * loI.y;
+  let kY = 1, offY = 0;
+  for(let it = 0; it < 8; it++){
+    let loI = spec[0], hiI = spec[0], loV = Infinity, hiV = -Infinity;
+    for(const s of spec){
+      const y = s.y * kY + offY;
+      if(y - belowOf(s) < loV){ loV = y - belowOf(s); loI = s; }
+      if(y + aboveOf(s) > hiV){ hiV = y + aboveOf(s); hiI = s; }
+    }
+    // Already inside a tenth of a unit at both ends — re-solving can only chatter.
+    if(Math.abs(loV - wantLo) < 0.1 && Math.abs(hiV - wantHi) < 0.1) break;
+    const dy = hiI.y - loI.y;
+    if(Math.abs(dy) < 1e-3) break;            // one lobe owns both extremes
+    const span = (wantHi - aboveOf(hiI)) - (wantLo + belowOf(loI));
+    kY   = Math.max(0.70, Math.min(2.20, span / dy));
+    offY = wantLo + belowOf(loI) - kY * loI.y;
+  }
   for(const s of spec) s.y = s.y * kY + offY;
+
+  // ── Weld the masses into one connected blob ─────────────────────
+  // ⚠ THIS is what was putting leaf balls in the sky, and every overhead shot
+  // missed it — from above a detached lobe still lands on the crown's footprint,
+  // so only the low camera ever showed it. It was never the accents: the MAJORS
+  // were separating from the core. The numbers are not close. The canopy box is
+  // TOPH ≈ 146 units tall while the crown radius is only ~41, so the masses have
+  // to bridge ~160 units of height with radii of ~23–26; the top major sat ~73
+  // units from the core against ~49 units of combined radius, and simply hung
+  // there. No choice of RY or `place` fixes that for every shape in the table —
+  // a tall narrow variant will always be able to pull its masses apart.
+  //
+  // So contact is enforced rather than hoped for. Each mass in turn is pulled
+  // along the line toward whichever ALREADY-WELDED mass is nearest until the two
+  // overlap by a fifth of their combined radius. Direction is preserved, so the
+  // dome layout above still decides where the masses sit; only the distance is
+  // corrected, and only when it is too far.
+  for(let i = 1; i < masses.length; i++){
+    const s = masses[i];
+    let hostS = masses[0], hostD = Infinity;
+    for(let j = 0; j < i; j++){
+      const h = masses[j];
+      const d = Math.hypot(s.x - h.x, (s.y - h.y) * 0.88, s.z - h.z);
+      if(d < hostD){ hostD = d; hostS = h; }
+    }
+    const want = (hostS.r + s.r) * 0.80;
+    if(hostD > want && hostD > 1e-3){
+      const t = want / hostD;                  // slide toward the host, keep direction
+      s.x = hostS.x + (s.x - hostS.x) * t;
+      s.y = hostS.y + (s.y - hostS.y) * t;
+      s.z = hostS.z + (s.z - hostS.z) * t;
+    }
+  }
+
+  // ── The accents ─────────────────────────────────────────────────
+  // ⚠ Each accent is anchored ON a mass, at 0.85 of that mass's radius from its
+  // centre. Contact is guaranteed by construction — the accent's centre sits
+  // inside 0.85r + 0.45r of the host, well under the r + accent-r it needs to
+  // intersect. The previous version placed them out at 0.86–1.02 of the crown
+  // radius by the same spiral as the masses, which detached them whenever no
+  // mass happened to lie in that direction.
+  const nAcc = Math.max(0, nOuter - nMajor);
+  for(let i = 0; i < nAcc; i++){
+    // Round-robin over the hosts (core included) so accents do not pile onto one
+    // side of the crown.
+    const host = masses[(i + 1) % masses.length];
+    // Point the accent AWAY from the trunk axis — that is the direction where it
+    // breaks the silhouette rather than disappearing inside the crown.
+    const hlen = Math.hypot(host.x, host.z);
+    const bth  = hlen > 1e-3 ? Math.atan2(host.z, host.x) : rand() * Math.PI * 2;
+    const th   = bth + (rand() - 0.5) * 1.7;
+    // Elevation biased upward: foliage accents ride the lit shoulder of a mass,
+    // and one hanging off the underside would only be seen as a wart.
+    const el   = -0.25 + rand() * 1.15;
+    const d    = host.r * 0.85;
+    spec.push({
+      x: host.x + Math.cos(th) * Math.cos(el) * d,
+      y: host.y + Math.sin(el) * d,
+      z: host.z + Math.sin(th) * Math.cos(el) * d,
+      r: host.r * 0.30 * (0.80 + rand() * 0.50), det: 0, flat: 0.80,
+    });
+  }
 
   // ── Pass 2: build and place the lobes ───────────────────────────
   const parts = [], meta = [];
@@ -336,7 +454,17 @@ export function makeBroadleafCanopy(THREE, { height = 100, radius = 34, lobes = 
       // the whole wood sank a stop — dark and flat, worse than the blob it
       // replaced. 0.22 still carves the gaps between clumps and leaves the mass
       // in the sunlit range where the leaf texture reads.
-      const k = (0.60 + Math.pow(gH, 0.75) * 0.62) * (0.82 + lUp * 0.28)
+      //
+      // ⚠ The BALANCE between these two terms is what decides whether the crown
+      // reads as a tree or as broccoli, and it mattered more than the geometry.
+      // At (0.82 + lUp·0.28) every clump — including every tiny rim accent —
+      // carried its own lit cap, so the crown was a field of highlights and the
+      // one thing the eye needs, "this whole mass is lit from above", was the
+      // weakest signal in it. The clump-local term is now a soft rounding cue
+      // (1.13×) under a dominant crown-height ramp (2.1×): the tree is lit top
+      // to bottom, and the lobes only modulate that. This is also literally what
+      // was asked for — lighter on top, darker underneath.
+      const k = (0.46 + Math.pow(gH, 0.80) * 0.98) * (0.94 + lUp * 0.13)
               * (1 - occ * 0.22) * m.tint * (1 + value);
 
       // Warm in the light, cool in the shade. A flat grey ramp reads as dirt on
