@@ -84,14 +84,32 @@ casts stay consistent by construction.
 - ⚠ Still to tune: **dusk is too bright and not warm enough** — 19:00 should be
   amber at the horizon and currently reads near-neutral.
 
-**Water — the coverage range is NOT 0..1.** `buildWaterField` blurs with
-`WFIELD_R=1` then floors real water tiles at `WFIELD_KEEP=0.52`, so a 2-3 tile
-river sits at roughly **0.52-0.75 across its whole width** and never approaches
-1.0. Both the foam band (was 0.50-0.94) and the depth ramp (was 0.34-0.90) were
-written assuming open water reaches ~1.0, which put the *entire river* inside
-the foam band — it rendered white like pack ice. Now foam is 0.16-0.54 (i.e.
-below the 0.5 contour, on the shallow ramp) and depth is 0.30-0.66. Anything
-else keyed off coverage must respect this range.
+**⚠ Water coverage — the note that used to be here was WRONG and caused three
+separate regressions. Read this before touching any ramp.**
+There are TWO different signals and they do not have the same range:
+- **`_wField`** (the CPU-side blurred field) really does sit at ~**0.52-0.75**.
+  `buildWaterField` blurs with `WFIELD_R=1` then floors real water tiles at
+  `WFIELD_KEEP=0.52`. That is what the old note described, and it is true — of
+  the field.
+- **The MASK TEXTURE the shader actually samples is not that.** `paintWaterMask`
+  puts the field through a WEDGE remap — `(cov-0.5)/0.16+0.5`, clamped — before
+  writing the texel. **Measured** over an 80×80-tile block at the river: 11,900
+  non-zero texels, **10,202 of them (86%) at exactly 1.0**. A transect across
+  the river reads `0, 0.05, 0.66, 0.84, 1.0 ×33, 0.97, 0.69, 0.29, 0.06, 0`.
+So `cov` in the shader is a **silhouette with a ~¾-tile antialias fringe**, not a
+shore gradient. Any ramp keyed directly off `cov` can only ever paint a hairline
+at the bank with one flat colour everywhere inside — which is exactly what
+happened when the depth stops were tuned to 0.30/0.66, then to 0.52/1.15, on the
+strength of the old note.
+- **The fix is `wideCov()`** in water.js: 8 extra mask taps on rings at 2.4 and
+  5.2 tiles recover a real distance-from-bank, with no extra pass and no depth
+  read. The depth ramp, shore wash and caustics all key off THAT. Offsets derive
+  from `uMapRepeat`, so no map constants leak into the shader.
+- The white foam band is gone entirely, replaced by a wide soft shore wash keyed
+  off distance and brightest a tile *in* from the bank, so it can never draw an
+  edge. The reference art has no surf line.
+- ⚠ **`patch` is a reserved word in GLSL ES.** A fragment shader using it fails
+  to compile while `node --check` passes happily. Renamed to `clump`.
 
 **Gotchas paid for the hard way:**
 - **A raw `ShaderMaterial` with `fog: true` MUST merge `THREE.UniformsLib.fog`.**

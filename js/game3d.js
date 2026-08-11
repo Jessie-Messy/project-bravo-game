@@ -3957,9 +3957,14 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
   // Water palette, live. Matching painted reference art is iterative and a
   // recompile per guess is hopeless — this is the same "tune it in place" idea
   // as _dev.warp / _dev.macro. Takes sRGB hex, converts to linear internally.
-  //   _dev.water({shallow:'#48d8cf', deep:'#1d2a6b', lo:0.52, hi:1.15})
-  // ⚠ lo/hi are COVERAGE stops and the real range a river occupies is roughly
-  // 0.52-0.75, NOT 0..1. Set hi below ~0.8 and the whole surface pins to deep.
+  //   _dev.water({shallow:'#48d8cf', deep:'#1d2a6b', lo:0.34, hi:0.92,
+  //               caustic:1, print:0.16, shore:1, shoreA:0.62, deepA:0.97})
+  // ⚠ lo/hi are stops on wideCov() — a real distance-from-bank recovered from
+  // 8 extra mask taps — NOT on raw coverage. Raw `cov` is a silhouette: 86% of
+  // its non-zero texels sit at exactly 1.0 (measured), so a ramp keyed off it
+  // paints a hairline at the bank and one flat colour everywhere else. The
+  // older warning here quoted the 0.52-0.75 range of `_wField`, which is a
+  // DIFFERENT signal — see the water section in HANDOFF.md.
   water(o){ return JSON.stringify(water.setPalette(o)); },
   // Save observability. The autosave is silent by design, so when a character
   // fails to persist there is nothing to look at — which is exactly the hole
