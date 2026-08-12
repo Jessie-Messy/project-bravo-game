@@ -332,6 +332,27 @@ class BravoRoom extends Room {
       client.send('tx_result', { seq, kind, ok: true, deltas: r.deltas });
     });
 
+    // ── PHASE 2: preferences, separated from the character ──
+    // Camera, hotbar layout, gambits, UI toggles. Deliberately a DIFFERENT
+    // message from `save` so that nothing about a character can arrive here by
+    // accident — the plan's step 8 calls for exactly this split, and a rename
+    // alone would have left one endpoint accepting both.
+    //
+    // ⚠ Stored on the document but never validated and never authoritative in
+    // any direction: these are the player's own settings, and the server has no
+    // opinion about them beyond a size cap.
+    this.onMessage('prefs', (client, m) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p || typeof m !== 'object' || m === null) return;
+      try {
+        const str = JSON.stringify(m);
+        if (str.length > 32000) { console.warn(`[prefs] REJECTED ${p.name}: ${str.length} bytes`); return; }
+        const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', () => storage.loadBlob(p.name));
+        doc.prefs = JSON.parse(str);
+        character.touch(p.name);
+      } catch (e) { console.warn('[prefs] failed:', e.message); }
+    });
+
     // full-save sync: the client streams its whole save blob; we persist it
     // and mirror x/y/hp/kills/deaths onto the schema so they survive here too
     this.onMessage('save', (client, blob) => {
@@ -391,6 +412,11 @@ class BravoRoom extends Room {
           // document instance, and writing a fresh object straight to disk would
           // leave that instance stale — the next transaction would then commit
           // against the pre-adopt values and resurrect them.
+          // ⚠ PHASE 2: adoptFromBlob no longer takes the whole blob. The fields
+          // in character.AUTHORITATIVE (items, wallet, tools, tiers, armor,
+          // standing) keep the SERVER's values and the client's are discarded.
+          // Everything else still comes from the save, because nothing on the
+          // server can author it yet — see the note on AUTHORITATIVE.
           character.replace(p.name, character.adoptFromBlob(doc, blob));
         } catch (e) {
           console.warn(`[character] shadow update failed for ${p.name}: ${e.message}`);

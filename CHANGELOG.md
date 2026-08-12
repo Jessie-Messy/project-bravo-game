@@ -11,6 +11,60 @@ on the first real session.
 
 ---
 
+## PHASE 2 — authority flipped for the economy
+
+The server now owns **items, wallet, tools, tiers, armor and standing**. A client
+save can no longer author any of them. The attack the whole migration plan exists
+to stop — "a modified client posts a save with 10⁹ gold and the server writes it
+down" — no longer works, and there is an end-to-end test that proves it.
+
+### The line is "what the server can validate", not "everything"
+The plan describes a total flip. A total flip is **not safe yet**: it would not
+secure the rest, it would DELETE it. Authority can only move for state the server
+can author, which today means state with a transaction — craft, buy, bank,
+pickup, gather. XP, HP, skills, quests and contract progress have none, so making
+the document authoritative for them would leave the client unable to write what
+the server cannot yet produce, and every session would reset them.
+
+So `character.AUTHORITATIVE` lists six fields, and progression keeps coming from
+the save until Phase 3 models it. Moving a field across later is one entry in
+that list plus its transaction — the mechanism does not change, which is what
+stops this being rework.
+
+### Prerequisite: the 12 unmodelled fields, closed first (schema v3)
+`check_coverage.mjs` had already found them. Flipping with quests, contracts,
+bounty, antiquarian stock, the armor flag and the whole mount unmodelled would
+have been data loss with a release date, so they were modelled first, with an
+additive v2→v3 migration. Coverage is now 0 unmodelled, 0 uncompared.
+
+### What shipped
+- `character.AUTHORITATIVE` + `adoptFromBlob` keeps the server's values for those
+  six and discards the client's. The blob is still stored verbatim as a frozen
+  backup, so a mistake here destroys nothing.
+- A **new `prefs` message** (not a rename of `save`) for camera/UI/hotbar/gambits.
+  A rename would have left one endpoint accepting both a character and settings.
+- Client applies the document after `loadGame()`, replacing rather than merging —
+  a merge would let a tampered save keep items the server has since removed.
+  A weapon the server says you no longer own leaves your hand.
+- **Rollback is ON.** Safe only because the flip landed with it: while `save` was
+  a blanket override, acting on a rejection would have turned every modelling gap
+  into a visible item loss.
+
+### Two functions were untestable, and one test passed vacuously
+`applyAuthoritative` and `reconcileTx` were both written inside the net-wiring
+function, so they only existed once a socket was open. `reconcileTx` is the one
+code path that **removes items from a player's pack**, and the first browser test
+of it called a null handler and reported success. Both are at module scope now,
+and `tools/check_client.mjs` exercises them in a real browser: 14 assertions
+covering the document overwrite, item clearing, weapon demotion, and rollback of
+item, plank and gold predictions.
+
+**Watch for:** on a player's first join after this ships, the document wins — so
+a local save that disagreed will appear to "lose" items. That is the flip working.
+The blob backup is intact if a document turns out to be genuinely wrong.
+
+---
+
 ## Operations & deploy
 
 ### Deploy scripts were shipping a broken server — fixed

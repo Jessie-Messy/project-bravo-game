@@ -5,3 +5,4 @@ server/data/
 models_backup_originals/
 .claude/
 VPS_INFO.md
+.rig-cache/

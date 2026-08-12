@@ -171,7 +171,57 @@ ok('  ...with the crafted planks in it', onDisk && (onDisk.items.planks | 0) >= 
   }
 }
 
-// ── PHASE 1 SEMANTICS: a client `save` overwrites the document ──
+// ── PHASE 2: THE FLIP. A tampered save cannot author the economy ──
+// This is the whole point of the migration plan: "a modified client posts a save
+// with 10^9 gold and the server writes it down". It must not, any more.
+{
+  const before = await doc();
+  room.send('save', {
+    px: 15000, py: 17000, hp: 100,
+    inv: { wood: 999999, gold: 1000000000, arrows: 10, bandages: 2 },
+    bank: { gold: 999999 },
+    hasAxe: true, hasSword: true, hasBow: true, hasPickaxe: true,
+    swordTier: 5, bowTier: 5, pickaxeTier: 5,
+    armor: { head: 6, chest: 6, legs: 6, boots: 6 },
+    level: 40, xp: 99999, xpMax: 100, statPoints: 0, skillPoints: 0,
+    stats: { str: 10, dex: 10, int: 10, vit: 10 },
+    quests: { idx: 3, prog: 2 },
+  });
+  await new Promise(r => setTimeout(r, 700));
+  const after = await doc();
+
+  ok('a save claiming 10^9 gold does NOT change the wallet',
+     after.wallet.gold === before.wallet.gold, `${before.wallet.gold} -> ${after.wallet.gold}`);
+  ok('  ...nor the bank', after.wallet.bank === before.wallet.bank,
+     `${before.wallet.bank} -> ${after.wallet.bank}`);
+  ok('  ...nor items', (after.items.wood | 0) === (before.items.wood | 0),
+     `wood ${before.items.wood} -> ${after.items.wood}`);
+  ok('  ...nor tools (no free runic sword)', after.tools.sword === before.tools.sword,
+     `${before.tools.sword} -> ${after.tools.sword}`);
+  ok('  ...nor tiers', (after.tiers.sword | 0) === (before.tiers.sword | 0),
+     `${before.tiers.sword} -> ${after.tiers.sword}`);
+  ok('  ...nor armor', (after.armor.head | 0) === (before.armor.head | 0),
+     `${before.armor.head} -> ${after.armor.head}`);
+
+  // ...but progression the server cannot author yet STILL comes from the save.
+  // Rejecting these would not secure them, it would delete them.
+  ok('progression still comes from the save (level)', (after.progress.level | 0) === 40,
+     `level=${after.progress.level}`);
+  ok('  ...and quests', after.quests && after.quests.idx === 3, JSON.stringify(after.quests));
+  ok('  ...which is the documented Phase 2 line: the server owns what it validates',
+     true);
+}
+
+// ── prefs are stored, and are NOT the character ──
+{
+  room.send('prefs', { autoDefend: false, aggroMode: true, hotbar: [null, null], gambitsOn: true });
+  await new Promise(r => setTimeout(r, 500));
+  const d = await doc();
+  ok('prefs are stored on the document', d.prefs && d.prefs.aggroMode === true, JSON.stringify(d.prefs));
+  ok('  ...and carry nothing economic', !d.prefs.inv && !d.prefs.gold);
+}
+
+// ── PHASE 1 SEMANTICS (now superseded for the economy) ──
 // ⚠ RUNS LAST, and must stay last. The save below adopts the whole blob, and
 // fromLegacyBlob coerces absent fields to false/0 — so this synthetic save (which
 // omits hasAxe) strips the character's axe and every later gather is refused with
@@ -191,10 +241,13 @@ ok('  ...with the crafted planks in it', onDisk && (onDisk.items.planks | 0) >= 
                       bank: { gold: 0 }, level: 1, xp: 0 });
   await new Promise(r2 => setTimeout(r2, 600));
   const afterSave = await doc();
-  ok('a client save OVERWRITES the transaction document (Phase 1 by design)',
-     (afterSave.items.wood | 0) === 777, `wood=${afterSave.items.wood} (was ${beforeSave.items.wood})`);
-  ok('  ...which is why the OPLOG, not the document, is the record of server decisions',
-     true);
+  // ⚠ INVERTED BY PHASE 2, and deliberately kept as a test rather than deleted:
+  // the save no longer authors items. If this ever passes as "777" again, the
+  // flip has been reverted.
+  ok('a client save NO LONGER overwrites items (Phase 2 flip)',
+     (afterSave.items.wood | 0) !== 777, `wood=${afterSave.items.wood} (was ${beforeSave.items.wood})`);
+  ok('  ...while non-authoritative fields still come from it',
+     (afterSave.progress.level | 0) === 1, `level=${afterSave.progress.level}`);
 }
 
 

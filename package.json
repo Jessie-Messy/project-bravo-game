@@ -9,6 +9,7 @@
     "check:canopy": "node tools/check_canopy.mjs",
     "check:e2e": "node tools/check_e2e.mjs",
     "oplog": "node tools/oplog_report.mjs",
-    "build:world": "node server/build-world-data.mjs"
+    "build:world": "node server/build-world-data.mjs",
+    "check:client": "node tools/check_client.mjs"
   }
 }

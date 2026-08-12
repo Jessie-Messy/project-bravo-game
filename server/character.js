@@ -21,7 +21,7 @@ const JSON_FILE = path.join(DATA_DIR, 'characters.json');
 // Bump when the shape changes and add a migration step. A character written by
 // an older server must keep loading — beta players will have documents from
 // every version we ship.
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 let db = null;
 try {
@@ -81,13 +81,28 @@ function blank(name, account) {
     tiers:    { sword: 1, bow: 1, pickaxe: 1 },
     tools:    { axe: true, sword: false, bow: false, pickaxe: false, houseTool: false },
     armor:    {},
+    hasArmor: false,          // derived flag the client keeps alongside `armor`
     // ⚠ ARPG items need STABLE IDS before trade or chests can reference them.
     // Retrofitting identity onto a live item table after beta is genuinely
     // painful, so ids are assigned on import here even though nothing consumes
     // them yet.
     gear:     { items: [], equipped: { weapon: null, armor: null } },
     artifacts:{ inv: [], equipped: {} },
-    flags:    { dungeonBest: 1, floorBossesDown: {}, chestsLooted: {}, contractRank: 0 },
+    flags:    { dungeonBest: 1, floorBossesDown: {}, chestsLooted: {}, contractRank: 0,
+                // ⚠ Modelled BEFORE Phase 2 flips authority, not after. The moment
+                // the document becomes the source of truth on join, anything it
+                // does not hold is simply gone from the character — so an
+                // unmodelled field is not "not yet done", it is data loss with a
+                // release date. These twelve were what check_coverage.mjs found.
+                contracts: [],                       // the contract board
+                bounty: null, bountyAt: 0,           // active bounty + roll time
+                antiqStock: null, antiqStockAt: 0 }, // antiquarian stock + roll time
+    // ⚠ The roll TIMES above are the interesting half. They are currently client
+    // owned, which means a client can re-roll shop stock and bounties at will by
+    // rewinding them. Holding them here is what makes fixing that possible later
+    // without another migration.
+    quests:   { idx: 0, prog: 0 },
+    mount:    { has: false, on: false, down: false, x: 0, y: 0 },
     // ⚠ Server-owned from the start, and deliberately here before anything reads
     // it. Kills and deaths feed a notoriety/stature system where guards and NPCs
     // react to who you are, which makes them REPUTATION, not statistics — the
@@ -174,6 +189,17 @@ function fromLegacyBlob(name, account, blob) {
   d.flags.floorBossesDown = Object.assign({}, blob.floorBossesDown || {});
   d.flags.chestsLooted    = Object.assign({}, blob.chestsLooted || {});
   d.flags.contractRank    = n(blob.contractRank, 0);
+  // The twelve fields Phase 2 would otherwise have dropped on the floor.
+  d.flags.contracts       = Array.isArray(blob.contracts) ? blob.contracts.map(c => ({ ...c })) : [];
+  d.flags.bounty          = blob.bounty || null;
+  d.flags.bountyAt        = n(blob.bountyAt, 0);
+  d.flags.antiqStock      = blob.antiqStock || null;
+  d.flags.antiqStockAt    = n(blob.antiqStockAt, 0);
+  d.quests                = { idx: n(blob.quests && blob.quests.idx, 0),
+                              prog: n(blob.quests && blob.quests.prog, 0) };
+  d.hasArmor              = !!blob.hasArmor;
+  d.mount                 = { has: !!blob.hasHorse, on: !!blob.onHorse, down: !!blob.horseDown,
+                              x: n(blob.horseX, 0), y: n(blob.horseY, 0) };
   return d;
 }
 
@@ -192,6 +218,23 @@ function migrate(d) {
   if (d.schemaVersion < 2) {
     d.standing = { kills: 0, deaths: 0, notoriety: 0 };
     d.schemaVersion = 2;
+  }
+  // v2 → v3: the twelve fields the document did not model. Additive, and it
+  // matters that this runs BEFORE Phase 2: once the document is authoritative on
+  // join, a missing field is a wiped one. Existing documents take empty values
+  // and the client's next save fills them in — which is safe only while `save`
+  // still adopts, i.e. only if this migration ships ahead of the flip.
+  if (d.schemaVersion < 3) {
+    d.flags = d.flags || {};
+    if (!Array.isArray(d.flags.contracts)) d.flags.contracts = [];
+    if (d.flags.bounty === undefined) d.flags.bounty = null;
+    if (d.flags.bountyAt === undefined) d.flags.bountyAt = 0;
+    if (d.flags.antiqStock === undefined) d.flags.antiqStock = null;
+    if (d.flags.antiqStockAt === undefined) d.flags.antiqStockAt = 0;
+    if (!d.quests) d.quests = { idx: 0, prog: 0 };
+    if (d.hasArmor === undefined) d.hasArmor = false;
+    if (!d.mount) d.mount = { has: false, on: false, down: false, x: 0, y: 0 };
+    d.schemaVersion = 3;
   }
   return d;
 }
@@ -416,6 +459,16 @@ function diff(doc, blob) {
     const b = blob.equippedItems[slot] ? 1 : 0;
     if (a !== b) out.push(`equipped.${slot}: doc=${a ? 'set' : 'empty'} client=${b ? 'set' : 'empty'}`);
   }
+  cmp('quests.idx', n(doc.quests && doc.quests.idx), n(blob.quests && blob.quests.idx), blob.quests);
+  cmp('quests.prog', n(doc.quests && doc.quests.prog), n(blob.quests && blob.quests.prog), blob.quests);
+  cmp('hasArmor', !!doc.hasArmor, !!blob.hasArmor, blob.hasArmor);
+  cmp('mount.has', !!(doc.mount && doc.mount.has), !!blob.hasHorse, blob.hasHorse);
+  cmp('mount.down', !!(doc.mount && doc.mount.down), !!blob.horseDown, blob.horseDown);
+  cmp('contracts.count', (doc.flags.contracts || []).length,
+      Array.isArray(blob.contracts) ? blob.contracts.length : 0, blob.contracts);
+  cmp('bountyAt', n(doc.flags.bountyAt), n(blob.bountyAt), blob.bountyAt);
+  cmp('antiqStockAt', n(doc.flags.antiqStockAt), n(blob.antiqStockAt), blob.antiqStockAt);
+
   if (blob.equippedArtifacts) {
     const worn = o => Object.values(o || {}).filter(Boolean).length;
     cmp('artifacts.worn', worn(doc.artifacts.equipped), worn(blob.equippedArtifacts), blob.equippedArtifacts);
@@ -424,10 +477,37 @@ function diff(doc, blob) {
   return out;
 }
 
-// Adopt the client's values into the document. Phase 0 ONLY — the client is
-// still authoritative here, so this keeps the shadow copy current while the
-// divergence log records what it had to absorb. This function is what Phase 2
-// deletes.
+// ── PHASE 2: what the client may no longer author ─────────────────
+// The server owns exactly what it can VALIDATE, and not one field more.
+//
+// ⚠ This line is drawn where the transactions are, and that is the whole design.
+// A full flip — the document authoritative for everything — is what the plan
+// describes, but it is only safe once every mutable field is either a
+// transaction or a preference. It is not: craft/buy/bank/pickup/gather exist,
+// while xp, hp, skills, quests and contract progress have no transaction at all.
+// Flipping those today would not make them secure, it would DELETE them, because
+// the client would no longer be able to write what the server cannot yet author.
+//
+// So the economy flips now (it is transaction-covered, and it is the half worth
+// stealing — a modified client posting itself 10^9 gold is the attack the whole
+// plan exists to stop), and progression keeps coming from the save until Phase 3
+// models it. Moving a field across later is one line here plus its transaction;
+// the mechanism does not change, which is what stops this being rework.
+const AUTHORITATIVE = [
+  'items',     // stackables — craft / pickup / gather / buy
+  'wallet',    // gold and bank — buy / bank / pickup
+  'tools',     // axe, sword, bow, pickaxe — craft / buy
+  'tiers',     // weapon and tool tiers — craft / buy
+  'armor',     // armor slots — craft / buy
+  'standing',  // kills, deaths, notoriety — reputation, never client-authored
+];
+
+// Adopt the client's values into the document, EXCEPT the authoritative parts.
+//
+// Phase 0 took the blob wholesale and the client won every disagreement. Now the
+// server's own values survive for the fields it owns, and the client's are
+// ignored — that is the flip. The blob is still stored verbatim by storage.js as
+// a frozen backup, so nothing is destroyed by getting this line wrong.
 function adoptFromBlob(doc, blob) {
   const merged = fromLegacyBlob(doc.name, doc.account, blob);
   merged.createdAt = doc.createdAt;
@@ -439,9 +519,14 @@ function adoptFromBlob(doc, blob) {
     const k = JSON.stringify([it.type, it.name, it.tier, it.rarity]);
     if (byKey.has(k)) it.iid = byKey.get(k);
   }
+  // ⚠ THE FLIP. The server's own values win for everything it can validate.
+  // Deep-copied rather than referenced: `merged` replaces the live document, and
+  // sharing sub-objects with the outgoing one has bitten this codebase before —
+  // a later mutation would write through to a document nobody thinks is live.
+  for (const key of AUTHORITATIVE) merged[key] = JSON.parse(JSON.stringify(doc[key] ?? {}));
   return merged;
 }
 
-module.exports = { ensure, load, save, diff, adoptFromBlob, blank, fromLegacyBlob,
+module.exports = { ensure, load, save, diff, adoptFromBlob, blank, fromLegacyBlob, AUTHORITATIVE,
                    touch, flush, flushAll, close, replace,
                    SCHEMA_VERSION, backend: db ? 'sqlite' : 'json' };

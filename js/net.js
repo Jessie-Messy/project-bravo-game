@@ -367,3 +367,12 @@ export function netTx(kind, intent, predicted) {
   net.room.send('tx', { seq, kind, intent });
   return seq;
 }
+
+// ── Preferences (PHASE 2) ─────────────────────────────────────────
+// UI settings only: hotbar layout, gambits, toggles. A DIFFERENT message from
+// `save` on purpose — the character and the player's settings are now two
+// different things with two different owners, and sharing one endpoint is how
+// they would quietly become one thing again.
+export function netPrefs(prefs) {
+  if (net.status === 'online' && net.room) net.room.send('prefs', prefs);
+}

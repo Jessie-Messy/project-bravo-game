@@ -1,6 +1,7 @@
 # Server Authority — migration plan for production
 
-Status: **Phase 0 complete. Phase 1 steps 5–6 complete; step 7 needs play data.**
+Status: **Phase 0 and Phase 1 complete. Phase 2 landed for the ECONOMY;
+progression still comes from the save until Phase 3.**
 Written 2026-08-11, at the point the project moved from prototype to pre-beta.
 
 The goal is stated as: build it so we do not have to go back and redo anything.
@@ -171,12 +172,45 @@ which is the half that matters. But it has no per-node HP or respawn timer, so a
 modified client can re-harvest an exhausted node up to the rate limit. Closing
 it is step 11's neighbour and does not change the intent signature.
 
-**Phase 2 — flip authority**
-8. `save` is reduced to non-authoritative data only: camera, UI prefs, hotbar
-   layout. Rename it (`prefs`) so nothing can accidentally post a character to
-   it again.
-9. Server document becomes the source of truth on join. The local save becomes
-   a cache for offline play only.
+**Phase 2 — flip authority** — *DONE for the economy; see the line below*
+8. ✅ A separate `prefs` message carries camera/UI/hotbar/gambits. Deliberately a
+   NEW message rather than a rename, so nothing about a character can arrive
+   there by accident. `save` still exists and is still stored verbatim as a
+   frozen backup — but the server now DISCARDS the fields it owns from it.
+9. ✅ The document is the source of truth on join for those fields: the client
+   calls `applyAuthoritative()` after `loadGame()`, so a tampered local save
+   cannot bring gold, items, tools, tiers or armor with it. Rollback on rejected
+   transactions is ON.
+
+### ⚠ The authority line, and why it is not "everything"
+
+`character.AUTHORITATIVE` = `items · wallet · tools · tiers · armor · standing`.
+
+The plan describes a total flip, and a total flip is **not safe yet** — it would
+not secure the rest, it would DELETE it. Authority can only move to the server
+for state the server can author, and today that means state with a transaction:
+craft, buy, bank, pickup, gather. XP, HP, skills, quests and contract progress
+have none. Make the document authoritative for those and the client can no longer
+write what the server cannot yet produce, so every session would reset them.
+
+So the line is drawn at "what the server can validate". That is the half worth
+stealing — the attack this whole plan exists to stop is a modified client posting
+itself 10⁹ gold, and it no longer works. Progression keeps coming from the save
+until Phase 3 models it.
+
+**Moving a field across later is one entry in `AUTHORITATIVE` plus its
+transaction.** The mechanism does not change, which is what stops this being
+rework. The order to do it in is Phase 3's list below.
+
+### What the divergence log means now
+
+It has inverted. Before the flip it measured *what the server had not modelled*.
+Now, for the six authoritative fields, it measures **how far a client has drifted
+from the server's truth** — which is an anti-cheat signal, not a worklist. For
+everything else it still means what it always did.
+
+Expect it to be noisy on `hp` (combat is not a transaction) and on the
+authoritative fields for any player whose local save predates the flip.
 
 **Phase 3 — the systems that need the document to exist first**
 10. Chest contents server-owned (deferred once already, blocked on this).
