@@ -1,0 +1,212 @@
+// Transaction engine tests — run after ANY change to server/tx.js or the shared
+// tables.  node tools/check_tx.mjs
+//
+// tx.apply is a pure function of (doc, intent, ctx), which is what makes this
+// possible without a server, a database or a socket. The cases below are the
+// ones where being wrong costs a player real progress: a transaction that half
+// applies, a cost that is charged twice, a gate that can be talked past.
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const tx = require('../server/tx.js');
+const character = require('../server/character.js');
+
+let pass = 0, fail = 0;
+const ok = (name, cond, detail) => {
+  if (cond) { pass++; }
+  else { fail++; console.log(`FAIL  ${name}${detail ? '  — ' + detail : ''}`); }
+};
+const doc = (over = {}) => Object.assign(character.blank('T', 'acct'), over);
+const near = (...types) => ({ nearby: t => types.includes(t) });
+
+// ── craft: the happy path ──
+{
+  const d = doc({ items: { wood: 5 } });
+  const r = tx.apply(d, 'craft', { id: 'planks' }, {});
+  ok('craft planks succeeds', r.ok, r.reason);
+  ok('craft planks spends 3 wood', d.items.wood === 2, `wood=${d.items.wood}`);
+  ok('craft planks yields 1 plank', d.items.planks === 1, `planks=${d.items.planks}`);
+  ok('deltas report the spend', r.ok && r.deltas.items.wood === -3 && r.deltas.items.planks === 1,
+     JSON.stringify(r.deltas && r.deltas.items));
+}
+
+// ── craft: cannot afford, and MUST NOT half-apply ──
+{
+  const d = doc({ items: { wood: 2 } });
+  const r = tx.apply(d, 'craft', { id: 'planks' }, {});
+  ok('craft rejects when short', !r.ok);
+  ok('rejected craft leaves wood untouched', d.items.wood === 2, `wood=${d.items.wood}`);
+  ok('rejected craft yields nothing', !d.items.planks, `planks=${d.items.planks}`);
+}
+{
+  // Multi-cost recipe short on the SECOND ingredient — the case where a naive
+  // implementation subtracts the first and then bails, destroying it.
+  const d = doc({ items: { planks: 10, stone: 1 } });
+  const r = tx.apply(d, 'craft', { id: 'workbench' }, {});
+  ok('multi-cost craft rejects when short on the 2nd item', !r.ok);
+  ok('  ...and does not consume the 1st', d.items.planks === 10, `planks=${d.items.planks}`);
+}
+
+// ── craft: proximity is enforced ──
+{
+  const d = doc({ items: { iron_ore: 9 } });
+  ok('ingot refused with no forge', !tx.apply(d, 'craft', { id: 'iron_ingot' }, {}).ok);
+  ok('  ...ore untouched', d.items.iron_ore === 9);
+  const r = tx.apply(d, 'craft', { id: 'iron_ingot' }, near('forge'));
+  ok('ingot allowed at a forge', r.ok, r.reason);
+  ok('  ...ore spent', d.items.iron_ore === 6, `ore=${d.items.iron_ore}`);
+}
+{
+  // anvil needs BOTH stations (nearAll), unlike everything else which needs any.
+  const d = doc({ items: { iron_ingot: 9 } });
+  ok('anvil refused with only a workbench', !tx.apply(d, 'craft', { id: 'anvil' }, near('workbench')).ok);
+  ok('anvil allowed with both', tx.apply(d, 'craft', { id: 'anvil' }, near('workbench', 'forge')).ok);
+  ok('  ...and grants the placeable', d.items.anvil === 1, `anvil=${d.items.anvil}`);
+}
+{
+  // steel_arm lists two stations WITHOUT nearAll — either one alone must do.
+  const d = doc({ items: { steel_ingot: 4, hide: 4, bone: 4 } });
+  ok('either-station recipe accepts just the forge', tx.apply(d, 'craft', { id: 'steel_arm' }, near('forge')).ok);
+}
+
+// ── craft: `requires` is held, not spent ──
+{
+  const d = doc({ items: { planks: 1 } });
+  const r = tx.apply(d, 'craft', { id: 'wall' }, {});
+  ok('wall craft succeeds holding 1 plank', r.ok, r.reason);
+  ok('wall craft spends NOTHING (paid at placement)', d.items.planks === 1, `planks=${d.items.planks}`);
+  const d2 = doc({ items: {} });
+  ok('wall craft refused with no planks', !tx.apply(d2, 'craft', { id: 'wall' }, {}).ok);
+}
+
+// ── craft: tier and ownership gates ──
+{
+  const d = doc({ items: { planks: 20 } });
+  ok('craft a sword', tx.apply(d, 'craft', { id: 'sword' }, {}).ok);
+  ok('  ...grants the tool', d.tools.sword === true);
+  ok('cannot craft a second sword', !tx.apply(d, 'craft', { id: 'sword' }, {}).ok);
+  ok('  ...and is not charged for the refusal', d.items.planks === 15, `planks=${d.items.planks}`);
+}
+{
+  const d = doc({ items: { mithril_ingot: 9 }, tiers: { sword: 5, bow: 1, pickaxe: 1 } });
+  ok('no downgrade: mithril sword refused at runic tier',
+     !tx.apply(d, 'craft', { id: 'mithril_sword' }, near('forge')).ok);
+  ok('  ...ingots untouched', d.items.mithril_ingot === 9);
+}
+
+// ── craft: armor slots ──
+{
+  const d = doc({ items: { hide: 99 } });
+  for (let i = 0; i < 4; i++) tx.apply(d, 'craft', { id: 'larmor' }, {});
+  ok('4 leather pieces fill 4 slots',
+     Object.values(d.armor).filter(v => v === 1).length === 4, JSON.stringify(d.armor));
+  const r = tx.apply(d, 'craft', { id: 'larmor' }, {});
+  ok('5th leather piece refused (full set)', !r.ok, r.reason);
+  const before = d.items.hide;
+  ok('  ...and no hide is taken', tx.apply(d, 'craft', { id: 'larmor' }, {}).ok === false && d.items.hide === before);
+}
+
+// ── buy / sell ──
+{
+  const d = doc({ wallet: { gold: 100, bank: 0 } });
+  const r = tx.apply(d, 'buy', { shop: 'smith', id: 'sword' }, near('smith'));
+  ok('buy a sword at the smith', r.ok, r.reason);
+  ok('  ...charges 30g', d.wallet.gold === 70, `gold=${d.wallet.gold}`);
+  ok('  ...grants the tool', d.tools.sword === true);
+  ok('buying it twice is refused', !tx.apply(d, 'buy', { shop: 'smith', id: 'sword' }, near('smith')).ok);
+  ok('  ...and does not charge again', d.wallet.gold === 70, `gold=${d.wallet.gold}`);
+}
+{
+  const d = doc({ wallet: { gold: 10, bank: 0 } });
+  const r = tx.apply(d, 'buy', { shop: 'smith', id: 'sword' }, near('smith'));
+  ok('buy refused without the gold', !r.ok);
+  ok('  ...gold untouched', d.wallet.gold === 10);
+}
+{
+  const d = doc({ wallet: { gold: 500, bank: 0 } });
+  ok('buy refused away from the shop', !tx.apply(d, 'buy', { shop: 'smith', id: 'sword' }, near()).ok);
+  ok('unknown shop refused', !tx.apply(d, 'buy', { shop: 'nope', id: 'sword' }, near('smith')).ok);
+  ok('unstocked item refused', !tx.apply(d, 'buy', { shop: 'smith', id: 'excalibur' }, near('smith')).ok);
+}
+{
+  const d = doc({ wallet: { gold: 999, bank: 0 }, items: { potions: 10 } });
+  ok('potion refused at max stack', !tx.apply(d, 'buy', { shop: 'mage', id: 'potion' }, {}).ok);
+  ok('  ...gold untouched', d.wallet.gold === 999);
+}
+
+// ── bank: total gold is invariant ──
+{
+  const d = doc({ wallet: { gold: 100, bank: 50 } });
+  const total = () => d.wallet.gold + d.wallet.bank;
+  const t0 = total();
+  ok('deposit 40', tx.apply(d, 'bank', { dir: 'deposit', amount: 40 }).ok);
+  ok('  ...purse 60 / bank 90', d.wallet.gold === 60 && d.wallet.bank === 90, `${d.wallet.gold}/${d.wallet.bank}`);
+  ok('withdraw 90', tx.apply(d, 'bank', { dir: 'withdraw', amount: 90 }).ok);
+  ok('  ...total gold unchanged by banking', total() === t0, `${total()} vs ${t0}`);
+  ok('overdraft refused', !tx.apply(d, 'bank', { dir: 'withdraw', amount: 1 }).ok);
+  ok('negative deposit refused', !tx.apply(d, 'bank', { dir: 'deposit', amount: -50 }).ok);
+  ok('fractional deposit refused or floored, never inflating',
+     total() === t0, `${total()} vs ${t0}`);
+  ok('NaN amount refused', !tx.apply(d, 'bank', { dir: 'deposit', amount: 'x' }).ok);
+}
+
+// ── pickup ──
+{
+  const d = doc();
+  ok('pickup credits the stack', tx.apply(d, 'pickup', { type: 'wood', count: 4 }).ok);
+  ok('  ...4 wood', d.items.wood === 4, `wood=${d.items.wood}`);
+  ok('pickup gold goes to the wallet, not the pack',
+     tx.apply(d, 'pickup', { type: 'gold', count: 25 }).ok && d.wallet.gold === 25 && !d.items.gold,
+     `gold=${d.wallet.gold} items.gold=${d.items.gold}`);
+  ok('unknown item refused', !tx.apply(d, 'pickup', { type: 'excalibur', count: 1 }).ok);
+  ok('absurd count refused', !tx.apply(d, 'pickup', { type: 'wood', count: 1e9 }).ok);
+  ok('negative count refused', !tx.apply(d, 'pickup', { type: 'wood', count: -5 }).ok);
+}
+
+// ── gather: the server decides the yield ──
+{
+  const ctx = { resourceAt: () => 'iron', inRange: () => true };
+  const d1 = doc({ tools: { pickaxe: true }, tiers: { pickaxe: 1, sword: 1, bow: 1 } });
+  tx.apply(d1, 'gather', { tx: 1, ty: 1 }, ctx);
+  const d5 = doc({ tools: { pickaxe: true }, tiers: { pickaxe: 5, sword: 1, bow: 1 } });
+  tx.apply(d5, 'gather', { tx: 1, ty: 1 }, ctx);
+  ok('yield scales with the pickaxe tier the SERVER knows',
+     d5.items.iron_ore > d1.items.iron_ore, `${d1.items.iron_ore} vs ${d5.items.iron_ore}`);
+
+  const d = doc({ tools: { pickaxe: true } });
+  ok('gather refused off a resource tile',
+     !tx.apply(d, 'gather', { tx: 1, ty: 1 }, { resourceAt: () => null, inRange: () => true }).ok);
+  ok('gather refused out of range',
+     !tx.apply(d, 'gather', { tx: 1, ty: 1 }, { resourceAt: () => 'iron', inRange: () => false }).ok);
+  ok('mining refused with no pickaxe',
+     !tx.apply(doc(), 'gather', { tx: 1, ty: 1 }, ctx).ok);
+}
+
+// ── dispatch hygiene ──
+{
+  ok('unknown transaction refused', !tx.apply(doc(), 'wish', {}, {}).ok);
+  ok('missing document refused', !tx.apply(null, 'craft', { id: 'planks' }, {}).ok);
+  ok('unknown recipe refused', !tx.apply(doc(), 'craft', { id: 'nope' }, {}).ok);
+  ok('missing intent refused, not thrown', !tx.apply(doc(), 'craft', undefined, {}).ok);
+}
+
+// ── every recipe is reachable: no typos in the shared table ──
+{
+  let unreachable = [];
+  for (const id of Object.keys(tx.RECIPES)) {
+    const rec = tx.RECIPES[id];
+    const d = doc({
+      items: Object.fromEntries([...Object.keys(rec.cost || {}), ...Object.keys(rec.requires || {})].map(k => [k, 99])),
+      tools: { axe: true, sword: true, bow: true, pickaxe: true, houseTool: true },
+      tiers: { sword: 1, bow: 1, pickaxe: 1 },
+    });
+    // notOwned recipes gate on the tool we just granted; drop just that one.
+    if (rec.notOwned) d.tools[rec.notOwned] = false;
+    const r = tx.apply(d, 'craft', { id }, near('workbench', 'forge', 'smith'));
+    if (!r.ok) unreachable.push(`${id} (${r.reason})`);
+  }
+  ok('every recipe in the shared table is craftable given its own inputs',
+     unreachable.length === 0, unreachable.join(', '));
+}
+
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

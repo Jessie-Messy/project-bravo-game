@@ -216,19 +216,97 @@ function save(name, doc) {
   return true;
 }
 
-// Get the document, importing from the legacy blob the first time.
+// ── Live documents ────────────────────────────────────────────────
+// One in-memory instance per character while it is loaded, with writes batched
+// on a timer. Three reasons, and the first is a correctness one:
+//
+//   1. IDENTITY. Transactions mutate the document. Re-reading it from disk on
+//      every message would hand each transaction its own copy, so two in the
+//      same tick would each write over the other — the classic lost update, and
+//      it duplicates or destroys items depending on which lands last.
+//   2. `better-sqlite3` writes are SYNCHRONOUS and share the thread with the mob
+//      AI, so a write per transaction puts a disk write in the path of every
+//      pickup during a fight.
+//   3. Reads stop hitting the disk at all.
+//
+// ⚠ The batch window is a loss window: anything not yet flushed dies with the
+// process. Hence flush on leave and on dispose, and hence 2s rather than
+// something more efficient — see the decision note in docs/SERVER_AUTHORITY.md.
+const FLUSH_MS = 2000;
+const live = new Map();          // name -> { doc, dirty, timer }
+
+function scheduleFlush(name) {
+  const e = live.get(name);
+  if (!e || e.timer) return;
+  e.timer = setTimeout(() => { e.timer = null; flush(name); }, FLUSH_MS);
+  if (e.timer.unref) e.timer.unref();   // never hold the process open for a save
+}
+
+// Call after mutating a document. Cheap and idempotent — the write itself is
+// coalesced into the next flush.
+function touch(name) {
+  const e = live.get(name);
+  if (!e) return;
+  e.dirty = true;
+  scheduleFlush(name);
+}
+
+function flush(name) {
+  const e = live.get(name);
+  if (!e || !e.dirty) return false;
+  e.dirty = false;
+  return save(name, e.doc);
+}
+
+function flushAll() {
+  let n = 0;
+  for (const name of live.keys()) if (flush(name)) n++;
+  return n;
+}
+
+// Drop a character from memory, flushing first. ⚠ Always flush before deleting;
+// dropping a dirty entry silently discards up to FLUSH_MS of play.
+function close(name) {
+  const e = live.get(name);
+  if (!e) return;
+  if (e.timer) { clearTimeout(e.timer); e.timer = null; }
+  flush(name);
+  live.delete(name);
+}
+
+// Get the document, importing from the legacy blob the first time. Returns the
+// LIVE instance — callers may mutate it, and must call touch() when they do.
 function ensure(name, account, legacyBlobStr) {
-  let d = load(name);
-  if (d) {
-    if (account && !d.account) { d.account = account; save(name, d); }
-    return d;
+  const held = live.get(name);
+  if (held) {
+    if (account && !held.doc.account) { held.doc.account = account; touch(name); }
+    return held.doc;
   }
-  let blob = null;
-  if (legacyBlobStr) { try { blob = JSON.parse(legacyBlobStr); } catch (e) {} }
-  d = blob ? fromLegacyBlob(name, account, blob) : blank(name, account);
-  save(name, d);
-  console.log(`[character] created document for ${name}` + (blob ? ' (imported from legacy save)' : ' (new)'));
+  let d = load(name);
+  let created = false;
+  if (!d) {
+    let blob = null;
+    if (legacyBlobStr) { try { blob = JSON.parse(legacyBlobStr); } catch (e) {} }
+    d = blob ? fromLegacyBlob(name, account, blob) : blank(name, account);
+    save(name, d);
+    console.log(`[character] created document for ${name}` + (blob ? ' (imported from legacy save)' : ' (new)'));
+    created = true;
+  }
+  live.set(name, { doc: d, dirty: false, timer: null });
+  if (!created && account && !d.account) { d.account = account; touch(name); }
   return d;
+}
+
+// Replace the live document wholesale (the Phase 0 adopt path). Goes through the
+// cache so the instance every transaction holds is the one that gets updated —
+// writing straight to disk here would leave the in-memory copy stale and the
+// next transaction would resurrect the old values.
+function replace(name, doc) {
+  const e = live.get(name);
+  if (e) { e.doc = doc; touch(name); return doc; }
+  live.set(name, { doc, dirty: true, timer: null });
+  scheduleFlush(name);
+  return doc;
 }
 
 // ── Divergence logging ────────────────────────────────────────────
@@ -289,4 +367,5 @@ function adoptFromBlob(doc, blob) {
 }
 
 module.exports = { ensure, load, save, diff, adoptFromBlob, blank, fromLegacyBlob,
+                   touch, flush, flushAll, close, replace,
                    SCHEMA_VERSION, backend: db ? 'sqlite' : 'json' };

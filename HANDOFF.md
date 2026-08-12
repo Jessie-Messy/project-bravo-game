@@ -26,9 +26,27 @@ to build so nothing has to be redone.
   crowns now have a solved mass count, a welded chain, a real scale hierarchy and
   per-tree colour. See the first four gotchas below — they are the transferable
   lessons, not tree trivia. Guard: `tools/check_canopy.mjs`.
-- **Server authority: Phase 0 done** (`docs/SERVER_AUTHORITY.md`) — character
-  document + divergence logging, shadow copy only, nothing authoritative yet.
-  **Phase 1 (the transaction API) is the next piece of work.**
+- **Server authority: Phase 0 done, Phase 1 steps 5–6 done**
+  (`docs/SERVER_AUTHORITY.md`). The server now validates and applies `craft`,
+  `buy`, `bank`, `pickup` and `gather` against its own character document and
+  answers with deltas (`server/tx.js`). Still runs alongside the legacy `save`,
+  so nothing is authoritative yet — that is Phase 2.
+  - ⚠ **Phase 1 step 7 is the gate on Phase 2 and it needs REAL PLAY.** Watch
+    the server log for `[character] DIVERGENCE` lines: each one names a mutation
+    the client makes that the server does not model, and every one is Phase 2
+    rework if it is skipped. It cannot be finished at a desk.
+  - Client rollback on rejection is written but deliberately **off**
+    (`_txRollback` in game3d.js). Turning it on before `save` is reduced would
+    make every modelling gap a visible item loss. Phase 2 flips both together.
+- **Crafting and shop prices now live in `shared/*.json`, read by BOTH sides.**
+  They used to be stated twice inside game3d.js alone (a `>=` gate in `canCraft`,
+  a subtraction in `doCraft`). Change a cost in `shared/recipes.json` and both
+  the client and the server pick it up — do **not** re-add a copy in either.
+- **Tests, all fast and renderer-free — run them:** `node tools/check_tx.mjs`
+  (64 transaction cases), `node tools/check_canopy.mjs <three/build>` (canopy
+  integrity). `server/world-data.json` now carries a resource layer; regenerate
+  it with `node server/build-world-data.mjs` after ANY world edit or the server
+  will refuse gathers on tiles the client thinks are trees.
 - **Three architecture decisions are recorded** in `docs/SERVER_AUTHORITY.md`
   under "Decisions taken": offline is demo/tutorial only (this *retires* the
   dual-side-purity constraint — a large simplification), kills/deaths are

@@ -1,7 +1,7 @@
 # Server Authority — migration plan for production
 
-Status: **plan agreed, not yet implemented.** Written 2026-08-11, at the point
-the project moved from prototype to pre-beta.
+Status: **Phase 0 complete. Phase 1 steps 5–6 complete; step 7 needs play data.**
+Written 2026-08-11, at the point the project moved from prototype to pre-beta.
 
 The goal is stated as: build it so we do not have to go back and redo anything.
 That constrains the design more than "make it authoritative" does — the ordering
@@ -83,13 +83,44 @@ That is what keeps it feeling responsive — see the latency note at the bottom.
    every place the client mutates state that we have not modelled yet — do NOT
    skip it, it is what stops Phase 2 being a long tail of "oh, and also…".
 
-**Phase 1 — transactions, still with the old path live**
-5. Implement the intent messages above. Server validates and applies to the
-   document, and answers with deltas.
-6. Client switches to sending intents and applying server deltas, keeping
-   prediction. The old `save` still runs in parallel.
-7. Watch the divergence log until it is quiet. A noisy log here means an
+**Phase 1 — transactions, still with the old path live** — *5 and 6 DONE*
+5. ✅ Implement the intent messages above. Server validates and applies to the
+   document, and answers with deltas. → `server/tx.js`, `tx` message in
+   `bravo-room.js`, tests in `tools/check_tx.mjs`.
+   Covered: `craft` · `buy` · `bank` · `pickup` · `gather`.
+   **Not covered yet:** `chest_move` and `equip`, both deferred to Phase 3 — see
+   "What Phase 1 deliberately left" below.
+6. ✅ Client sends intents and carries rollback data, keeping prediction. The old
+   `save` still runs in parallel. ⚠ Rollback is written but **switched off**
+   (`_txRollback = false` in game3d.js): while `save` is still a blanket
+   override the server is not the last word, so acting on a rejection would turn
+   every server-side modelling gap into a visible item loss. Phase 2 turns it on
+   in the same commit that reduces `save` — the plumbing is already there so
+   that is a one-line change, not new work.
+7. ⏳ Watch the divergence log until it is quiet. A noisy log here means an
    unmodelled mutation, and shipping on top of it is how rework happens.
+   **This is the gate on starting Phase 2, and it needs real play to produce
+   data — it cannot be finished at a desk.**
+
+### What Phase 1 deliberately left
+
+Both because the document does not own the state they would move, so doing them
+now would mean building on something Phase 3 replaces:
+
+- **`chest_move`** — chest contents are not in the document at all (step 10).
+  A transaction over state the server does not hold would be theatre.
+- **`equip`** — `gear.items` exists and items have stable ids, but equipment is
+  still authored wholesale by `save`. Worth doing at the same time as the loot
+  work (step 11) so the item lifecycle lands in one piece.
+
+And one gap inside what *was* shipped, stated plainly so it is not mistaken for
+finished: **`gather` does not track node state.** The server checks the target
+really is a resource tile (a new resource layer in `world-data.json`), that the
+player is genuinely in range of it by the server's own position, and rate-limits
+the whole `tx` channel — and it decides the yield from the tool tier it knows,
+which is the half that matters. But it has no per-node HP or respawn timer, so a
+modified client can re-harvest an exhausted node up to the rate limit. Closing
+it is step 11's neighbour and does not change the intent signature.
 
 **Phase 2 — flip authority**
 8. `save` is reduced to non-authoritative data only: camera, UI prefs, hotbar
