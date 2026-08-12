@@ -234,7 +234,7 @@ class BravoRoom extends Room {
       const p = this.state.players.get(client.sessionId);
       if (!p) return;
       try {
-        const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', storage.loadBlob(p.name));
+        const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', () => storage.loadBlob(p.name));
         client.send('character_state', doc);
       } catch (e) {
         console.warn(`[character] request failed for ${p.name}: ${e.message}`);
@@ -282,7 +282,7 @@ class BravoRoom extends Room {
 
       let doc;
       try {
-        doc = character.ensure(p.name, (client.auth && client.auth.username) || '', storage.loadBlob(p.name));
+        doc = character.ensure(p.name, (client.auth && client.auth.username) || '', () => storage.loadBlob(p.name));
       } catch (e) { return reject('character unavailable'); }
 
       // Proximity, answered from state the SERVER owns: it tracks every placed
@@ -371,7 +371,23 @@ class BravoRoom extends Room {
           } else {
             oplog.write('save', { name: p.name, bytes: str.length, clean: true });
           }
-          // ⚠ Through replace(), not save(): the transaction path holds the LIVE
+          // ⚠⚠ THIS OVERWRITES EVERYTHING THE TRANSACTIONS JUST DID, and that is
+          // correct for Phase 1 — but it is the single most misleading line in
+          // the server, so read it twice before drawing conclusions:
+          //
+          //   • `save` is still a blanket override. The client remains the source
+          //     of truth, so the shadow document is re-derived from its blob on
+          //     every save. A transaction's effect on the DOCUMENT survives only
+          //     until the next autosave.
+          //   • So do NOT verify a transaction by reading the document back after
+          //     play — you will be reading the client's numbers either way. The
+          //     oplog's accepted-delta stream is the real record of what the
+          //     server decided; the document is not evidence yet.
+          //   • This is what Phase 2 deletes. Until then the transactions exist to
+          //     prove the server CAN author these correctly, and to make the
+          //     divergence log above quiet.
+          //
+          // Through replace(), not save(): the transaction path holds the LIVE
           // document instance, and writing a fresh object straight to disk would
           // leave that instance stale — the next transaction would then commit
           // against the pre-adopt values and resurrect them.
@@ -569,7 +585,7 @@ class BravoRoom extends Room {
       // what it is worth, and the client only ever names an id. Routing it
       // through a second message would have been two code paths for one rule.
       try {
-        const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', storage.loadBlob(p.name));
+        const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', () => storage.loadBlob(p.name));
         const r = tx.apply(doc, 'pickup', { type: d.type, count: d.count }, {});
         if (r.ok) character.touch(p.name);
         else console.log(`[tx] ${p.name} pickup REJECTED: ${r.reason}`);

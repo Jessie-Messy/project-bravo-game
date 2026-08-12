@@ -80,6 +80,67 @@ blocks nothing in the repo can verify.
 
 ---
 
+## Hardening pass — bugs found by cross-checking the two sides
+
+Adding `tools/check_tables.mjs` (client and server must agree about the economy)
+immediately found two real bugs. Neither crashes; both present as the game quietly
+not doing what it said.
+
+### A new character had no axe → every tree chop refused
+The client hands every new character an axe, 20 gold, 10 arrows and 2 bandages.
+The server's `blank()` document had **no axe and an empty purse**. So for any
+character whose document existed before its first save — i.e. every new player —
+`gather` refused every tree chop with "need an axe", and that first save logged a
+divergence on three fields, putting noise in the exact log the Phase 2 decision is
+read from.
+
+Fixed, and pinned: `check_tables.mjs` parses the client's own starting-kit line
+and fails if the two drift again.
+
+### The four gems could never be recorded
+`ruby`, `sapphire`, `emerald` and `diamond` are in the client's inventory and were
+missing from the server's `ITEM_KEYS` whitelist — so picking one up would show in
+the client and be silently declined by the server, with one oplog line as the only
+trace. Now whitelisted, and the correspondence is enforced in both directions.
+
+### A synchronous DB read in front of every transaction
+`character.ensure(name, account, storage.loadBlob(name))` evaluates its third
+argument eagerly, so every transaction did a synchronous SQLite read even when the
+document was already cached — defeating the point of the live cache. It now takes
+a thunk and only reads when a character is genuinely new.
+
+### Craft rejections would have rolled back to nothing
+Craft intents were sent without their predicted delta, so when Phase 2 turns
+rollback on, the most common transaction in the game would have reconciled
+silently to nothing. The prediction is now built and sent with the intent — it is
+impossible to reconstruct after the fact, because by the time a rejection lands
+the inventory has moved on.
+
+### A dead delta field
+`buy()` set a `weapon` field on the delta that `commit()` never applied and the
+document has no place for. Removed rather than implemented: which hand a player
+holds is presentation, and belongs in the Phase 2 `prefs` payload. A delta field
+nothing reads is a promise the server does not keep.
+
+### Tests added
+- `tools/check_tables.mjs` — the cross-check above, plus shop/recipe UI parity.
+- `tools/check_e2e.mjs` — moved into the repo (31 assertions over a real socket),
+  now including **gather accepted on a real tree tile**, and a range refusal
+  tested against another *resource* tile. The first version of that range test
+  used empty ground, which fails on "nothing to harvest there" first — it was
+  asserting range while actually exercising the resource check.
+- `check_tx.mjs` grew to 79: schema v1→v2 migration, gather acceptance per
+  resource kind, the 4-logs-on-felling rule, and the gems.
+
+### One documented sharp edge
+A **partial** save is destructive: `fromLegacyBlob` coerces absent fields to
+`false`/`0`, so a blob missing `hasAxe` strips the axe from the document. Real
+clients always send a complete `buildSave()`, so this is not a live bug — but
+anything hand-crafting a save must send the whole thing. Found because a test's
+synthetic save did exactly this.
+
+---
+
 ## Server authority — Phase 1 (`docs/SERVER_AUTHORITY.md`)
 
 ### Validated transactions over the character document

@@ -67,10 +67,19 @@ function blank(name, account) {
     progress: { level: 1, xp: 0, xpMax: 100, statPoints: 0, skillPoints: 0,
                 stats: { str: 10, dex: 10, int: 10, vit: 10 },
                 skillXp: { tactics: 0, archery: 0, hiding: 0, healing: 0, wrestling: 0 } },
-    wallet:   { gold: 0, bank: 0 },
-    items:    {},                    // stackables: key -> count
+    // ⚠ THE STARTING KIT MUST MATCH THE CLIENT'S. It did not, and it was not
+    // cosmetic: the client hands every new character an axe (`hasAxe: true`,
+    // weapon 'axe'), 20 gold, 10 arrows and 2 bandages, while this said no axe
+    // and an empty purse. Two consequences, both real:
+    //   1. `gather` refused every tree chop with "need an axe" for any character
+    //      whose document existed before its first save — i.e. every new player.
+    //   2. The first save of every new character logged a divergence on gold,
+    //      arrows and bandages — noise in the exact log that gates Phase 2.
+    // Pinned against the client's own starting-kit line by tools/check_tables.mjs.
+    wallet:   { gold: 20, bank: 0 },
+    items:    { arrows: 10, bandages: 2 },   // stackables: key -> count
     tiers:    { sword: 1, bow: 1, pickaxe: 1 },
-    tools:    { axe: false, sword: false, bow: false, pickaxe: false, houseTool: false },
+    tools:    { axe: true, sword: false, bow: false, pickaxe: false, houseTool: false },
     armor:    {},
     // ⚠ ARPG items need STABLE IDS before trade or chests can reference them.
     // Retrofitting identity onto a live item table after beta is genuinely
@@ -276,7 +285,13 @@ function close(name) {
 
 // Get the document, importing from the legacy blob the first time. Returns the
 // LIVE instance — callers may mutate it, and must call touch() when they do.
-function ensure(name, account, legacyBlobStr) {
+//
+// ⚠ `legacyBlob` may be a FUNCTION, and on the hot path it should be. It is only
+// consulted the first time a character is ever seen, but an eager argument is
+// evaluated on every call — so passing `storage.loadBlob(name)` directly put a
+// synchronous SQLite read in front of every single transaction, defeating the
+// whole point of the live cache. Pass `() => storage.loadBlob(name)` instead.
+function ensure(name, account, legacyBlob) {
   const held = live.get(name);
   if (held) {
     if (account && !held.doc.account) { held.doc.account = account; touch(name); }
@@ -286,6 +301,7 @@ function ensure(name, account, legacyBlobStr) {
   let created = false;
   if (!d) {
     let blob = null;
+    const legacyBlobStr = typeof legacyBlob === 'function' ? legacyBlob() : legacyBlob;
     if (legacyBlobStr) { try { blob = JSON.parse(legacyBlobStr); } catch (e) {} }
     d = blob ? fromLegacyBlob(name, account, blob) : blank(name, account);
     save(name, d);
