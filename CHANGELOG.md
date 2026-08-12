@@ -80,6 +80,39 @@ blocks nothing in the repo can verify.
 
 ---
 
+## Third pass — closing a hole in the Phase 2 gate itself
+
+### `tools/check_coverage.mjs` — what the divergence log will say, before anyone plays
+Compares what the client SAVES (`buildSave`) against what the document MODELS
+(`fromLegacyBlob`). Most of what the log will eventually report is knowable from
+that difference, so the Phase 2 worklist no longer has to wait for play data. It
+produced a concrete list of **12 unmodelled fields** (quests, contracts, bounty
+and antiquarian stock *including their roll timers* — which the client currently
+owns, so it can re-roll shop stock at will — the armor flag, and the whole
+mount), 10 deliberately client-side fields for the `prefs` payload, and 2 the
+server already owns through other messages.
+
+### The gate had a hole: `diff()` compared 6 of 29 modelled fields
+The other 23 could drift without ever producing a log line — so a quiet log meant
+"the six compared fields agree", not "the document agrees". Since Phase 2 is
+gated on that log, the gate was measuring almost nothing.
+
+All 29 are compared now (tools, tiers, stats, skill xp, stat/skill points,
+xpMax, armor slots, gear and artifact counts, contract rank, dungeon best, and
+the chest/boss maps by size). `check_coverage.mjs` reports 0 uncompared, and 22
+mutation cases prove each is actually detected rather than merely referenced.
+
+`px`/`py` are excluded deliberately: the client changes position continuously and
+the document does not model movement, so comparing them would report a divergence
+on every save and bury every real finding. `hp` stays compared and **will be
+noisy** — combat is not a transaction yet, so it genuinely diverges. That is a
+true finding, not a defect in the log.
+
+Verified end to end: the E2E suite's synthetic save now produces exactly the
+expected divergence lines, and `oplog_report.mjs` groups them by field.
+
+---
+
 ## Second hardening pass — the same technique, applied wider
 
 The cross-check found real bugs, so it was pointed at the other two places the

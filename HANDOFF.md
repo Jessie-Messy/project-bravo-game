@@ -917,7 +917,13 @@ npm run check                  # tables + transactions + world data + deploy
 node tools/check_canopy.mjs <three/build>   # canopies are one blob, in their box
 node tools/check_e2e.mjs       # needs: server running + `npm i colyseus.js`
 node tools/oplog_report.mjs    # read a play session's operations log
+node tools/check_coverage.mjs  # informational: the Phase 2 worklist
 ```
+
+⚠ **`check_coverage.mjs` already gives you the Phase 2 worklist without play
+data** — 12 unmodelled fields, including the bounty and antiquarian-stock roll
+TIMERS, which the client currently owns and can therefore re-roll at will. See
+`docs/SERVER_AUTHORITY.md`.
 
 ⚠ `check_tables.mjs` earns its keep on the bugs that **do not crash**. It has
 already found two: the four gems were missing from the server's item whitelist

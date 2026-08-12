@@ -259,5 +259,72 @@ for (const gem of ['ruby', 'sapphire', 'emerald', 'diamond']) {
   ok(`${gem} can be picked up`, tx.apply(d, 'pickup', { type: gem, count: 2 }).ok);
 }
 
+// ── divergence detection ──
+// The Phase 2 decision is read off this log, so a diff() that misses a real
+// change is worse than no log: it says "quiet" about a document that disagrees.
+{
+  const base = () => ({
+    px: 100, py: 200, hp: 100, inv: { wood: 5, gold: 20, arrows: 10, bandages: 2 },
+    bank: { gold: 0 }, level: 1, xp: 0, xpMax: 100, statPoints: 0, skillPoints: 0,
+    hasAxe: true, hasSword: false, hasBow: false, hasPickaxe: false, hasHouseTool: false,
+    swordTier: 1, bowTier: 1, pickaxeTier: 1,
+    stats: { str: 10, dex: 10, int: 10, vit: 10 },
+    skillXp: { tactics: 0, archery: 0, hiding: 0, healing: 0, wrestling: 0 },
+    armor: { head: 0, chest: 0, legs: 0, boots: 0 },
+    equipmentItems: [], equippedItems: { weapon: null, armor: null },
+    artifactInv: [], equippedArtifacts: {},
+    contractRank: 0, dungeonBest: 1, chestsLooted: {}, floorBossesDown: {},
+  });
+  const docFrom = b => character.fromLegacyBlob('D', 'a', b);
+
+  const b0 = base();
+  ok('an unchanged save reports NO divergence',
+     character.diff(docFrom(b0), b0).length === 0, JSON.stringify(character.diff(docFrom(b0), b0)));
+
+  // Each of these is a client-side change the server does not model. Every one
+  // must show up, or it is invisible drift.
+  const mutations = [
+    ['gold',        b => b.inv.gold = 999],
+    ['wood',        b => b.inv.wood = 999],
+    ['bank',        b => b.bank.gold = 500],
+    ['level',       b => b.level = 9],
+    ['xp',          b => b.xp = 5000],
+    ['hp',          b => b.hp = 40],
+    ['a tool',      b => b.hasSword = true],
+    ['a tier',      b => b.swordTier = 5],
+    ['statPoints',  b => b.statPoints = 12],
+    ['skillPoints', b => b.skillPoints = 3],
+    ['xpMax',       b => b.xpMax = 300],
+    ['a stat',      b => b.stats.str = 40],
+    ['skill xp',    b => b.skillXp.tactics = 900],
+    ['armor',       b => b.armor.head = 6],
+    ['gear count',  b => b.equipmentItems.push({ type: 'sword', name: 'x', tier: 5 })],
+    ['artifacts',   b => b.artifactInv.push({ defId: 'x', identified: true })],
+    ['contractRank',b => b.contractRank = 7],
+    ['dungeonBest', b => b.dungeonBest = 9],
+    ['chests',      b => b.chestsLooted['3,4'] = 1],
+    ['floor bosses',b => b.floorBossesDown['2'] = 1],
+    ['equipped',    b => b.equippedItems.weapon = { type: 'sword', iid: 'i1' }],
+    ['worn relics', b => b.equippedArtifacts.neck = { defId: 'x' }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const doc = docFrom(base());
+    const b = base(); mutate(b);
+    const d = character.diff(doc, b);
+    ok(`divergence detected: ${label}`, d.length > 0, 'reported nothing');
+  }
+
+  // And the rule that stops it crying wolf.
+  const partial = { inv: { wood: 5, gold: 20, arrows: 10, bandages: 2 }, hp: 100 };
+  ok('a save that OMITS a field is silence, not a divergence',
+     character.diff(docFrom(base()), partial).length === 0,
+     JSON.stringify(character.diff(docFrom(base()), partial)));
+  // hp arrives as a float from regen; comparing raw would diverge on every save.
+  const floaty = base(); floaty.hp = 100.09985000000003;
+  ok('a float hp does not report a divergence',
+     !character.diff(docFrom(base()), floaty).some(x => x.startsWith('hp:')),
+     JSON.stringify(character.diff(docFrom(base()), floaty)));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
