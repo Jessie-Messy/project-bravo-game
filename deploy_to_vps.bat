@@ -12,6 +12,12 @@ if %ERRORLEVEL% NEQ 0 (
     echo ERROR: preflight failed - see above. Deployment aborted.
     goto :fail
 )
+node "%~dp0tools\check_world_data.mjs"
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo ERROR: preflight failed - see above. Deployment aborted.
+    goto :fail
+)
 echo.
 ssh -i "%USERPROFILE%\.ssh\vps_ed25519" ubuntu@135.148.120.186 "rm -rf /tmp/medieval_prototype.html /tmp/js /tmp/shared /tmp/models /tmp/sounds /tmp/img /tmp/world_edits.json /tmp/water_texture.png"
 if %ERRORLEVEL% NEQ 0 goto :fail
