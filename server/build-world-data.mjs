@@ -54,9 +54,29 @@ const portals = [];
 for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++)
   if (map[y][x] === T.TELEPORT) portals.push([x, y]);
 
+// Resource layer — which tiles can be harvested, for the `gather` transaction.
+// The walkability bitmap above cannot answer this: it only says "blocked", and a
+// tree, a boulder, a wall and a water tile are all equally blocked. Without this
+// the server could not tell a legitimate chop from a claim against open grass.
+//
+// 2 bits per tile (0 none · 1 tree · 2 stone · 3 iron) rather than a byte: at
+// 480x554 a byte-per-tile layer is 355KB of base64 in a file that is otherwise
+// 44KB, and the four states genuinely fit in two bits. 89KB is a fair price for
+// closing the hole.
+const RES = { [T.TREE]: 1, [T.STONE]: 2, [T.ORE_IRON]: 3 };
+const res = new Uint8Array(Math.ceil(MAP_W * MAP_H / 4));
+let resCount = 0;
+for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) {
+  const v = RES[map[y][x]]; if (!v) continue;
+  const i = y * MAP_W + x;
+  res[i >> 2] |= v << ((i & 3) * 2);
+  resCount++;
+}
+
 const out = {
   mapW: MAP_W, mapH: MAP_H, tile: 48,
   walkB64: Buffer.from(bits).toString('base64'),
+  resB64: Buffer.from(res).toString('base64'),
   wolfSpawns: WOLF_SPAWNS, banditSpawns: BANDIT_SPAWNS,
   portals,
   healers: [[HEALER.x, HEALER.y]].concat(WORLD_HEALERS.map(h => [h.x, h.y])),
@@ -64,4 +84,4 @@ const out = {
 };
 writeFileSync(path.join(here, 'world-data.json'), JSON.stringify(out));
 console.log('wrote server/world-data.json —',
-  `${portals.length} portals, ${out.wolfSpawns.length} wolf + ${out.banditSpawns.length} bandit spawns`);
+  `${portals.length} portals, ${out.wolfSpawns.length} wolf + ${out.banditSpawns.length} bandit spawns, ${resCount} resource tiles`);

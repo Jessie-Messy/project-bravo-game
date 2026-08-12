@@ -9,6 +9,7 @@ import { netRejoinAsActiveCharacter } from './net.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave,
   netHousePlace, netHouseUpdate, netHouseRemove,
   netDropAdd, netDropTake, netTradeReq, netTradeAccept, netTradeOffer, netTradeConfirm, netTradeCancel,
+  netTx, txPending,
   playerName, MP_ENABLED } from './net.js';
 import { TILE, MAP_W, MAP_H, T, BLOCKING, CITY,
   HARVEST_RANGE, SWORD_RANGE, SWORD_ARC, TREE_HP, STONE_HP, IRON_HP, RESPAWN_TREE, RESPAWN_STONE, RESPAWN_IRON, DAY_CYCLE_SEC,
@@ -372,6 +373,30 @@ function _mergeEdits(src){
 }
 try{ _mergeEdits(await fetch('world_edits.json').then(r=>r.ok?r.json():null).catch(()=>null)); }catch(_){}
 try{ _mergeEdits(JSON.parse(localStorage.getItem(EDITS_KEY)||'null')); }catch(_){}
+
+// ── Shared economy tables ─────────────────────────────────────────
+// Crafting costs and shop prices come from shared/*.json, which the SERVER also
+// reads (server/tx.js). They used to be stated twice inside this file alone —
+// once as a >= check in canCraft and again as a subtraction in doCraft — with
+// nothing keeping the two in step. Adding a third copy on the server would have
+// made a silent disagreement inevitable, and a disagreement here is not cosmetic:
+// it is either an exploit or a rejection the player cannot understand ("it says
+// I can afford it").
+//
+// ⚠ Fetched, so it is ONE file on disk rather than a copy compiled into each
+// side. If the fetch fails the tables are empty and crafting refuses everything,
+// which is the correct failure — quietly falling back to a second hard-coded
+// copy would recreate exactly the drift this removes.
+let RECIPE_DATA = {}, SHOP_DATA = { smith:{}, mage:{} };
+try{
+  const r = await fetch('shared/recipes.json').then(r=>r.ok?r.json():null).catch(()=>null);
+  if(r){ delete r._doc; RECIPE_DATA = r; }
+  else console.error('[craft] shared/recipes.json failed to load — crafting will be unavailable');
+}catch(_){}
+try{
+  const s = await fetch('shared/shop.json').then(r=>r.ok?r.json():null).catch(()=>null);
+  if(s){ delete s._doc; SHOP_DATA = s; }
+}catch(_){}
 function saveEdits(){ try{ localStorage.setItem(EDITS_KEY,JSON.stringify(worldEdits)); }catch(_){} }
 // ── Pending-respawn tracker (avoids full-map scan every frame) ─────
 const pendingRespawns = new Set();   // entries are "x,y" strings
@@ -3573,6 +3598,12 @@ function applyActiveTuning(){
 // Console handles for dev/debug: game state + armor refresh
 window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, enemies, guards,
   blocked:(x,y,r)=>boxBlocked(x,y,r),
+  // Crafting is table-driven from shared/recipes.json (the server reads the same
+  // file). Exposed so a test can prove the table actually loaded and that the
+  // client agrees with the server about what a recipe costs.
+  recipes:()=>RECIPE_DATA, shopData:()=>SHOP_DATA,
+  craftBlocker:(id)=>recipeBlocker(id),
+  canCraft:(id)=>canCraft(id), craft:(id)=>doCraft(id),
   mineOnce(tx,ty){ const tt=map[ty][tx]; depleteNode(tx,ty,tt,tx*TILE+24,ty*TILE+24); return tt; },
   fallingTrees:()=>_treeActors.filter(a=>a.active).map(a=>({t:+a.t.toFixed(2), lean:+a.grp.quaternion.angleTo(new THREE.Quaternion()).toFixed(2), opacity:+a.cMat.opacity.toFixed(2)})),
   findTree(){ for(let ty=0;ty<map.length;ty++)for(let tx=0;tx<(map[ty]||[]).length;tx++)if(map[ty][tx]===T.TREE)return[tx,ty]; return null; },
@@ -4834,88 +4865,86 @@ function recipeRects(){
     };
   });
 }
-function canCraft(id){
-  const wb = nearbyObject('workbench', 3);
-  const fg = nearbyObject('forge', 3) || Math.hypot(BLACKSMITH.x-player.x, BLACKSMITH.y-player.y) < TILE*2.5;
-  if(id==='planks')    return inv.wood>=3;
-  if(id==='arrows')    return inv.wood>=1;
-  if(id==='wall')      return inv.planks>=1;
-  if(id==='pickaxe')   return inv.planks>=3&&!player.hasPickaxe;
-  if(id==='sword')     return inv.planks>=5&&!player.hasSword;
-  if(id==='bow')       return inv.planks>=4&&!player.hasBow;
-  if(id==='campfire')  return inv.wood>=2&&inv.stone>=2;
-  if(id==='workbench') return inv.planks>=5&&inv.stone>=3;
-  if(id==='larmor')    return inv.hide>=2&&hasUpgradeSlot(1);
-  if(id==='barmor')    return inv.hide>=2&&(inv.bone||0)>=2&&wb&&hasUpgradeSlot(2);
-  if(id==='bandage')   return inv.hide>=2;
-  if(id==='forge')     return inv.stone>=6&&inv.wood>=4;
-  if(id==='iron_ingot') return (inv.iron_ore||0)>=3&&fg;
-  if(id==='mithril_ingot') return (inv.mithril_ore||0)>=3&&fg;
-  if(id==='runic_ingot') return (inv.runic_ore||0)>=3&&fg;
-  if(id==='iron_pick') return (inv.iron_ingot||0)>=3&&inv.planks>=2&&wb;
-  if(id==='iron_sword') return (inv.iron_ingot||0)>=4&&inv.planks>=2&&(player.swordTier||1)<2&&wb;
-  if(id==='steel_sword') return (inv.steel_ingot||0)>=3&&player.hasSword&&(player.swordTier||1)<3&&(wb||fg);
-  if(id==='steel_bow') return (inv.steel_ingot||0)>=3&&player.hasBow&&(player.bowTier||1)<3&&(wb||fg);
-  if(id==='mithril_pick') return (inv.mithril_ingot||0)>=3&&(player.pickaxeTier||1)<4&&wb;
-  if(id==='mithril_sword') return (inv.mithril_ingot||0)>=3&&(player.swordTier||1)<4&&(wb||fg);
-  if(id==='mithril_bow') return (inv.mithril_ingot||0)>=3&&(player.bowTier||1)<4&&(wb||fg);
-  if(id==='runic_pick') return (inv.runic_ingot||0)>=3&&(player.pickaxeTier||1)<5&&wb;
-  if(id==='runic_sword') return (inv.runic_ingot||0)>=3&&(player.swordTier||1)<5&&(wb||fg);
-  if(id==='runic_bow') return (inv.runic_ingot||0)>=3&&(player.bowTier||1)<5&&(wb||fg);
-  if(id==='bronze_arm') return (inv.iron_ingot||0)>=3&&inv.hide>=2&&wb&&hasUpgradeSlot(3);
-  if(id==='steel_arm') return (inv.steel_ingot||0)>=2&&inv.hide>=2&&(inv.bone||0)>=2&&(wb||fg)&&hasUpgradeSlot(4);
-  if(id==='mithril_arm') return (inv.mithril_ingot||0)>=3&&inv.hide>=2&&(wb||fg)&&hasUpgradeSlot(5);
-  if(id==='runic_arm') return (inv.runic_ingot||0)>=3&&inv.hide>=2&&(wb||fg)&&hasUpgradeSlot(6);
-  if(id==='secure_chest') return inv.planks>=5&&(inv.iron_ingot||0)>=4&&wb;
-  if(id==='siege_ram') return inv.wood>=10&&(inv.iron_ingot||0)>=3&&wb;
-  if(id==='torch') return inv.wood>=1&&inv.hide>=1;
-  if(id==='hearth') return inv.stone>=8&&inv.wood>=4&&wb;
-  if(id==='anvil') return (inv.iron_ingot||0)>=5&&wb&&fg;
-  if(id==='lantern') return (inv.iron_ingot||0)>=2&&inv.hide>=1&&wb;
-  return false;
+// ── Crafting, driven by shared/recipes.json ───────────────────────
+// ⚠ This pair used to state every cost TWICE — canCraft as a >= gate, doCraft as
+// a subtraction — with nothing keeping them in step. Both now read the shared
+// table, which the server reads too, so a recipe cannot mean three different
+// things in three places. Only the EFFECTS (what a finished item does to the
+// player) stay in code here, because those are presentation and player state,
+// not economy.
+function craftStations(){
+  return {
+    workbench: nearbyObject('workbench', 3),
+    forge: nearbyObject('forge', 3) || Math.hypot(BLACKSMITH.x-player.x, BLACKSMITH.y-player.y) < TILE*2.5,
+  };
 }
+const TOOL_FLAG = { pickaxe:'hasPickaxe', sword:'hasSword', bow:'hasBow', axe:'hasAxe' };
+const TIER_FIELD = { pickaxe:'pickaxeTier', sword:'swordTier', bow:'bowTier' };
+function recipeBlocker(id){
+  const rec = RECIPE_DATA[id];
+  if(!rec) return 'unknown recipe';
+  const st = craftStations();
+  if(rec.near && rec.near.length){
+    const hits = rec.near.map(t => !!st[t]);
+    const ok = rec.nearAll ? hits.every(Boolean) : hits.some(Boolean);
+    if(!ok) return 'need ' + rec.near.join(rec.nearAll ? ' and ' : ' or ') + ' nearby';
+  }
+  if(rec.notOwned && player[TOOL_FLAG[rec.notOwned]]) return 'already owned';
+  if(rec.needTool && !player[TOOL_FLAG[rec.needTool]]) return 'need a ' + rec.needTool;
+  if(rec.maxTier) for(const k of Object.keys(rec.maxTier))
+    if((player[TIER_FIELD[k]]||1) >= rec.maxTier[k]) return 'already that tier';
+  if(rec.armorSlot && !hasUpgradeSlot(rec.armorSlot)) return 'full set';
+  // `requires` must be HELD; `cost` is held AND spent.
+  for(const src of [rec.cost, rec.requires]) for(const k of Object.keys(src||{}))
+    if((inv[k]||0) < src[k]) return 'need ' + src[k] + ' ' + k;
+  return null;
+}
+function canCraft(id){ return recipeBlocker(id) === null; }
 function doCraft(id){
-  if(!canCraft(id)) return; snd.craft();
+  if(!canCraft(id)) return;
+  const rec = RECIPE_DATA[id];
+  snd.craft();
   questEvent('craft', id);
-  if(id==='planks')   {inv.wood-=3;inv.planks+=1;addFloater(player.x,player.y-20,'+1 plank');}
-  if(id==='arrows')   {inv.wood-=1;inv.arrows+=3;addFloater(player.x,player.y-20,'+3 arrows');}
-  if(id==='wall')     {G.craftOpen=false;G.buildMode=true;G.buildItem='wall';}
-  if(id==='pickaxe')  {inv.planks-=3;player.hasPickaxe=true;player.pickaxeTier=1;addFloater(player.x,player.y-20,'pickaxe!');}
-  if(id==='sword')    {inv.planks-=5;player.hasSword=true;player.weapon='sword';addFloater(player.x,player.y-20,'sword!');}
-  if(id==='bow')      {inv.planks-=4;player.hasBow=true;if(!player.hasSword)player.weapon='bow';addFloater(player.x,player.y-20,'bow!');}
-  // Placeables go into the pack, not straight into build mode. Crafting a
-  // workbench and pressing ESC used to destroy the 5 planks + 3 stone outright:
-  // the cost was spent, build mode cancelled, and nothing was ever placed.
-  if(id==='campfire') {inv.wood-=2;inv.stone-=2;gainPlaceable('campfire');}
-  if(id==='workbench'){inv.planks-=5;inv.stone-=3;gainPlaceable('workbench');}
-  if(id==='larmor')   {inv.hide-=2;equipArmorPiece(1);}
-  if(id==='barmor')   {inv.hide-=2;inv.bone-=2;equipArmorPiece(2);}
-  if(id==='bandage')  {inv.hide-=2;inv.bandages+=1;addFloater(player.x,player.y-20,'+1 bandage');}
-  if(id==='forge')     {inv.stone-=6;inv.wood-=4;gainPlaceable('forge');}
-  if(id==='iron_ingot'){inv.iron_ore-=3;inv.iron_ingot=(inv.iron_ingot||0)+1;addFloater(player.x,player.y-20,'+1 iron ingot');}
-  if(id==='mithril_ingot'){inv.mithril_ore-=3;inv.mithril_ingot=(inv.mithril_ingot||0)+1;addFloater(player.x,player.y-20,'+1 mithril ingot');}
-  if(id==='runic_ingot'){inv.runic_ore-=3;inv.runic_ingot=(inv.runic_ingot||0)+1;addFloater(player.x,player.y-20,'+1 runic ingot');}
-  if(id==='iron_pick') {inv.iron_ingot-=3;inv.planks-=2;player.pickaxeTier=2;player.hasPickaxe=true;addFloater(player.x,player.y-20,'Iron Pickaxe!');}
-  if(id==='iron_sword'){inv.iron_ingot-=4;inv.planks-=2;player.swordTier=2;player.hasSword=true;player.weapon='sword';addFloater(player.x,player.y-20,'Iron Sword!');}
-  if(id==='steel_sword'){inv.steel_ingot-=3;player.swordTier=3;player.hasSword=true;player.weapon='sword';addFloater(player.x,player.y-20,'Steel Sword!');}
-  if(id==='steel_bow') {inv.steel_ingot-=3;player.bowTier=3;player.hasBow=true;player.weapon='bow';addFloater(player.x,player.y-20,'Steel Bow!');}
-  if(id==='mithril_pick') {inv.mithril_ingot-=3;player.pickaxeTier=4;player.hasPickaxe=true;addFloater(player.x,player.y-20,'Mithril Pickaxe!');}
-  if(id==='mithril_sword'){inv.mithril_ingot-=3;player.swordTier=4;player.hasSword=true;player.weapon='sword';addFloater(player.x,player.y-20,'Mithril Sword!');}
-  if(id==='mithril_bow') {inv.mithril_ingot-=3;player.bowTier=4;player.hasBow=true;player.weapon='bow';addFloater(player.x,player.y-20,'Mithril Bow!');}
-  if(id==='runic_pick') {inv.runic_ingot-=3;player.pickaxeTier=5;player.hasPickaxe=true;addFloater(player.x,player.y-20,'Runic Pickaxe!');}
-  if(id==='runic_sword'){inv.runic_ingot-=3;player.swordTier=5;player.hasSword=true;player.weapon='sword';addFloater(player.x,player.y-20,'Runic Sword!');}
-  if(id==='runic_bow') {inv.runic_ingot-=3;player.bowTier=5;player.hasBow=true;player.weapon='bow';addFloater(player.x,player.y-20,'Runic Bow!');}
-  if(id==='bronze_arm'){inv.iron_ingot-=3;inv.hide-=2;equipArmorPiece(3);}
-  if(id==='steel_arm') {inv.steel_ingot-=2;inv.hide-=2;inv.bone-=2;equipArmorPiece(4);}
-  if(id==='mithril_arm'){inv.mithril_ingot-=3;inv.hide-=2;equipArmorPiece(5);}
-  if(id==='runic_arm') {inv.runic_ingot-=3;inv.hide-=2;equipArmorPiece(6);}
-  if(id==='secure_chest') {inv.planks-=5;inv.iron_ingot-=4;gainPlaceable('secure_chest');}
-  if(id==='siege_ram') {inv.wood-=10;inv.iron_ingot-=3;inv.siege_ram=(inv.siege_ram||0)+1;addFloater(player.x,player.y-20,'Siege Ram crafted!');}
-  if(id==='torch') {inv.wood-=1;inv.hide-=1;gainPlaceable('torch',3);}
-  if(id==='hearth') {inv.stone-=8;inv.wood-=4;gainPlaceable('hearth');}
-  if(id==='anvil') {inv.iron_ingot-=5;gainPlaceable('anvil');}
-  if(id==='lantern') {inv.iron_ingot-=2;inv.hide-=1;gainPlaceable('lantern');}
+
+  // Costs and gains, straight from the table.
+  for(const k of Object.keys(rec.cost||{})) inv[k] = (inv[k]||0) - rec.cost[k];
+  for(const k of Object.keys(rec.gain||{})) inv[k] = (inv[k]||0) + rec.gain[k];
+
+  // Effects. Ordered so the floater below can describe whatever happened.
+  let msg = null;
+  if(rec.build){ G.craftOpen=false; G.buildMode=true; G.buildItem=rec.build; }
+  if(rec.placeable) gainPlaceable(rec.placeable, rec.placeCount||1);   // floats its own message
+  if(rec.tool) player[TOOL_FLAG[rec.tool]] = true;
+  if(rec.tier) for(const k of Object.keys(rec.tier)){
+    player[TIER_FIELD[k]] = rec.tier[k];
+    // Upgrading a weapon puts it in hand, as it always has. The plain bow is the
+    // one exception: it must not snatch the hand off a sword you already own.
+    if(k==='sword') player.weapon='sword';
+    if(k==='bow' && (id!=='bow' || !player.hasSword)) player.weapon='bow';
+  }
+  if(id==='sword') player.weapon='sword';
+  if(id==='bow' && !player.hasSword) player.weapon='bow';
+  if(rec.armor) equipArmorPiece(rec.armor);                             // floats its own message
+  else if(!rec.placeable && !rec.build){
+    const gained = Object.keys(rec.gain||{});
+    if(gained.length) msg = '+' + rec.gain[gained[0]] + ' ' + gained[0].replace(/_/g,' ');
+    else if(rec.tool || rec.tier) msg = CRAFT_LABEL[id] || (id.replace(/_/g,' ') + '!');
+    if(msg) addFloater(player.x, player.y-20, msg);
+  }
+
+  // Tell the server what we did. It re-validates against its own copy of this
+  // same table and answers with authoritative deltas — see netTx().
+  netTx('craft', { id });
 }
+// Display names for the tool/tier crafts, which have no inventory gain to name.
+const CRAFT_LABEL = {
+  pickaxe:'pickaxe!', sword:'sword!', bow:'bow!',
+  iron_pick:'Iron Pickaxe!', iron_sword:'Iron Sword!',
+  steel_sword:'Steel Sword!', steel_bow:'Steel Bow!',
+  mithril_pick:'Mithril Pickaxe!', mithril_sword:'Mithril Sword!', mithril_bow:'Mithril Bow!',
+  runic_pick:'Runic Pickaxe!', runic_sword:'Runic Sword!', runic_bow:'Runic Bow!',
+};
+
 // Craft a placeable into the pack. Selecting it on the hotbar puts it in hand;
 // right-click then places it.
 function gainPlaceable(type, n=1){
@@ -4937,8 +4966,10 @@ function depleteNode(tx,ty,tt,cx,cy){
   // Ore still yields per swing; trees give nothing until the whole thing falls.
   if(tt===T.STONE){
     inv.stone+=dmgAmt; for(let i=0;i<dmgAmt;i++)questEvent('stone'); addFloater(cx,cy-12,'+'+dmgAmt+' stone');
+    netTx('gather',{tx,ty},{items:{stone:dmgAmt}});
   } else if(tt===T.ORE_IRON){
     inv.iron_ore=(inv.iron_ore||0)+dmgAmt; addFloater(cx,cy-12,'+'+dmgAmt+' iron ore');
+    netTx('gather',{tx,ty},{items:{iron_ore:dmgAmt}});
   }
   resourceHp[ty][tx]-=dmgAmt;
   const felled = resourceHp[ty][tx]<=0;
@@ -4946,6 +4977,10 @@ function depleteNode(tx,ty,tt,cx,cy){
     if(!felled){ addFloater(cx,cy-12,'🪓'); }         // chips fly; the log comes when it falls
     else {
       inv.wood+=TREE_WOOD; for(let w=0;w<TREE_WOOD;w++) questEvent('wood');
+      // ⚠ Only on the FELLING blow. A tree pays nothing per swing and its whole
+      // load when it goes over, so sending a gather intent per chop would ask the
+      // server for four times the wood.
+      netTx('gather',{tx,ty},{items:{wood:TREE_WOOD}});
       addFloater(cx,cy-18,'🌲 TIMBER!  +'+TREE_WOOD+' wood');
       spawnFallingTree(tx,ty);
     }
@@ -6158,8 +6193,8 @@ function doSellAll(it){
 
 // ── Bank ──────────────────────────────────────────────────────────
 function bankPanelXY(){return panelAt('bank', Math.round(G.canvas.width/2-BANK_W/2), Math.round(G.canvas.height/2-BANK_H/2), BANK_W, BANK_H);}
-function bankDeposit(amt){const a=amt==='all'?inv.gold:Math.min(amt,inv.gold);if(a<=0){addFloater(BANKER.x,BANKER.y-30,'no gold on hand!');return;}inv.gold-=a;bank.gold+=a;addFloater(player.x,player.y-24,'deposited '+a+'g');}
-function bankWithdraw(amt){const a=amt==='all'?bank.gold:Math.min(amt,bank.gold);if(a<=0){addFloater(BANKER.x,BANKER.y-30,'vault is empty!');return;}bank.gold-=a;inv.gold+=a;addFloater(player.x,player.y-24,'withdrew '+a+'g');}
+function bankDeposit(amt){const a=amt==='all'?inv.gold:Math.min(amt,inv.gold);if(a<=0){addFloater(BANKER.x,BANKER.y-30,'no gold on hand!');return;}inv.gold-=a;bank.gold+=a;addFloater(player.x,player.y-24,'deposited '+a+'g');netTx('bank',{dir:'deposit',amount:a},{gold:-a});}
+function bankWithdraw(amt){const a=amt==='all'?bank.gold:Math.min(amt,bank.gold);if(a<=0){addFloater(BANKER.x,BANKER.y-30,'vault is empty!');return;}bank.gold-=a;inv.gold+=a;addFloater(player.x,player.y-24,'withdrew '+a+'g');netTx('bank',{dir:'withdraw',amount:a},{gold:a});}
 function handleBankClick(e){
   const{px,py}=bankPanelXY();
   const dA=[10,50,'all'];
@@ -8782,7 +8817,7 @@ function smithOwned(it){
   if(it.kind==='apiece') return !hasUpgradeSlot(it.mat);   // full set at this material
   return false;
 }
-function doSmithBuy(it){if(!canSmithBuy(it))return;snd.gold();inv.gold-=it.price;if(it.kind==='res'){inv[it.key]+=it.amt;addFloater(player.x,player.y-20,'+'+it.amt+' '+it.label);}if(it.kind==='tool'){player[it.pkey]=true;if(it.wpn)player.weapon=it.wpn;addFloater(player.x,player.y-20,it.label+'!');}if(it.kind==='tier'){player[it.tkey]=it.tier;addFloater(player.x,player.y-20,it.label+' — equipped!');}if(it.kind==='apiece')equipArmorPiece(it.mat);}
+function doSmithBuy(it){if(!canSmithBuy(it))return;snd.gold();inv.gold-=it.price;netTx('buy',{shop:'smith',id:it.id},{gold:-it.price});if(it.kind==='res'){inv[it.key]+=it.amt;addFloater(player.x,player.y-20,'+'+it.amt+' '+it.label);}if(it.kind==='tool'){player[it.pkey]=true;if(it.wpn)player.weapon=it.wpn;addFloater(player.x,player.y-20,it.label+'!');}if(it.kind==='tier'){player[it.tkey]=it.tier;addFloater(player.x,player.y-20,it.label+' — equipped!');}if(it.kind==='apiece')equipArmorPiece(it.mat);}
 function handleSmithClick(e){for(const r of smithRects()){if(e.clientX>=r.btnX&&e.clientX<=r.btnX+r.btnW&&e.clientY>=r.y+(r.h-r.btnH)/2&&e.clientY<=r.y+(r.h+r.btnH)/2){doSmithBuy(r.item);return true;}}return false;}
 function renderSmithPanel(){
   const ctx=G.ctx,{px,py}=smithPanelXY();
@@ -8797,7 +8832,7 @@ const MAGE_ITEMS=[{id:'potion',label:'Heal Potion',sub:'Restores 50 HP  [P to us
 const MAGE_W=300,MAGE_ROW_H=52,MAGE_HEADER=48,MAGE_PAD=14,MAGE_H=MAGE_HEADER+MAGE_PAD+MAGE_ITEMS.length*MAGE_ROW_H+MAGE_PAD;
 function magePanelXY(){return panelAt('mage', Math.round(G.canvas.width/2-MAGE_W/2), Math.round(G.canvas.height/2-MAGE_H/2), MAGE_W, MAGE_H);}
 function mageRects(){const{px,py}=magePanelXY(),top=py+MAGE_HEADER+MAGE_PAD;return MAGE_ITEMS.map((it,i)=>({y:top+i*MAGE_ROW_H,x:px+MAGE_PAD,w:MAGE_W-MAGE_PAD*2,h:MAGE_ROW_H-4,btnX:px+MAGE_W-MAGE_PAD-80,btnW:78,btnH:MAGE_ROW_H-18,item:it}));}
-function handleMageClick(e){for(const r of mageRects()){const it=r.item;if(e.clientX>=r.btnX&&e.clientX<=r.btnX+r.btnW&&e.clientY>=r.y+(r.h-r.btnH)/2&&e.clientY<=r.y+(r.h+r.btnH)/2){if(it.id==='potion'){if(inv.gold<it.price){addFloater(player.x,player.y-20,'need '+it.price+'g!');return true;}if(inv.potions>=it.maxStack){addFloater(player.x,player.y-20,'already full!');return true;}inv.gold-=it.price;inv.potions++;snd.gold();addFloater(player.x,player.y-20,'potion bought!');}return true;}}return false;}
+function handleMageClick(e){for(const r of mageRects()){const it=r.item;if(e.clientX>=r.btnX&&e.clientX<=r.btnX+r.btnW&&e.clientY>=r.y+(r.h-r.btnH)/2&&e.clientY<=r.y+(r.h+r.btnH)/2){if(it.id==='potion'){if(inv.gold<it.price){addFloater(player.x,player.y-20,'need '+it.price+'g!');return true;}if(inv.potions>=it.maxStack){addFloater(player.x,player.y-20,'already full!');return true;}inv.gold-=it.price;inv.potions++;snd.gold();netTx('buy',{shop:'mage',id:it.id},{gold:-it.price,items:{potions:1}});addFloater(player.x,player.y-20,'potion bought!');}return true;}}return false;}
 function renderMagePanel(){
   const ctx=G.ctx,{px,py}=magePanelXY();
   ctx.fillStyle='rgba(6,4,18,.97)';ctx.fillRect(px,py,MAGE_W,MAGE_H);ctx.strokeStyle='#9966cc';ctx.lineWidth=2;ctx.strokeRect(px,py,MAGE_W,MAGE_H);
@@ -11640,6 +11675,34 @@ if(MP_ENABLED){
   net.onDropAdd=m=>{ if(drops.some(d=>d.srvId===m.id))return; drops.push({srvId:m.id,type:m.type,count:m.count,x:m.x,y:m.y}); };
   net.onDropGone=m=>{ const i=drops.findIndex(d=>d.srvId===m.id); if(i>=0)drops.splice(i,1); };
   net.onDropGot=m=>{ invAdd(m.type,m.count); addFloater(player.x,player.y-24,'+'+m.count+' '+m.type); snd.pickup(); };
+  // ── Transaction results (PHASE 1) ──
+  // The client already applied the change optimistically, which is what keeps
+  // crafting and pickups instant. This is reconciliation, not application.
+  //
+  // ⚠ PHASE 1 ONLY: the legacy `save` is still a blanket override, so the server
+  // is not yet the last word and a rejection here must NOT rip items out of a
+  // player's pack — a false rejection (a stale position, a race with a placed
+  // workbench) would be indistinguishable from theft. Until Phase 2 flips
+  // authority, a rejection is recorded and surfaced quietly, and its job is to
+  // make the divergence log quiet by revealing what the server cannot yet model.
+  // Phase 2 turns `_txRollback` on; the rollback data is already carried so that
+  // switch does not need new plumbing.
+  net.onTxResult=m=>{
+    const pend = txPending.get(m.seq); txPending.delete(m.seq);
+    if(m.ok) return;
+    const what = (pend && pend.kind) || m.kind || 'action';
+    console.warn(`[tx] server refused ${what}: ${m.reason}`);
+    G.txRefusals = (G.txRefusals||0) + 1;
+    if(_txRollback && pend && pend.predicted){
+      for(const k of Object.keys(pend.predicted.items||{})) inv[k]=(inv[k]||0)-pend.predicted.items[k];
+      if(pend.predicted.gold) inv.gold-=pend.predicted.gold;
+      addFloater(player.x,player.y-30,'✖ '+m.reason);
+    }
+  };
+  // Flipped on in Phase 2, together with reducing `save` to preferences only.
+  // Turning it on before that would make every server-side modelling gap into a
+  // visible item loss.
+  const _txRollback = false;
   // trading
   net.onTradeInvite=m=>{ G.tradeInvite={from:m.from,name:m.name,t:performance.now()}; addFloater(player.x,player.y-40,'🤝 '+m.name+' wants to trade (see prompt)'); };
   net.onTradeStart=m=>{ openTrade(m.with,m.name); };

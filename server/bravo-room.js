@@ -8,11 +8,15 @@ const { Schema, MapSchema, defineTypes } = require('@colyseus/schema');
 const storage = require('./storage.js');
 const accounts = require('./accounts.js');
 const character = require('./character.js');
+const tx = require('./tx.js');
 const { MobSim, world } = require('./mobs.js');
 
 // Must match the client's constants.js
 const TILE = 48, MAP_W = 480, MAP_H = 554;
 const CITY = { x1: 280, y1: 332, x2: 340, y2: 392 };   // Lunar = safe zone
+// Must match js/state.js. The forge recipes accept the town blacksmith in place
+// of a placed forge, so the server needs to know where it stands to validate them.
+const BLACKSMITH = { x: 319 * TILE + 24, y: 357 * TILE + 24 };
 
 // ── Anti-cheat / combat tuning ──
 const MAX_SPEED   = 700;    // u/s — base 190, horse 2.2x, sprint 1.4x ≈ 585 max legit
@@ -28,6 +32,31 @@ function inCity(x, y) {
   const tx = x / TILE, ty = y / TILE;
   return tx >= CITY.x1 && tx <= CITY.x2 && ty >= CITY.y1 && ty <= CITY.y2;
 }
+
+// ── Resource layer (for the `gather` transaction) ──
+// 2 bits per tile, packed by build-world-data.mjs. The walkability bitmap cannot
+// stand in for this: it only says "blocked", and a tree, a boulder, a wall and
+// deep water are all equally blocked — so without this the server could not tell
+// a real chop from a claim against a city wall.
+const RES_NAME = [null, 'tree', 'stone', 'iron'];
+let resBits = null;
+if (world && world.resB64) {
+  try { resBits = Buffer.from(world.resB64, 'base64'); }
+  catch (e) { console.warn('[bravo] resource layer unreadable:', e.message); }
+}
+if (!resBits) console.warn('[bravo] world-data has no resource layer — gather transactions will be refused.' +
+                           ' Regenerate with: node server/build-world-data.mjs');
+function resourceAt(tx_, ty_) {
+  if (!resBits) return null;
+  if (!(tx_ >= 0 && ty_ >= 0 && tx_ < MAP_W && ty_ < MAP_H)) return null;
+  const i = ty_ * MAP_W + tx_;
+  return RES_NAME[(resBits[i >> 2] >> ((i & 3) * 2)) & 3] || null;
+}
+
+// Harvest reach, matching the client's HARVEST_RANGE, plus a tile of slack for
+// the 10Hz position staleness the server sees. Too tight and legitimate chops
+// get rejected on a laggy connection, which reads as the game being broken.
+const GATHER_RANGE = TILE * 1.6 + TILE;
 
 class PlayerState extends Schema {}
 defineTypes(PlayerState, {
@@ -211,6 +240,77 @@ class BravoRoom extends Room {
       }
     });
 
+    // ── Transactions (PHASE 1 of docs/SERVER_AUTHORITY.md) ──
+    // The client states an INTENT; the server decides the outcome and answers
+    // with deltas. Runs ALONGSIDE the legacy `save`, which is still a blanket
+    // override — so this is not yet the last word, it is the server proving it
+    // can author every one of these correctly before Phase 2 flips authority.
+    //
+    // ⚠ Every reply carries the client's `seq` back. Without it a client cannot
+    // tell which of several in-flight intents a rejection belongs to, and would
+    // roll back the wrong predicted action — which looks exactly like an item
+    // vanishing at random.
+    this.onMessage('tx', (client, m) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p || typeof m !== 'object' || m === null) return;
+      const seq = (m.seq | 0);
+      const kind = ('' + m.kind).slice(0, 24);
+      const reject = reason => client.send('tx_result', { seq, kind, ok: false, reason });
+
+      if (p.dead) return reject('you are dead');
+
+      const mt = this.meta.get(client.sessionId);
+      // Blanket rate limit. Not a balance knob — it is the backstop for every
+      // validation gap, present and future: whatever a modified client finds to
+      // ask for, it cannot ask faster than this.
+      const now = Date.now();
+      if (mt) {
+        if (!mt.txWindow || now - mt.txWindow > 1000) { mt.txWindow = now; mt.txCount = 0; }
+        if (++mt.txCount > 25) return reject('slow down');
+      }
+
+      let doc;
+      try {
+        doc = character.ensure(p.name, (client.auth && client.auth.username) || '', storage.loadBlob(p.name));
+      } catch (e) { return reject('character unavailable'); }
+
+      // Proximity, answered from state the SERVER owns: it tracks every placed
+      // object and the player's own position, so none of this is a client claim.
+      const nearObj = (type, tiles) => this.placedObjects.some(o =>
+        o.type === type && Math.hypot(o.x - p.x, o.y - p.y) <= TILE * tiles);
+      const ctx = {
+        nearby: (what) => {
+          if (what === 'workbench') return nearObj('workbench', 3);
+          // The town blacksmith counts as a forge, matching the client's rule.
+          if (what === 'forge') return nearObj('forge', 3) ||
+            Math.hypot(BLACKSMITH.x - p.x, BLACKSMITH.y - p.y) < TILE * 2.5;
+          if (what === 'smith') return Math.hypot(BLACKSMITH.x - p.x, BLACKSMITH.y - p.y) < TILE * 3;
+          return false;
+        },
+        resourceAt,
+        inRange: (tx_, ty_) =>
+          Math.hypot((tx_ + 0.5) * TILE - p.x, (ty_ + 0.5) * TILE - p.y) <= GATHER_RANGE,
+      };
+
+      // ⚠ `pickup` is NOT accepted here. It is driven by `drop_take` above,
+      // because the drop table is already server-owned there — the server picks
+      // the winner and decides the stack, and the client only ever names an id.
+      // Exposing it on this message too would mean a client could post a type
+      // and a count of its own choosing, which is a free item printer.
+      if (kind === 'pickup') return reject('use drop_take');
+
+      const r = tx.apply(doc, kind, m.intent || {}, ctx);
+      if (!r.ok) {
+        // A rejection is normal (you cannot afford it), so this is not an error
+        // log — but it IS the signal that the client and server disagree about
+        // what is possible, so it stays visible while Phase 1 beds in.
+        console.log(`[tx] ${p.name} ${kind} REJECTED: ${r.reason}`);
+        return reject(r.reason);
+      }
+      character.touch(p.name);
+      client.send('tx_result', { seq, kind, ok: true, deltas: r.deltas });
+    });
+
     // full-save sync: the client streams its whole save blob; we persist it
     // and mirror x/y/hp/kills/deaths onto the schema so they survive here too
     this.onMessage('save', (client, blob) => {
@@ -240,7 +340,11 @@ class BravoRoom extends Room {
           const d = character.diff(doc, blob);
           if (d.length) console.log(`[character] DIVERGENCE ${p.name}: ${d.slice(0, 12).join(' | ')}`
             + (d.length > 12 ? ` (+${d.length - 12} more)` : ''));
-          character.save(p.name, character.adoptFromBlob(doc, blob));
+          // ⚠ Through replace(), not save(): the transaction path holds the LIVE
+          // document instance, and writing a fresh object straight to disk would
+          // leave that instance stale — the next transaction would then commit
+          // against the pre-adopt values and resurrect them.
+          character.replace(p.name, character.adoptFromBlob(doc, blob));
         } catch (e) {
           console.warn(`[character] shadow update failed for ${p.name}: ${e.message}`);
         }
@@ -428,6 +532,17 @@ class BravoRoom extends Room {
       this.drops.delete('' + m.id);
       this.broadcast('drop_gone', { id: '' + m.id });
       client.send('drop_got', { type: d.type, count: d.count });   // only the taker gains it
+      // PHASE 1: credit the document too. This path is left as the client's
+      // pickup route rather than moving it onto the `tx` message, because the
+      // drop table was ALREADY server-owned — the server decides who gets it and
+      // what it is worth, and the client only ever names an id. Routing it
+      // through a second message would have been two code paths for one rule.
+      try {
+        const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', storage.loadBlob(p.name));
+        const r = tx.apply(doc, 'pickup', { type: d.type, count: d.count }, {});
+        if (r.ok) character.touch(p.name);
+        else console.log(`[tx] ${p.name} pickup REJECTED: ${r.reason}`);
+      } catch (e) { console.warn('[tx] pickup credit failed:', e.message); }
     });
     this.clock.setInterval(() => {
       const now = Date.now();
@@ -581,6 +696,11 @@ class BravoRoom extends Room {
     const p = this.state.players.get(client.sessionId);
     if (p) {
       storage.save(p.name, p);
+      // ⚠ Document writes are batched on a timer, so a leaver can be holding up
+      // to that window of unwritten play. Closing flushes it — without this the
+      // batching quietly eats the last couple of seconds of every session, which
+      // is the exact failure the batching decision was warned about.
+      try { character.close(p.name); } catch (e) { console.warn('[character] close failed:', e.message); }
       console.log(`[bravo] - ${p.name} (${client.sessionId})`);
     }
     const tid = this.tradeOf && this.tradeOf.get(client.sessionId);
@@ -627,7 +747,13 @@ class BravoRoom extends Room {
       this.clients.find(c => c.sessionId === sid)?.send('trade_end', {});
   }
 
-  onDispose() { this.persistAll(); }
+  onDispose() {
+    this.persistAll();
+    // Same reason as onLeave: the batch window is a loss window, and a room
+    // going away must not take unflushed documents with it.
+    try { const n = character.flushAll(); if (n) console.log(`[character] flushed ${n} document(s) on dispose`); }
+    catch (e) { console.warn('[character] dispose flush failed:', e.message); }
+  }
 }
 
 module.exports = { BravoRoom };

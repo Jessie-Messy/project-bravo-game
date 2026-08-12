@@ -20,6 +20,7 @@ export const net = {
   onSave: null,         // server-side save blob to apply on join
   character: null,      // PHASE 0 shadow document (not authoritative yet)
   onCharacter: null,
+  onTxResult: null,     // PHASE 1 transaction outcome {seq,kind,ok,deltas|reason}
   onWorldTime: null,    // authoritative world clock {t} — keeps everyone's sky in sync
   onDropAdd: null, onDropGone: null, onDropGot: null,   // shared ground drops
   onTradeInvite: null, onTradeStart: null, onTradeUpdate: null, onTradeDone: null, onTradeEnd: null,
@@ -231,6 +232,7 @@ export async function initNet(getSelfFn) {
     // copy, and having the client hold it makes the divergence visible on this
     // side too rather than only in the server log.
     room.onMessage('character_state', doc => { net.character = doc; if (net.onCharacter) net.onCharacter(doc); });
+    room.onMessage('tx_result', m => { if (net.onTxResult) net.onTxResult(m); });
     room.send('request_character');
     // Ask for our save now that every handler above is attached.
     // ⚠ The server also pushes it from onJoin, but that send happens while we
@@ -333,4 +335,35 @@ export function netTp(reason) {
   if (net.status !== 'online' || !net.room || !getSelf) return;
   const s = getSelf();
   net.room.send('tp', { x: s.x, y: s.y, reason });
+}
+
+// ── Transactions (PHASE 1 of docs/SERVER_AUTHORITY.md) ────────────
+// Send an INTENT and get an authoritative answer. The caller has normally
+// already applied the change locally (prediction) — that is what keeps crafting
+// and pickups feeling instant — so the reply either confirms it or is a
+// rejection the caller must undo.
+//
+// ⚠ Each intent carries a monotonic `seq` and the server echoes it back. Without
+// it, two intents in flight at once cannot be told apart on reply, and a
+// rejection would roll back whichever action the client guessed at — which
+// presents as an item vanishing for no reason. `pending` holds what each seq
+// predicted so the reconciler knows exactly what to reverse.
+let txSeq = 0;
+export const txPending = new Map();   // seq -> {kind, intent, predicted}
+
+// Offline is a demo/tutorial only (see docs/SERVER_AUTHORITY.md, Decisions), so
+// there is deliberately no local transaction path here: single-player keeps its
+// own client-side rules and never round-trips.
+export function netTx(kind, intent, predicted) {
+  if (net.status !== 'online' || !net.room) return 0;
+  const seq = ++txSeq;
+  txPending.set(seq, { kind, intent, predicted: predicted || null, at: Date.now() });
+  // A reply that never arrives would leak an entry per action for the whole
+  // session; drop anything older than a generous round trip.
+  if (txPending.size > 64) {
+    const cut = Date.now() - 30000;
+    for (const [k, v] of txPending) if (v.at < cut) txPending.delete(k);
+  }
+  net.room.send('tx', { seq, kind, intent });
+  return seq;
 }
