@@ -56,6 +56,25 @@ to build so nothing has to be redone.
 - **Blocked on the owner — deploy.** `deploy_server_to_vps.bat`, restart, and
   ⚠ **nginx must proxy `/auth/*`** the way it already proxies `/bravo-ws`, or
   accounts will 404 in production while working perfectly locally.
+  - ⚠ **The deploy scripts were BROKEN and are now fixed.** They listed their
+    files by hand and had gone stale: the server one never copied `accounts.js`,
+    `character.js`, `tx.js` or `shared/` (it would have crash-looped), and the
+    client one never copied `shared/` (crafting would have refused everything in
+    production while working locally). Both now copy by wildcard and run
+    `tools/check_deploy.mjs` first, which reads the scripts themselves and
+    aborts on a gap. **Never go back to a hand-written file list.**
+- **Read `CHANGELOG.md`** for everything on this branch and what to watch when it
+  goes live, and **`docs/HOTFIX.md`** when something is broken in production —
+  symptom → cause → fix, plus the first-five-minutes checks.
+- **Nothing here has been played yet.** It is covered by automated tests, a
+  headless browser boot and end-to-end runs against a real server, but no human
+  has held the controls. First session: check `/health`, then run
+  `node tools/oplog_report.mjs`.
+- **The server now keeps an operations log** (`server/oplog.js` →
+  `server/data/oplog-YYYY-MM-DD.jsonl`): every transaction accepted or refused
+  with its intent and deltas, every divergence, saves, joins, leaves. Console
+  output does not survive a session; this does, and it is what the Phase 2 gate
+  is assessed from. Read it with `node tools/oplog_report.mjs`.
 
 ---
 

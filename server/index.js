@@ -21,7 +21,27 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
-app.get('/health', (req, res) => res.json({ ok: true, uptime: Math.round(process.uptime()) }));
+// ⚠ /health is the ONLY thing a deploy can check without SSHing in, so it
+// reports enough to tell a healthy server from a broken one. `resourceLayer:
+// false` means world-data.json is stale and every gather will be refused;
+// `oplog.disabled: true` means the evidence Phase 2 depends on is not being
+// recorded. Both look completely fine from the outside otherwise.
+app.get('/health', (req, res) => {
+  let extra = {};
+  try {
+    const oplog = require('./oplog.js');
+    const character = require('./character.js');
+    const { world } = require('./mobs.js');
+    extra = {
+      schemaVersion: character.SCHEMA_VERSION,
+      storage: character.backend,
+      worldData: !!world,
+      resourceLayer: !!(world && world.resB64),
+      oplog: oplog.stats(),
+    };
+  } catch (e) { extra = { healthError: e.message }; }
+  res.json(Object.assign({ ok: true, uptime: Math.round(process.uptime()) }, extra));
+});
 app.get('/', (req, res) => res.type('text/plain').send('Project Bravo world server'));
 
 // ── Auth ──────────────────────────────────────────────────────────

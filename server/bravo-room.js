@@ -9,6 +9,7 @@ const storage = require('./storage.js');
 const accounts = require('./accounts.js');
 const character = require('./character.js');
 const tx = require('./tx.js');
+const oplog = require('./oplog.js');
 const { MobSim, world } = require('./mobs.js');
 
 // Must match the client's constants.js
@@ -255,7 +256,17 @@ class BravoRoom extends Room {
       if (!p || typeof m !== 'object' || m === null) return;
       const seq = (m.seq | 0);
       const kind = ('' + m.kind).slice(0, 24);
-      const reject = reason => client.send('tx_result', { seq, kind, ok: false, reason });
+      // ⚠ EVERY refusal path logs. The first version wrote the oplog line only
+      // after tx.apply, so the two refusals that come from the room itself —
+      // the rate limit and the dead check — were invisible. The rate limit is
+      // precisely the one the report tells you to investigate (a legitimate
+      // player should never hit it), so it was the worst possible line to miss.
+      const reject = (reason, extra) => {
+        oplog.write('tx', Object.assign({ name: p.name, kind, ok: false, reason,
+                                          intent: (m && m.intent) || {},
+                                          x: Math.round(p.x), y: Math.round(p.y) }, extra || {}));
+        client.send('tx_result', { seq, kind, ok: false, reason });
+      };
 
       if (p.dead) return reject('you are dead');
 
@@ -304,10 +315,20 @@ class BravoRoom extends Room {
         // A rejection is normal (you cannot afford it), so this is not an error
         // log — but it IS the signal that the client and server disagree about
         // what is possible, so it stays visible while Phase 1 beds in.
+        //
+        // ⚠ A rejection the CLIENT thought would succeed is the interesting
+        // case, and it cannot be told apart from an ordinary one at the console.
+        // The oplog keeps the intent alongside the reason so it can be replayed.
         console.log(`[tx] ${p.name} ${kind} REJECTED: ${r.reason}`);
-        return reject(r.reason);
+        return reject(r.reason);          // reject() does the logging, see above
+
       }
       character.touch(p.name);
+      // Accepted transactions are logged too, not just failures. Without them the
+      // log answers "what was refused" but not "where did this item come from",
+      // and duplication bugs are only ever visible in the accepted stream.
+      oplog.write('tx', { name: p.name, kind, ok: true, intent: m.intent || {},
+                          deltas: r.deltas, x: Math.round(p.x), y: Math.round(p.y) });
       client.send('tx_result', { seq, kind, ok: true, deltas: r.deltas });
     });
 
@@ -338,8 +359,18 @@ class BravoRoom extends Room {
         try {
           const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', null);
           const d = character.diff(doc, blob);
-          if (d.length) console.log(`[character] DIVERGENCE ${p.name}: ${d.slice(0, 12).join(' | ')}`
-            + (d.length > 12 ? ` (+${d.length - 12} more)` : ''));
+          if (d.length) {
+            console.log(`[character] DIVERGENCE ${p.name}: ${d.slice(0, 12).join(' | ')}`
+              + (d.length > 12 ? ` (+${d.length - 12} more)` : ''));
+            // ⚠ THE PHASE 2 GATE. Every line here names a mutation the client
+            // makes that the server does not model; shipping Phase 2 while these
+            // are still appearing is exactly the rework the plan exists to avoid.
+            // Logged in full (not the truncated console form) so the tail can be
+            // counted and grouped after a play session.
+            oplog.write('divergence', { name: p.name, count: d.length, fields: d.slice(0, 40) });
+          } else {
+            oplog.write('save', { name: p.name, bytes: str.length, clean: true });
+          }
           // ⚠ Through replace(), not save(): the transaction path holds the LIVE
           // document instance, and writing a fresh object straight to disk would
           // leave that instance stale — the next transaction would then commit
@@ -542,6 +573,8 @@ class BravoRoom extends Room {
         const r = tx.apply(doc, 'pickup', { type: d.type, count: d.count }, {});
         if (r.ok) character.touch(p.name);
         else console.log(`[tx] ${p.name} pickup REJECTED: ${r.reason}`);
+        oplog.write('tx', { name: p.name, kind: 'pickup', ok: r.ok, reason: r.reason,
+                            intent: { type: d.type, count: d.count }, deltas: r.deltas });
       } catch (e) { console.warn('[tx] pickup credit failed:', e.message); }
     });
     this.clock.setInterval(() => {
@@ -690,6 +723,8 @@ class BravoRoom extends Room {
       pvpTaken: 0, lastCountedHit: 0, strikes: 0, devTp: 0,
     });
     console.log(`[bravo] + ${name} (${client.sessionId}) — ${this.state.players.size} online`);
+    oplog.write('join', { name, account: (client.auth && client.auth.username) || null,
+                          online: this.state.players.size });
   }
 
   onLeave(client) {
@@ -701,6 +736,7 @@ class BravoRoom extends Room {
       // batching quietly eats the last couple of seconds of every session, which
       // is the exact failure the batching decision was warned about.
       try { character.close(p.name); } catch (e) { console.warn('[character] close failed:', e.message); }
+      oplog.write('leave', { name: p.name, x: Math.round(p.x), y: Math.round(p.y), hp: p.hp });
       console.log(`[bravo] - ${p.name} (${client.sessionId})`);
     }
     const tid = this.tradeOf && this.tradeOf.get(client.sessionId);
