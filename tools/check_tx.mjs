@@ -154,9 +154,15 @@ const near = (...types) => ({ nearby: t => types.includes(t) });
   const d = doc();
   ok('pickup credits the stack', tx.apply(d, 'pickup', { type: 'wood', count: 4 }).ok);
   ok('  ...4 wood', d.items.wood === 4, `wood=${d.items.wood}`);
+  // ⚠ Relative to the starting purse, not an absolute. A new character starts
+  // with the client's starting kit (20 gold), so an absolute expectation here
+  // goes stale the moment that kit changes — and would then look like a pickup
+  // bug rather than a stale test.
+  const gold0 = d.wallet.gold;
   ok('pickup gold goes to the wallet, not the pack',
-     tx.apply(d, 'pickup', { type: 'gold', count: 25 }).ok && d.wallet.gold === 25 && !d.items.gold,
-     `gold=${d.wallet.gold} items.gold=${d.items.gold}`);
+     tx.apply(d, 'pickup', { type: 'gold', count: 25 }).ok &&
+     d.wallet.gold === gold0 + 25 && !d.items.gold,
+     `gold=${d.wallet.gold} (started ${gold0}) items.gold=${d.items.gold}`);
   ok('unknown item refused', !tx.apply(d, 'pickup', { type: 'excalibur', count: 1 }).ok);
   ok('absurd count refused', !tx.apply(d, 'pickup', { type: 'wood', count: 1e9 }).ok);
   ok('negative count refused', !tx.apply(d, 'pickup', { type: 'wood', count: -5 }).ok);
@@ -206,6 +212,51 @@ const near = (...types) => ({ nearby: t => types.includes(t) });
   }
   ok('every recipe in the shared table is craftable given its own inputs',
      unreachable.length === 0, unreachable.join(', '));
+}
+
+// ── schema migration: a v1 document must survive ──
+// ⚠ The v2 field (standing) was added to blank(), which only affects NEW
+// characters. Every character created before it must gain the field on load, or
+// the first thing that reads doc.standing.kills throws on an existing player —
+// the one class of user this cannot be allowed to break.
+{
+  const v1 = character.blank('Old', 'acct');
+  delete v1.standing;
+  v1.schemaVersion = 1;
+  const round = JSON.parse(JSON.stringify(v1));
+  // load() migrates; exercise the same path by writing and reading back.
+  character.save('__migtest__', round);
+  const back = character.load('__migtest__');
+  ok('a v1 document loads', !!back);
+  ok('  ...is migrated to v2', back && back.schemaVersion === 2, back && back.schemaVersion);
+  ok('  ...gains a zeroed standing', back && back.standing && back.standing.kills === 0 &&
+     back.standing.deaths === 0 && back.standing.notoriety === 0, JSON.stringify(back && back.standing));
+  ok('  ...and transactions work on it',
+     back && tx.apply(Object.assign(back, { items: { wood: 5 } }), 'craft', { id: 'planks' }, {}).ok);
+}
+
+// ── gather accepts on a real resource tile, per kind ──
+{
+  const inRange = () => true;
+  for (const [kind, item] of [['tree', 'wood'], ['stone', 'stone'], ['iron', 'iron_ore']]) {
+    const d = character.blank('G', 'a');
+    d.tools = { axe: true, sword: true, bow: true, pickaxe: true };
+    const r = tx.apply(d, 'gather', { tx: 5, ty: 5 }, { resourceAt: () => kind, inRange });
+    ok(`gather accepts on a ${kind} tile`, r.ok, r.reason);
+    ok(`  ...credits ${item}`, (d.items[item] | 0) > 0, JSON.stringify(d.items));
+  }
+  // A felled tree pays its whole load at once; ore pays per swing.
+  const t = character.blank('T', 'a'); t.tools = { axe: true };
+  tx.apply(t, 'gather', { tx: 5, ty: 5 }, { resourceAt: () => 'tree', inRange });
+  ok('a felled tree yields 4 wood, not 1', (t.items.wood | 0) === 4, `wood=${t.items.wood}`);
+}
+
+// ── item whitelist covers everything the client can hold ──
+// (the full cross-check lives in tools/check_tables.mjs; this pins the gems,
+// which were missing and would have been silently unrecordable)
+for (const gem of ['ruby', 'sapphire', 'emerald', 'diamond']) {
+  const d = character.blank('Gem', 'a');
+  ok(`${gem} can be picked up`, tx.apply(d, 'pickup', { type: gem, count: 2 }).ok);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

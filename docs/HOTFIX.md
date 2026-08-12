@@ -115,6 +115,34 @@ Invariants that must hold — if one is violated, that is the bug:
 - **`requires` is held, not spent** (only `wall` uses it — the plank is consumed
   when the wall is placed, not when it is crafted).
 
+### "Need an axe" when chopping — or a new character missing its starting kit
+The server's `blank()` document must match the client's starting kit exactly
+(axe, 20 gold, 10 arrows, 2 bandages). It did not, and the axe was the expensive
+half: a brand-new character had `tools.axe: false`, so **every tree chop was
+refused** until the first save adopted the client's `hasAxe`.
+- `node tools/check_tables.mjs` pins this against the client's own starting-kit
+  line in `js/game3d.js`. Run it if you touch either side.
+
+### An item picks up but never persists
+The server keeps its own whitelist of what an item is (`ITEM_KEYS` in
+`server/tx.js`). A key the client holds and the whitelist does not is a **silent
+refusal** — the client shows it, the server declines to record it, and the only
+trace is one oplog line. The four gems (`ruby`/`sapphire`/`emerald`/`diamond`)
+were exactly this.
+- `node tools/check_tables.mjs` enforces the correspondence both ways.
+
+### A transaction "worked" but the document does not show it
+Expected in Phase 1, and the single most misleading thing about the current
+state. `save` is still a blanket override, so the shadow document is re-derived
+from the client's blob on every autosave — **a transaction's effect on the
+document survives only until the next save.**
+- Do **not** verify transactions by reading the document back after play.
+- The oplog's accepted-delta stream is the record of what the server decided.
+- A **partial** save is destructive here: `fromLegacyBlob` coerces absent fields
+  to `false`/`0`, so a blob missing `hasAxe` strips the axe. Real clients always
+  send a complete `buildSave()`, but anything hand-crafting a save must send the
+  whole thing.
+
 ### Gathering refused on obvious trees
 1. `resourceLayer: false` in `/health` → regenerate `world-data.json`.
 2. Otherwise `"too far away"` in the oplog → the server's idea of the player's
@@ -180,11 +208,19 @@ tools/check_*.mjs    fast renderer-free checks — run before committing
 ## 4. Before you commit
 
 ```bash
-node tools/check_tx.mjs                      # 64 transaction cases
+node tools/check_tx.mjs                      # 79 transaction cases
+node tools/check_tables.mjs                  # client/server economy agree
 node tools/check_deploy.mjs                  # deploy covers every dependency
 node tools/check_canopy.mjs <three/build>    # only if trees changed
+node tools/check_e2e.mjs                     # needs a running server + colyseus.js
 node --check js/game3d.js                    # syntax only — NOT sufficient
 ```
+
+`check_tables.mjs` is the one that catches the quiet class of bug — a key the
+client holds and the server does not, a shop button the server does not stock, a
+starting kit that has drifted. **None of those crash.** They present as "I picked
+it up and it did not save" or "the shop took my gold and gave me nothing". It has
+already caught two real ones (below).
 
 ⚠ `node --check` passing is **not** evidence the game boots. A renamed
 identifier once passed the syntax check and broke boot with

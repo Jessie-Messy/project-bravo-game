@@ -907,3 +907,22 @@ Chosen direction (from the depth discussion): **contract board → progression c
 - **Before big edits to `game3d.js`**: re-read the region right before editing (it's ~8k lines and shared).
 - **Verify behavior**, not just load — drive the real flow (`_dev.simulateKill`, open the panel, check `localStorage`). Load-without-error ≠ works.
 - New full-screen panels must be added to `uiBlocking()` and `modalOpen()`, get a render call in the draw list, and a click route in the mouse handler.
+
+---
+
+## Test suite (fast, no renderer, no server unless noted)
+
+```bash
+node tools/check_tx.mjs        # 79 cases — the transaction engine
+node tools/check_tables.mjs    # client and server agree about the economy
+node tools/check_deploy.mjs    # the deploy scripts ship every runtime dependency
+node tools/check_canopy.mjs <three/build>   # canopies are one blob, in their box
+node tools/check_e2e.mjs       # needs: server running + `npm i colyseus.js`
+node tools/oplog_report.mjs    # read a play session's operations log
+```
+
+⚠ `check_tables.mjs` earns its keep on the bugs that **do not crash**. It has
+already found two: the four gems were missing from the server's item whitelist
+(so they could never have been recorded on a character), and the server's blank
+document had no axe while the client hands every new character one — which
+refused **every tree chop** for a new player until their first save.

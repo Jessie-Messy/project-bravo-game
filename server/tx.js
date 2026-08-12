@@ -35,10 +35,19 @@ const ARMOR_SLOTS = ['head', 'chest', 'legs', 'boots'];
 // Stackables the document will accept. A whitelist, not a passthrough: without
 // it a client could name any key at all and grow the document unboundedly, which
 // is both an exploit and the 200KB silent-truncation failure waiting to happen.
+//
+// ⚠ This list must match the client's `inv` in js/state.js plus the placeables.
+// A key here and not there is a typo; a key there and not here is a SILENT
+// REFUSAL — the player picks it up, the client shows it, and the server declines
+// to record it with nothing but one oplog line to show for it. The four gems
+// were exactly that: present in `inv` since gems were added, missing here, so
+// they would never have reached a character document.
+// `tools/check_tables.mjs` enforces the correspondence in both directions.
 const ITEM_KEYS = new Set([
   'wood', 'stone', 'planks', 'arrows', 'hide', 'bone', 'bandages', 'potions',
   'iron_ore', 'mithril_ore', 'runic_ore', 'iron_ingot', 'mithril_ingot',
   'runic_ingot', 'steel_ingot', 'siege_ram', 'skull', 'relics',
+  'ruby', 'sapphire', 'emerald', 'diamond',
   // placeables — the inventory key equals the placeable type
   'campfire', 'workbench', 'forge', 'secure_chest', 'torch', 'hearth', 'anvil', 'lantern',
 ]);
@@ -52,7 +61,11 @@ const fail = reason => ({ ok: false, reason });
 // rejected the tier would destroy the ore, and the player would rightly call it
 // theft. Nothing below mutates `doc` until every check has passed.
 function emptyDelta() {
-  return { items: {}, gold: 0, bank: 0, tools: {}, tiers: {}, armor: [], weapon: null };
+  // ⚠ No `weapon` field. An earlier version carried one from buy(), but commit()
+  // never applied it and the document has no weapon at all — which hand a player
+  // holds is presentation, and belongs in the Phase 2 `prefs` payload, not here.
+  // A delta field nothing reads is a promise the server does not keep.
+  return { items: {}, gold: 0, bank: 0, tools: {}, tiers: {}, armor: [] };
 }
 function addItem(d, k, n) { d.items[k] = (d.items[k] || 0) + n; }
 
@@ -157,7 +170,7 @@ function buy(doc, intent, ctx) {
   const d = emptyDelta();
   d.gold = -it.price;
   if (it.kind === 'item')  addItem(d, it.item, it.count || 1);
-  if (it.kind === 'tool')  { d.tools[it.tool] = true; if (it.weapon) d.weapon = it.weapon; }
+  if (it.kind === 'tool')  d.tools[it.tool] = true;
   if (it.kind === 'tier')  Object.assign(d.tiers, it.tier);
   if (it.kind === 'armor') d.armor.push(it.armor);
   return { ok: true, deltas: commit(doc, d) };

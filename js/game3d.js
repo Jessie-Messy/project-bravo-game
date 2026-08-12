@@ -4934,7 +4934,18 @@ function doCraft(id){
 
   // Tell the server what we did. It re-validates against its own copy of this
   // same table and answers with authoritative deltas — see netTx().
-  netTx('craft', { id });
+  //
+  // ⚠ The predicted delta is sent WITH the intent, not left for later. Phase 2
+  // rolls a rejected transaction back from exactly this data, and a craft with
+  // no prediction attached would roll back silently to nothing — the most common
+  // transaction in the game quietly exempt from reconciliation. It costs nothing
+  // to build here and it is impossible to reconstruct after the fact, because by
+  // the time the rejection lands the inventory has moved on.
+  const predicted = { items: {} };
+  for(const k of Object.keys(rec.cost||{})) predicted.items[k] = -(rec.cost[k]);
+  for(const k of Object.keys(rec.gain||{})) predicted.items[k] = (predicted.items[k]||0) + rec.gain[k];
+  if(rec.placeable) predicted.items[rec.placeable] = (predicted.items[rec.placeable]||0) + (rec.placeCount||1);
+  netTx('craft', { id }, predicted);
 }
 // Display names for the tool/tier crafts, which have no inventory gain to name.
 const CRAFT_LABEL = {
