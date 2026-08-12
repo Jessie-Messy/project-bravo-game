@@ -156,6 +156,61 @@ for (const id of Object.keys(tx.RECIPES).sort())
   }
 }
 
+// ── 9. world constants duplicated on the server ──
+// The server cannot import js/constants.js (ESM, browser globals), so it restates
+// TILE, MAP_W, MAP_H, CITY and the blacksmith's position by hand. Every one of
+// those is a silent, total failure if it drifts:
+//   • TILE/MAP_* → every tile↔world conversion is wrong, so the resource layer,
+//     the walkability bitmap and every range check address the wrong tiles
+//   • CITY       → the PvP safe zone is in the wrong place
+//   • BLACKSMITH → forge recipes are refused in the shop and allowed in a field
+// A comment saying "must match the client's constants.js" is not a mechanism.
+{
+  const cSrc = read('js/constants.js'), sSrc = read('server/bravo-room.js'), stSrc = read('js/state.js');
+  const num = (src, re, label) => {
+    const m = src.match(re);
+    if (!m) { bad(`cannot read ${label}`); return null; }
+    return Number(m[1]);
+  };
+  const cmp = (label, a, b) => {
+    if (a === null || b === null) return;
+    if (a !== b) bad(`${label}: client says ${a}, server says ${b} — ` +
+                     `every tile/world conversion on one side is wrong`);
+  };
+  cmp('TILE',  num(cSrc, /export const TILE = (\d+)/, 'client TILE'),
+               num(sSrc, /const TILE = (\d+)/, 'server TILE'));
+  cmp('MAP_W', num(cSrc, /MAP_W = (\d+)/, 'client MAP_W'), num(sSrc, /MAP_W = (\d+)/, 'server MAP_W'));
+  cmp('MAP_H', num(cSrc, /MAP_H = (\d+)/, 'client MAP_H'), num(sSrc, /MAP_H = (\d+)/, 'server MAP_H'));
+
+  const cityOf = (src, re) => {
+    const m = src.match(re); if (!m) return null;
+    const o = {};
+    for (const p of m[1].matchAll(/(x1|y1|x2|y2)\s*:\s*(\d+)/g)) o[p[1]] = +p[2];
+    return JSON.stringify(o);
+  };
+  const cCity = cityOf(cSrc, /export const CITY = \{([^}]*)\}/);
+  const sCity = cityOf(sSrc, /const CITY = \{([^}]*)\}/);
+  if (cCity && sCity && cCity !== sCity)
+    bad(`CITY safe zone differs — client ${cCity} vs server ${sCity}; the PvP safe zone ` +
+        `would be in a different place on each side`);
+
+  // BLACKSMITH: client states it in world units, the server as tile*TILE+24.
+  const cb = stSrc.match(/export const BLACKSMITH = \{\s*x:(\d+)\*(\d+)\+(\d+),\s*y:(\d+)\*(\d+)\+(\d+)/);
+  const sb = sSrc.match(/const BLACKSMITH = \{ x: (\d+) \* TILE \+ (\d+), y: (\d+) \* TILE \+ (\d+)/);
+  if (!cb || !sb) bad('cannot compare the BLACKSMITH position');
+  else if (cb[1] !== sb[1] || cb[4] !== sb[3] || cb[3] !== sb[2] || cb[6] !== sb[4])
+    bad(`BLACKSMITH position differs — client tile (${cb[1]},${cb[4]}) vs server (${sb[1]},${sb[3]}); ` +
+        `forge recipes would be refused at the shop and allowed somewhere else`);
+
+  // The server's gather reach must be at least the client's harvest range, or
+  // legitimate chops are refused; the extra tile absorbs 10Hz position staleness.
+  const hr = num(cSrc, /HARVEST_RANGE = TILE \* ([\d.]+)/, 'client HARVEST_RANGE');
+  const gr = sSrc.match(/const GATHER_RANGE = TILE \* ([\d.]+) \+ TILE/);
+  if (hr !== null && gr && Number(gr[1]) < hr)
+    bad(`GATHER_RANGE (TILE*${gr[1]}+TILE) is tighter than the client's HARVEST_RANGE ` +
+        `(TILE*${hr}) — legitimate chops at the edge of reach will be refused`);
+}
+
 if (problems.length) {
   console.error(`TABLE CROSS-CHECK FAILED — ${problems.length} disagreement(s)\n`);
   for (const p of problems) console.error('  ✖ ' + p);

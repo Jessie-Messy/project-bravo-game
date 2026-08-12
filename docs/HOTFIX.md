@@ -72,12 +72,14 @@ Nothing in the repo can verify these — they live on the VPS.
 ### After ANY world edit
 
 ```bash
-node server/build-world-data.mjs      # the deploy script does this for you
+node server/build-world-data.mjs      # the SERVER deploy does this for you
+node tools/check_world_data.mjs       # ...and both deploys now verify it
 ```
 Skip it and the server's resource layer disagrees with the client's map: players
 chop a tree the server does not believe is there, and **gather is silently
 refused**. `/health` reports `resourceLayer` but cannot tell you it is *stale* —
-only that it exists.
+only that it exists, which is why the check compares it against a fresh rebuild
+rather than trusting its presence.
 
 ---
 
@@ -208,9 +210,17 @@ tools/check_*.mjs    fast renderer-free checks — run before committing
 ## 4. Before you commit
 
 ```bash
+npm run check                                # everything below except e2e/canopy
+```
+which is:
+```bash
+node tools/check_tables.mjs                  # client/server economy + world constants
 node tools/check_tx.mjs                      # 79 transaction cases
-node tools/check_tables.mjs                  # client/server economy agree
+node tools/check_world_data.mjs              # world-data.json is not stale
 node tools/check_deploy.mjs                  # deploy covers every dependency
+```
+and, separately:
+```bash
 node tools/check_canopy.mjs <three/build>    # only if trees changed
 node tools/check_e2e.mjs                     # needs a running server + colyseus.js
 node --check js/game3d.js                    # syntax only — NOT sufficient

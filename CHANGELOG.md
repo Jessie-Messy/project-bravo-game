@@ -80,6 +80,47 @@ blocks nothing in the repo can verify.
 
 ---
 
+## Second hardening pass — the same technique, applied wider
+
+The cross-check found real bugs, so it was pointed at the other two places the
+client and the server duplicate knowledge.
+
+### World constants are now verified, not commented
+The server cannot import `js/constants.js` (ESM, browser globals), so it restates
+`TILE`, `MAP_W`, `MAP_H`, `CITY` and the blacksmith's position by hand. Every one
+is a silent, total failure if it drifts — a wrong `TILE` makes every tile↔world
+conversion wrong on one side, so the resource layer, the walkability bitmap and
+every range check address the wrong tiles. "Must match the client's constants.js"
+in a comment is not a mechanism. `check_tables.mjs` now compares them, and also
+fails if the server's gather reach is tighter than the client's harvest range
+(which would refuse legitimate chops at the edge). Mutation-tested: a changed
+TILE, a moved city and a moved blacksmith are each caught.
+
+### `tools/check_world_data.mjs` — is the server's world stale?
+`server/world-data.json` is a build artefact generated from the client's map.
+Edit the world, forget to regenerate, and the two disagree with **no error
+anywhere**: the resource layer says grass where the client draws a tree, so chops
+are refused with "nothing to harvest there", and mobs path against the old map.
+`/health` reports `resourceLayer: true` because the layer *exists* — it cannot
+tell you it describes a different world.
+
+The checker rebuilds in memory and compares, reporting **how many tiles** differ
+(3 moved and the whole map shifted need different responses). To make that
+possible without a second copy of the packing logic — which would drift and then
+start passing on a wrong file — `build-world-data.mjs` now exports
+`buildWorldData()` and only writes when run directly. Verified byte-identical
+output after the refactor, and verified the checker catches a corrupted layer.
+
+Both deploy scripts now run it. The server deploy already regenerated; the client
+deploy did not, and ships the map the client renders from.
+
+### `npm run check`
+One command for the fast checks (tables, transactions, world data, deploy).
+`check:canopy` and `check:e2e` stay separate — they need a three.js build and a
+running server respectively.
+
+---
+
 ## Hardening pass — bugs found by cross-checking the two sides
 
 Adding `tools/check_tables.mjs` (client and server must agree about the economy)

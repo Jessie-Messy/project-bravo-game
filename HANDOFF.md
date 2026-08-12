@@ -913,9 +913,7 @@ Chosen direction (from the depth discussion): **contract board → progression c
 ## Test suite (fast, no renderer, no server unless noted)
 
 ```bash
-node tools/check_tx.mjs        # 79 cases — the transaction engine
-node tools/check_tables.mjs    # client and server agree about the economy
-node tools/check_deploy.mjs    # the deploy scripts ship every runtime dependency
+npm run check                  # tables + transactions + world data + deploy
 node tools/check_canopy.mjs <three/build>   # canopies are one blob, in their box
 node tools/check_e2e.mjs       # needs: server running + `npm i colyseus.js`
 node tools/oplog_report.mjs    # read a play session's operations log
@@ -926,3 +924,8 @@ already found two: the four gems were missing from the server's item whitelist
 (so they could never have been recorded on a character), and the server's blank
 document had no axe while the client hands every new character one — which
 refused **every tree chop** for a new player until their first save.
+
+It also now verifies the world constants the server restates by hand (`TILE`,
+`MAP_W/H`, `CITY`, the blacksmith), and `check_world_data.mjs` catches a stale
+`server/world-data.json` — the case where the server and the client disagree
+about where the world *is*, with no error raised anywhere.
