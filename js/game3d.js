@@ -9,7 +9,7 @@ import { netRejoinAsActiveCharacter } from './net.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave,
   netHousePlace, netHouseUpdate, netHouseRemove,
   netDropAdd, netDropTake, netTradeReq, netTradeAccept, netTradeOffer, netTradeConfirm, netTradeCancel,
-  netTx, txPending,
+  netTx, txPending, netPrefs,
   playerName, MP_ENABLED } from './net.js';
 import { TILE, MAP_W, MAP_H, T, BLOCKING, CITY,
   HARVEST_RANGE, SWORD_RANGE, SWORD_ARC, TREE_HP, STONE_HP, IRON_HP, RESPAWN_TREE, RESPAWN_STONE, RESPAWN_IRON, DAY_CYCLE_SEC,
@@ -3602,6 +3602,11 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
   // file). Exposed so a test can prove the table actually loaded and that the
   // client agrees with the server about what a recipe costs.
   recipes:()=>RECIPE_DATA, shopData:()=>SHOP_DATA,
+  // Phase 2: apply a server document over local state (the flip). Exposed so a
+  // test can prove the client honours the server's word without a live socket.
+  applyDoc:(doc)=>applyAuthoritative(doc),
+  txResult:(m)=>reconcileTx(m),
+  txPending:()=>txPending,
   craftBlocker:(id)=>recipeBlocker(id),
   canCraft:(id)=>canCraft(id), craft:(id)=>doCraft(id),
   mineOnce(tx,ty){ const tt=map[ty][tx]; depleteNode(tx,ty,tt,tx*TILE+24,ty*TILE+24); return tt; },
@@ -7852,6 +7857,87 @@ function recomputeDerivedStats(){
   player.speed = 190 + (dex - 10) * 4 + (player.race === 'Centaur' ? 25 : 0) + (eq.speed||0);
 }
 
+// ⚠ MODULE SCOPE, not inside the net wiring. It lived there first, which meant
+// it only existed once a connection had been made — impossible to test offline
+// and needlessly tied to socket setup for a function that is pure over its
+// argument. Nothing here touches the network.
+// ── PHASE 2: the server's word on the economy ──
+// Mirrors character.AUTHORITATIVE on the server: items, wallet, tools, tiers,
+// armor, standing. Everything else in the document is ignored here on purpose —
+// the client is still the author of progression until Phase 3 models it, and
+// overwriting xp or skills from a document that cannot yet track them would
+// roll a player back to whatever their last save happened to say.
+//
+// ⚠ Order matters: this runs AFTER loadGame(), so it overwrites the save's
+// version of these fields rather than being overwritten by it.
+// ⚠ MODULE SCOPE, for the same reason as applyAuthoritative above: this used
+// to live inside the net wiring, so it only existed once a socket was open.
+// That made the one code path that REMOVES ITEMS FROM A PLAYER'S PACK
+// impossible to test without a live server — and a test written against it
+// anyway passed vacuously, because the handler it called was null.
+// ── Transaction results (PHASE 1) ──
+// The client already applied the change optimistically, which is what keeps
+// crafting and pickups instant. This is reconciliation, not application.
+//
+// ⚠ PHASE 1 ONLY: the legacy `save` is still a blanket override, so the server
+// is not yet the last word and a rejection here must NOT rip items out of a
+// player's pack — a false rejection (a stale position, a race with a placed
+// workbench) would be indistinguishable from theft. Until Phase 2 flips
+// authority, a rejection is recorded and surfaced quietly, and its job is to
+// make the divergence log quiet by revealing what the server cannot yet model.
+// Phase 2 turns `_txRollback` on; the rollback data is already carried so that
+// switch does not need new plumbing.
+function reconcileTx(m){
+  const pend = txPending.get(m.seq); txPending.delete(m.seq);
+  if(m.ok) return;
+  const what = (pend && pend.kind) || m.kind || 'action';
+  console.warn(`[tx] server refused ${what}: ${m.reason}`);
+  G.txRefusals = (G.txRefusals||0) + 1;
+  if(_txRollback && pend && pend.predicted){
+    for(const k of Object.keys(pend.predicted.items||{})) inv[k]=(inv[k]||0)-pend.predicted.items[k];
+    if(pend.predicted.gold) inv.gold-=pend.predicted.gold;
+    addFloater(player.x,player.y-30,'✖ '+m.reason);
+  }
+}
+// ⚠ PHASE 2: ON. The server now owns items, wallet, tools, tiers and armor, so
+// a rejection on one of those is authoritative and the predicted change must be
+// undone — otherwise the client shows an item the server does not believe in
+// until the next join silently takes it away, which is far more confusing than
+// an immediate "✖ not enough wood".
+//
+// It is only safe BECAUSE the flip landed in the same change: while `save` was
+// still a blanket override the server was not the last word, and acting on a
+// rejection would have turned every modelling gap into a visible item loss.
+const _txRollback = true;
+function applyAuthoritative(doc){
+  if(!doc || typeof doc !== 'object') return false;
+  try{
+    if(doc.items){
+      // Replace, don't merge. A merge would let a tampered local save keep any
+      // item the server has since removed — which is most of the point.
+      for(const k of Object.keys(inv)) if(k!=='gold') inv[k]=0;
+      for(const [k,v] of Object.entries(doc.items)) inv[k]=v|0;
+    }
+    if(doc.wallet){ inv.gold=doc.wallet.gold|0; bank.gold=doc.wallet.bank|0; }
+    if(doc.tools){
+      player.hasAxe=!!doc.tools.axe; player.hasSword=!!doc.tools.sword;
+      player.hasBow=!!doc.tools.bow; player.hasPickaxe=!!doc.tools.pickaxe;
+      player.hasHouseTool=!!doc.tools.houseTool;
+    }
+    if(doc.tiers){
+      player.swordTier=doc.tiers.sword||1; player.bowTier=doc.tiers.bow||1;
+      player.pickaxeTier=doc.tiers.pickaxe||1;
+    }
+    if(doc.armor) player.armor={head:doc.armor.head|0,chest:doc.armor.chest|0,
+                                legs:doc.armor.legs|0,boots:doc.armor.boots|0};
+    // A weapon the server says you no longer own must leave your hand, or the
+    // hotbar shows a sword you cannot swing.
+    if(player.weapon==='sword'&&!player.hasSword) player.weapon=player.hasAxe?'axe':'fists';
+    if(player.weapon==='bow'&&!player.hasBow)     player.weapon=player.hasAxe?'axe':'fists';
+    return true;
+  }catch(e){ console.warn('[phase2] could not apply the server document', e); return false; }
+}
+
 function buildSave(){
   return {px:player.x,py:player.y,hp:player.hp,inv:{...inv},hasAxe:player.hasAxe,hasSword:player.hasSword,hasBow:player.hasBow,hasPickaxe:player.hasPickaxe,hasArmor:player.hasArmor,weapon:player.weapon,swordTier:player.swordTier||1,bowTier:player.bowTier||1,pickaxeTier:player.pickaxeTier||1,autoDefend:G.autoDefend!==false,aggroMode:!!G.aggroMode,armor:{...player.armor},bank:{gold:bank.gold},skillXp:{tactics:skills.tactics.xp,archery:skills.archery.xp,hiding:skills.hiding.xp,healing:skills.healing.xp,wrestling:skills.wrestling.xp},quests:{idx:questState.idx,prog:questState.prog},hasHouseTool:player.hasHouseTool,placedHouses:net.status==='online'?undefined:G.placedHouses,gambits,gambitsOn:!!G.gambitsOn,
     placedObjects:placedObjects.map(o=>({...o})),
@@ -7875,6 +7961,15 @@ function saveGame(quiet){
     AccountManager.saveCurrentSlot(s, { name: player.name, gender: player.gender, race: player.race, stats: player.stats });
   }catch(e){}
   netSave(s);   // online: server is the source of truth (anti-tamper, no lost loot)
+  // ⚠ PHASE 2: preferences go up SEPARATELY. `save` is on its way out — the
+  // server already ignores the fields it owns inside it — so anything that is
+  // genuinely the player's own setting needs its own route out of here, or it
+  // would disappear with the blob when `save` is finally retired.
+  netPrefs({ autoDefend: G.autoDefend!==false, aggroMode: !!G.aggroMode,
+             gambits, gambitsOn: !!G.gambitsOn,
+             hotbar: hotbar.map(x=>x?{...x}:null),
+             macros: macros.map(m=>({name:m.name,steps:[...m.steps]})),
+             panelOfs });
   if(!quiet) addFloater(player.x,player.y-34, net.status==='online'?'💾 saved to server':'💾 saved!');
 }
 // auto-save to the server periodically so progress never rolls back
@@ -11679,41 +11774,23 @@ if(MP_ENABLED){
       catch(e){ console.warn('[net] server save was unparseable', e); return; }
     }
     loadGame(s);
+    // ⚠ PHASE 2: the DOCUMENT wins for everything the server can validate.
+    // The save blob is still what restores progression (xp, skills, quests) —
+    // nothing on the server can author those yet — but the economy comes from
+    // the document, so a tampered local save cannot bring gold or items with it.
+    applyAuthoritative(net.character);
     recomputeDerivedStats();
     addFloater(player.x,player.y-40,'☁ progress restored from server');
   };
+  // The document can arrive after the save (they are separate requests), so apply
+  // it again whenever it lands. Idempotent by construction.
+  net.onCharacter=doc=>{ if(applyAuthoritative(doc)) recomputeDerivedStats(); };
   // shared ground drops
   net.onDropAdd=m=>{ if(drops.some(d=>d.srvId===m.id))return; drops.push({srvId:m.id,type:m.type,count:m.count,x:m.x,y:m.y}); };
   net.onDropGone=m=>{ const i=drops.findIndex(d=>d.srvId===m.id); if(i>=0)drops.splice(i,1); };
   net.onDropGot=m=>{ invAdd(m.type,m.count); addFloater(player.x,player.y-24,'+'+m.count+' '+m.type); snd.pickup(); };
-  // ── Transaction results (PHASE 1) ──
-  // The client already applied the change optimistically, which is what keeps
-  // crafting and pickups instant. This is reconciliation, not application.
-  //
-  // ⚠ PHASE 1 ONLY: the legacy `save` is still a blanket override, so the server
-  // is not yet the last word and a rejection here must NOT rip items out of a
-  // player's pack — a false rejection (a stale position, a race with a placed
-  // workbench) would be indistinguishable from theft. Until Phase 2 flips
-  // authority, a rejection is recorded and surfaced quietly, and its job is to
-  // make the divergence log quiet by revealing what the server cannot yet model.
-  // Phase 2 turns `_txRollback` on; the rollback data is already carried so that
-  // switch does not need new plumbing.
-  net.onTxResult=m=>{
-    const pend = txPending.get(m.seq); txPending.delete(m.seq);
-    if(m.ok) return;
-    const what = (pend && pend.kind) || m.kind || 'action';
-    console.warn(`[tx] server refused ${what}: ${m.reason}`);
-    G.txRefusals = (G.txRefusals||0) + 1;
-    if(_txRollback && pend && pend.predicted){
-      for(const k of Object.keys(pend.predicted.items||{})) inv[k]=(inv[k]||0)-pend.predicted.items[k];
-      if(pend.predicted.gold) inv.gold-=pend.predicted.gold;
-      addFloater(player.x,player.y-30,'✖ '+m.reason);
-    }
-  };
-  // Flipped on in Phase 2, together with reducing `save` to preferences only.
-  // Turning it on before that would make every server-side modelling gap into a
-  // visible item loss.
-  const _txRollback = false;
+  net.onTxResult = reconcileTx;
+
   // trading
   net.onTradeInvite=m=>{ G.tradeInvite={from:m.from,name:m.name,t:performance.now()}; addFloater(player.x,player.y-40,'🤝 '+m.name+' wants to trade (see prompt)'); };
   net.onTradeStart=m=>{ openTrade(m.with,m.name); };

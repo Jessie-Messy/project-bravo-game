@@ -116,6 +116,11 @@ const compared = new Set([
 const EXCLUDED = new Map([
   ['px', 'movement — validated on the `move` message, not here'],
   ['py', 'movement — validated on the `move` message, not here'],
+  ['horseX', 'the mount\'s position — same reasoning as px/py'],
+  ['horseY', 'the mount\'s position — same reasoning as px/py'],
+  ['onHorse', 'transient: mounting and dismounting changes it constantly'],
+  ['bounty', 'the payload; `bountyAt` (its roll time) is compared instead'],
+  ['antiqStock', 'the payload; `antiqStockAt` (its roll time) is compared instead'],
 ]);
 const uncompared = [...modelled].filter(k => !compared.has(k) && !EXCLUDED.has(k)).sort();
 console.log(`\n${line}\nMODELLED BUT NOT COMPARED (${uncompared.length})\n${line}`);

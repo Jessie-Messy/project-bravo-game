@@ -228,7 +228,14 @@ const near = (...types) => ({ nearby: t => types.includes(t) });
   character.save('__migtest__', round);
   const back = character.load('__migtest__');
   ok('a v1 document loads', !!back);
-  ok('  ...is migrated to v2', back && back.schemaVersion === 2, back && back.schemaVersion);
+  // ⚠ Against SCHEMA_VERSION, not a literal. Every schema bump would otherwise
+  // fail this test for the wrong reason and train whoever bumps it to edit the
+  // assertion without reading what it is protecting.
+  ok('  ...is migrated to the current schema',
+     back && back.schemaVersion === character.SCHEMA_VERSION,
+     `${back && back.schemaVersion} vs ${character.SCHEMA_VERSION}`);
+  ok('  ...and v3 fields are present', back && back.quests && back.mount && Array.isArray(back.flags.contracts),
+     JSON.stringify({ q: back && back.quests, m: back && back.mount })); 
   ok('  ...gains a zeroed standing', back && back.standing && back.standing.kills === 0 &&
      back.standing.deaths === 0 && back.standing.notoriety === 0, JSON.stringify(back && back.standing));
   ok('  ...and transactions work on it',

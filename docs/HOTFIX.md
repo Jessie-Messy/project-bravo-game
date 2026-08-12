@@ -240,14 +240,28 @@ confirm `typeof window._dev === 'object'` with no console errors.
 
 ---
 
-## 5. Turning on Phase 2 (when the divergence log is quiet)
+## 5. Phase 2 has landed — what changed for you
 
-Two switches, and they must flip **together**:
+The server now owns **items, wallet, tools, tiers, armor and standing**
+(`character.AUTHORITATIVE`). A client save can no longer author any of them.
 
-1. `_txRollback = false` → `true` in `js/game3d.js` (the client acts on
-   rejections).
-2. Reduce `save` in `bravo-room.js` to non-authoritative data only and rename it
-   `prefs`, so nothing can post a character to it again.
+### "I had gold/items and now I don't"
+Expected once, for any character whose local save disagreed with the server's
+document — the document wins now. Check what the server thinks:
+```bash
+grep '"name":"<char>"' server/data/oplog-*.jsonl | grep '"ok":true'   # item flow
+```
+If the document is genuinely wrong, the client's blob is still stored verbatim by
+`storage.js` as a frozen backup and can be re-imported. **Nothing is destroyed by
+the flip** — that is why the blob column was kept.
 
-Flipping (1) alone turns every server-side modelling gap into a **visible item
-loss** for players. That is why it ships off. See `docs/SERVER_AUTHORITY.md`.
+### "Crafting says ✖ and takes the item back"
+That is rollback working: the server refused, so the predicted change is undone.
+The reason is in the floater and in the oplog. A reason a player would call a bug
+(not "not enough X") is worth investigating.
+
+### What is NOT authoritative
+XP, HP, skills, quests, contracts and the mount still come from the save, because
+no transaction can author them yet. Do not "fix" a divergence on those by adding
+them to `AUTHORITATIVE` — without a transaction that would delete them. See
+`docs/SERVER_AUTHORITY.md`.

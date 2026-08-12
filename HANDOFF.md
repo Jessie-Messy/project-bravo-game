@@ -26,7 +26,14 @@ to build so nothing has to be redone.
   crowns now have a solved mass count, a welded chain, a real scale hierarchy and
   per-tree colour. See the first four gotchas below — they are the transferable
   lessons, not tree trivia. Guard: `tools/check_canopy.mjs`.
-- **Server authority: Phase 0 done, Phase 1 steps 5–6 done**
+- **Server authority: Phase 0, 1 and 2 done** — the server now OWNS items,
+  wallet, tools, tiers, armor and standing (`character.AUTHORITATIVE`). A client
+  save cannot author them; a tampered save claiming 10⁹ gold changes nothing.
+  ⚠ Progression (xp, hp, skills, quests, contracts, mount) still comes from the
+  save — it has no transaction yet, so flipping it would delete it, not secure
+  it. Phase 3 moves it. **Do not add a field to `AUTHORITATIVE` without a
+  transaction that can author it.**
+- *(historical)* **Phase 0 done, Phase 1 steps 5–6 done**
   (`docs/SERVER_AUTHORITY.md`). The server now validates and applies `craft`,
   `buy`, `bank`, `pickup` and `gather` against its own character document and
   answers with deltas (`server/tx.js`). Still runs alongside the legacy `save`,
