@@ -223,6 +223,7 @@ and, separately:
 ```bash
 node tools/check_canopy.mjs <three/build>    # only if trees changed
 node tools/check_e2e.mjs                     # needs a running server + colyseus.js
+node tools/check_coverage.mjs                # informational: the Phase 2 worklist
 node --check js/game3d.js                    # syntax only — NOT sufficient
 ```
 

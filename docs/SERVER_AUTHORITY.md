@@ -102,6 +102,55 @@ That is what keeps it feeling responsive — see the latency note at the bottom.
    **This is the gate on starting Phase 2, and it needs real play to produce
    data — it cannot be finished at a desk.**
 
+### The Phase 2 worklist, known before anyone plays
+
+`node tools/check_coverage.mjs` compares what the client SAVES against what the
+document MODELS. Most of what the divergence log will eventually say is already
+knowable from that difference, so "wait and see" is not the only option.
+
+**Unmodelled character state (12)** — the server does not own any of this:
+
+| field(s) | what it is |
+|---|---|
+| `quests` | quest index + progress — real progression |
+| `contracts` | the contract board (`contractRank` IS modelled; the contracts are not) |
+| `bounty`, `bountyAt` | the active bounty and when it was rolled |
+| `antiqStock`, `antiqStockAt` | antiquarian shop stock and its roll time |
+| `hasArmor` | the armor flag (individual `armor` slots ARE modelled) |
+| `hasHorse`, `onHorse`, `horseDown`, `horseX`, `horseY` | the mount |
+
+The shop/bounty roll times are the interesting ones: they are **timers the client
+currently owns**, so a client can re-roll stock at will. They want to be
+server-side regardless of Phase 2.
+
+**Deliberately client-side (10)** — these go to the `prefs` payload in step 8,
+not into the document: `aggroMode`, `autoDefend`, `dollGender`, `gambitsOn`,
+`gender`, `hotbar`, `macros`, `name`, `race`, `weapon`.
+
+**Redundant in the save (2)** — the server already owns these through their own
+messages: `placedObjects`, `placedHouses`.
+
+### The divergence log now covers every modelled field — FIXED
+
+`diff()` used to compare 6 of the 29 fields `fromLegacyBlob` models. The other 23
+— every tool flag, every tier, `stats`, `skillXp`, `statPoints`, `armor`,
+`equippedItems`, `artifactInv`, the chest/boss maps — could drift without ever
+producing a log line. Since the log is the Phase 2 gate, that was a hole in the
+gate itself: a quiet log meant "the six compared fields agree", not "the document
+agrees".
+
+All of them are compared now, and `check_coverage.mjs` reports 0 uncompared.
+22 mutation cases in `tools/check_tx.mjs` prove each one is actually detected.
+
+**`px`/`py` are excluded on purpose.** The client changes position continuously
+and the document does not model movement, so comparing them would report a
+divergence on essentially every save and bury every real finding. Position is
+validated on the `move` message, where it belongs.
+
+⚠ **`hp` will be noisy and that is honest.** Combat is not modelled as a
+transaction, so it genuinely diverges on every fight. Expect it to dominate the
+log until Phase 3; it is a true finding, not a bug in the log.
+
 ### What Phase 1 deliberately left
 
 Both because the document does not own the state they would move, so doing them

@@ -361,6 +361,66 @@ function diff(doc, blob) {
   }
   const dg = (doc.gear.items || []).length, bg = (blob.equipmentItems || []).length;
   if (dg !== bg) out.push(`gear.count: doc=${dg} client=${bg}`);
+
+  // ── The low-churn fields ──
+  // ⚠ These were modelled but NEVER COMPARED, and that was a hole in the Phase 2
+  // gate itself: 23 of the 29 fields fromLegacyBlob reads produced no log line
+  // however far they drifted, so a quiet log meant "the six compared fields
+  // agree", not "the document agrees". Everything below changes only through a
+  // specific action, so a divergence here is genuine signal.
+  //
+  // ⚠ POSITION AND VITALS ARE DELIBERATELY NOT WIDENED. The client changes both
+  // continuously (walking, combat), the document models neither, so comparing
+  // them reports a divergence on essentially every save. hp is already compared
+  // and will be noisy for exactly that reason — that is honest, it IS unmodelled
+  // — but adding px/py on top would bury every real finding under movement.
+  // Position is validated on the `move` message instead, where it belongs.
+  const tools = ['axe', 'sword', 'bow', 'pickaxe', 'houseTool'];
+  const toolBlobKey = { axe: 'hasAxe', sword: 'hasSword', bow: 'hasBow',
+                        pickaxe: 'hasPickaxe', houseTool: 'hasHouseTool' };
+  for (const t of tools) {
+    const raw = blob[toolBlobKey[t]];
+    cmp(`tool.${t}`, !!doc.tools[t], !!raw, raw);
+  }
+  for (const [k, bk] of [['sword', 'swordTier'], ['bow', 'bowTier'], ['pickaxe', 'pickaxeTier']])
+    cmp(`tier.${k}`, n(doc.tiers[k]) || 1, n(blob[bk]) || 1, blob[bk]);
+
+  cmp('statPoints', n(doc.progress.statPoints), n(blob.statPoints), blob.statPoints);
+  cmp('skillPoints', n(doc.progress.skillPoints), n(blob.skillPoints), blob.skillPoints);
+  cmp('xpMax', n(doc.progress.xpMax), n(blob.xpMax), blob.xpMax);
+
+  if (blob.stats) for (const k of ['str', 'dex', 'int', 'vit'])
+    cmp(`stat.${k}`, n(doc.progress.stats[k]), n(blob.stats[k]), blob.stats[k]);
+  if (blob.skillXp) for (const k of Object.keys(doc.progress.skillXp || {}))
+    cmp(`skillXp.${k}`, n(doc.progress.skillXp[k]), n(blob.skillXp[k]), blob.skillXp[k]);
+  if (blob.armor) for (const sl of ['head', 'chest', 'legs', 'boots'])
+    cmp(`armor.${sl}`, n(doc.armor[sl]), n(blob.armor[sl]), blob.armor[sl]);
+
+  if (blob.artifactInv) {
+    const da = (doc.artifacts.inv || []).length, ba = blob.artifactInv.length;
+    if (da !== ba) out.push(`artifacts.count: doc=${da} client=${ba}`);
+  }
+  cmp('flags.contractRank', n(doc.flags.contractRank), n(blob.contractRank), blob.contractRank);
+  cmp('flags.dungeonBest', n(doc.flags.dungeonBest) || 1, n(blob.dungeonBest) || 1, blob.dungeonBest);
+
+  // Maps and equipped slots, compared by SIZE rather than deeply. A count catches
+  // "the client looted a chest the server does not know about" — which is the
+  // question this log exists to answer — without turning every save into a deep
+  // object walk, and without a wall of noise the first time a key's value differs
+  // in a way nothing acts on.
+  const size = o => (o && typeof o === 'object') ? Object.keys(o).length : 0;
+  cmp('chestsLooted.count', size(doc.flags.chestsLooted), size(blob.chestsLooted), blob.chestsLooted);
+  cmp('floorBossesDown.count', size(doc.flags.floorBossesDown), size(blob.floorBossesDown), blob.floorBossesDown);
+  if (blob.equippedItems) for (const slot of ['weapon', 'armor']) {
+    const a = doc.gear.equipped && doc.gear.equipped[slot] ? 1 : 0;
+    const b = blob.equippedItems[slot] ? 1 : 0;
+    if (a !== b) out.push(`equipped.${slot}: doc=${a ? 'set' : 'empty'} client=${b ? 'set' : 'empty'}`);
+  }
+  if (blob.equippedArtifacts) {
+    const worn = o => Object.values(o || {}).filter(Boolean).length;
+    cmp('artifacts.worn', worn(doc.artifacts.equipped), worn(blob.equippedArtifacts), blob.equippedArtifacts);
+  }
+
   return out;
 }
 
