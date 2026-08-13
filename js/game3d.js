@@ -2756,6 +2756,7 @@ const EVIS = {
   hellhound:     [0x881a10, 18,26,40, 0, 1],
   silver_serp:   [0xb0b8c0, 12,12,52, 0, 2],
   piper:         [0x9a6820, 14,34, 9, 6, 0],
+  zombie:        [0x6f7a52, 15,34,10, 6, 0],
 };
 const EVIS_DEF = [0x555555, 14,30,10, 6, 0];
 
@@ -2940,6 +2941,7 @@ const MOB_MODELS = {
   slime:         {file:'slime.glb',     h:24, tint:0x55ee66},
   slime_mini:    {file:'slime.glb',     h:14, tint:0x88ff88},
   silver_serp:   {file:'snake.glb',     h:18, tint:0xdde2ea},
+  zombie:        {file:'zombie.glb',    h:38},
 };
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
@@ -4105,6 +4107,17 @@ window.addEventListener('keydown',e=>{
 
 // One model instance per enemy pool slot (built lazily, rebuilt on type change)
 const slotModel = [];
+// Every walk-ish clip a model offers, in a stable order. An in-place walk is
+// excluded: it is an IDLE substitute (see below) and a mob that travels while
+// playing one looks like it is being dragged.
+function walkClips(clips){
+  return clips.filter(c => /walk|shamble|shuffle|limp/i.test(c.name) && !/inplace|in_place/i.test(c.name));
+}
+function pickWalk(clips, slot){
+  const w = walkClips(clips);
+  if(w.length) return w[slot % w.length];
+  return pickClip(clips, /(^|\|)walk/i) || pickClip(clips, /gallop|run/i);
+}
 function buildSlotModel(i, type){
   const old = slotModel[i];
   if (old) { scene.remove(old.obj); old.mixer.stopAllAction(); }
@@ -4120,13 +4133,35 @@ function buildSlotModel(i, type){
   const obj = new THREE.Group(); obj.add(inner); scene.add(obj);
   const mixer = new THREE.AnimationMixer(inner);
   const mk = c => c ? mixer.clipAction(c) : null;
+  // ── Clip selection ────────────────────────────────────────────
+  // ⚠ Ordered most-specific first, and the WALK entry must not be the old
+  // `gallop|run` first: a model carrying both a walk and a run (the zombie has
+  // Walking, Running, Elderly_Shaky_Walk and Limping_Walk_3_inplace) would then
+  // sprint everywhere, because `run` matched before `walk` ever got a look in.
+  // Run is now its own state and is chosen by SPEED at runtime, not by name.
+  //
+  // `idle` falls back to an in-place walk when a model has no idle at all —
+  // a shambling zombie standing perfectly still is worse than one swaying.
   const actions = {
-    idle:   mk(pickClip(asset.clips, /(^|\|)idle$/i) || pickClip(asset.clips, /(^|\|)idle(_2)?$/i) || pickClip(asset.clips, /idle/i)),
-    walk:   mk(pickClip(asset.clips, /gallop|run/i) || pickClip(asset.clips, /walk/i)),
-    attack: mk(pickClip(asset.clips, /attack|punch|bite/i)),
+    idle:   mk(pickClip(asset.clips, /(^|\|)idle$/i) || pickClip(asset.clips, /(^|\|)idle(_2)?$/i)
+            || pickClip(asset.clips, /idle/i) || pickClip(asset.clips, /inplace|in_place/i)),
+    // ⚠ A model with SEVERAL walks gets a different one per pool slot, so two
+    // zombies on screen together do not shamble in lockstep. Identical gait
+    // across a group is the thing that reads as "these are copies" — the same
+    // failure the tree crowns had, and it is just as visible on a mob.
+    walk:   mk(pickWalk(asset.clips, i)),
+    run:    mk(pickClip(asset.clips, /(^|\|)running|(^|\|)run$|gallop|sprint/i)),
+    attack: mk(pickClip(asset.clips, /attack|punch|bite|scream/i)),
+    hit:    mk(pickClip(asset.clips, /hit_?reaction|hit|flinch|damage/i)),
+    death:  mk(pickClip(asset.clips, /(^|\|)dead|death|dying/i)),
   };
   if (actions.attack) { actions.attack.setLoop(THREE.LoopOnce); actions.attack.clampWhenFinished=false; }
-  const inst = { type, obj, mixer, actions, cur:null, atkUntil:0, lx:null, lz:null };
+  // Hit and death are one-shots, and DEATH MUST CLAMP — without it the corpse
+  // snaps back to a standing pose on the last frame, which is the single most
+  // obvious animation bug a player can see.
+  if (actions.hit)   { actions.hit.setLoop(THREE.LoopOnce);   actions.hit.clampWhenFinished=false; }
+  if (actions.death) { actions.death.setLoop(THREE.LoopOnce); actions.death.clampWhenFinished=true; }
+  const inst = { type, obj, mixer, actions, cur:null, atkUntil:0, lx:null, lz:null, hitUntil:0, dead:false };
   slotModel[i]=inst; return inst;
 }
 function setModelAnim(inst, name){
@@ -4170,10 +4205,53 @@ function animModel(inst, e, t, adt, animate){
     if(inst.cur && inst.cur !== 'attack' && inst.actions[inst.cur]) inst.actions[inst.cur].fadeOut(0.06);
     inst.cur = 'attack';
   }
-  if(t >= (e._atkUntil || 0)){
-    if(inst.actions.walk) inst.actions.walk.timeScale =
-      Math.max(0.35, Math.min(2.2, (e._spd ?? e.speed ?? 90) / GAIT_REF));
-    setModelAnim(inst, moving ? 'walk' : 'idle');
+  // ── Death ──
+  // Plays once and holds the last frame. Checked before everything else and
+  // latched on `inst.dead`, because a corpse must not be talked back into a walk
+  // by a stray movement delta from the body settling or the pool being reused.
+  if(e.state === 'dead' || e.hp <= 0){
+    if(!inst.dead && inst.actions.death){
+      inst.dead = true;
+      if(inst.cur && inst.actions[inst.cur]) inst.actions[inst.cur].fadeOut(0.12);
+      inst.actions.death.reset().fadeIn(0.12).play();
+      inst.cur = 'death';
+    }
+    inst.mixer.update(adt);
+    return;
+  }
+  inst.dead = false;
+
+  // ── Hit reaction ──
+  // A short one-shot on taking damage. Deliberately does NOT interrupt an attack
+  // — a mob that flinches out of every swing can never land one, which reads as
+  // the mob being broken rather than as good feedback.
+  const hp = e.hp ?? 0;
+  if(inst.lastHp != null && hp < inst.lastHp && inst.actions.hit &&
+     t > (e._atkUntil || 0) && t > inst.hitUntil){
+    inst.hitUntil = t + Math.min(inst.actions.hit.getClip().duration, 0.6);
+    if(inst.cur && inst.actions[inst.cur]) inst.actions[inst.cur].fadeOut(0.08);
+    inst.actions.hit.reset().fadeIn(0.08).play();
+    inst.cur = 'hit';
+  }
+  inst.lastHp = hp;
+
+  if(t >= (e._atkUntil || 0) && t >= inst.hitUntil){
+    // ── Walk vs run, chosen by ACTUAL ground speed ──
+    // A model with both clips should not pick one by name at load time. Above
+    // 70% of its top speed a mob is chasing, and the run clip reads as intent;
+    // below that it is wandering. The 0.12 hysteresis band stops a mob hovering
+    // at the threshold from flickering between the two every frame.
+    const spd = e._spd ?? 0, top = e.speed || 90;
+    const wantRun = inst.actions.run &&
+      (inst.cur === 'run' ? spd > top * 0.58 : spd > top * 0.70);
+    const gait = moving ? (wantRun ? 'run' : 'walk') : 'idle';
+    const act = inst.actions[gait];
+    // Rate-match the chosen gait to the ground so the feet stay planted.
+    if(act && gait !== 'idle'){
+      const ref = gait === 'run' ? GAIT_REF * 1.9 : GAIT_REF;
+      act.timeScale = Math.max(0.35, Math.min(2.2, (e._spd ?? top) / ref));
+    }
+    setModelAnim(inst, gait);
   }
   inst.mixer.update(adt);
 }

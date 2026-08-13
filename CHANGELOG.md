@@ -11,6 +11,46 @@ on the first real session.
 
 ---
 
+## Zombie mob — 17.9MB → 1.14MB, all 7 animations used
+
+### The model
+`tools/optimize_model.mjs` (new, reusable for every future asset) took the source
+GLB from **17.88MB to 1.14MB — 93.6% smaller** — keeping all seven animations and
+the skeleton intact: strip emissive, de-metal, opaque + single-sided, 2048² PNG →
+1024² WebP, weld + simplify 102,006 → 15,730 triangles, resample keyframes,
+quantize. Deliberately **not** Draco: the CDN decoder has already failed silently
+in this project once, and quantization needs no decoder for most of the win.
+
+**Two exporter defaults were rendering the character wrong**, and neither is
+visible in the file — only in a render:
+- `emissiveFactor [1,1,1]` + emissive texture — the self-lit bug that already
+  shipped on the protagonist and the horse. Stripping it also deleted 6MB.
+- **`metallicFactor` defaults to 1.0 in glTF when omitted.** A fully metallic
+  character with no environment map renders black, and the first in-game shot was
+  four black silhouettes standing in noon sun. Skin and cloth are dielectric.
+
+### All seven clips have a job
+The rig knew three states (idle/walk/attack). It now knows six, and the seventh
+clip is used for variety:
+
+| state | clip | note |
+|---|---|---|
+| idle | `Limping_Walk_3_inplace` | the model has no idle; a shambling zombie standing still is worse than one swaying |
+| walk | `Elderly_Shaky_Walk` / `Walking` | **one per pool slot**, so two zombies do not shamble in lockstep |
+| run | `Running` | chosen by ACTUAL ground speed with a hysteresis band, not by name |
+| attack | `Zombie_Scream` | |
+| hit | `Hit_Reaction` | one-shot on damage; deliberately does not interrupt an attack |
+| death | `Dead` | one-shot, **clamped** — without that the corpse snaps back to standing |
+
+⚠ The old walk matcher tried `gallop|run` *before* `walk`, so a model carrying
+both would have sprinted everywhere. Run is its own state now.
+
+`tools/check_model.mjs` asserts the skeleton actually deforms, that each state
+resolved to a *different* clip, and that the material is not self-lit — the
+things that are invisible in a still frame.
+
+---
+
 ## PHASE 2 — authority flipped for the economy
 
 The server now owns **items, wallet, tools, tiers, armor and standing**. A client

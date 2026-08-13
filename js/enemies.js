@@ -27,6 +27,11 @@ export const ENEMY_CFG = {
   piper:       { maxHp:520, speed:65,  damage:42, attackRange:TILE*1.6, aggroRange:TILE*12, attackCooldown:2.0, r:26 },
   giant_rat:   { maxHp:15,  speed:120, damage:4,  attackRange:TILE*0.9, aggroRange:TILE*4,  attackCooldown:1.2, r:8  },
   ratman_archer: { maxHp:34, speed:100, damage:10, attackRange:TILE*5.0, aggroRange:TILE*6,  attackCooldown:1.8, r:10 },
+  // Slow, tanky, relentless. Tuned around the model's own animation set: it has a
+  // shambling walk AND a run, so the aggro range is long and the speed low —
+  // a zombie that noticed you from a long way off and then shuffled after you is
+  // the fantasy, and the run clip only appears once it is close and committed.
+  zombie:      { maxHp:70,  speed:44,  damage:14, attackRange:TILE*1.1, aggroRange:TILE*7,  attackCooldown:1.7, r:12 },
 };
 
 // ── Utility: tileAt / blockedAt / boxBlocked ───────────────────────
