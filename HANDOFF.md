@@ -939,21 +939,24 @@ they come back:
   metallic character with nothing to reflect renders **black**. The zombie's
   first in-game render was four black silhouettes in bright noon sun.
 
-### ⚠ Props: quantization vs client-side rescaling
+### ⚠ PROPS MUST BE OPTIMIZED WITH `--no-quantize`
 
-`tools/optimize_model.mjs` quantizes positions, which stores them as **normalized
-integer** attributes. `BufferGeometry.scale()` / `applyMatrix4()` then write floats
-back into an integer array and truncate — the chest and barrel normalised to 2
-units instead of ~13 and rendered as invisible specks with `count:1` and
-`visible:true`, which looks exactly like "the model failed to load".
+```bash
+node tools/optimize_model.mjs in.glb models/out.glb --tris 2000 --tex 512 --no-quantize
+```
 
-`loadPropModel()` now VERIFIES the baked height and keeps the procedural mesh when
-it is wrong, so this degrades safely. To actually land a GLB prop, either add a
-`--no-quantize` path to the optimizer for props (they are small; quantization buys
-little) or dequantize to Float32 in the loader before transforming.
+Quantization stores positions as **normalized integer** attributes. Characters are
+fine (used exactly as authored), but a PROP is rescaled on load — `loadPropModel()`
+matches each GLB to the procedural mesh it replaces so every def's hand-tuned
+scale/offset keeps working — and `BufferGeometry.scale()` writes floats into an
+integer array and **truncates**. The chest and barrel came out 2 units tall instead
+of ~13 and drew as invisible specks with `count:1` and `visible:true`, which is
+indistinguishable from "the model never loaded".
 
-**Status: chest_closed.glb and barrel_old.glb are optimized and committed, but the
-game is still drawing the procedural chest and barrel.**
+`loadPropModel()` verifies the baked height and keeps the procedural mesh if it is
+wrong, so a mistake here degrades safely instead of deleting a prop.
+
+**Live props:** secure_chest, barrel, crate, gravestone, workbench.
 
 ## Test suite (fast, no renderer, no server unless noted)
 

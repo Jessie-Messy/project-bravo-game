@@ -1701,6 +1701,12 @@ const secureChestMesh = makeMesh(propGeo([
 // player's own storage. Body + lid are separate instanced meshes.
 const lootChestMesh = makeMesh(new THREE.BoxGeometry(24, 13, 17), new THREE.MeshStandardMaterial({color:0x8a6a2a, roughness:0.5, metalness:0.45}), 400);
 const lootChestLidMesh = makeMesh(new THREE.BoxGeometry(25, 4, 18), new THREE.MeshStandardMaterial({color:0xd8b24a, roughness:0.35, metalness:0.7, emissive:0x2a1e06}), 400);
+// Sizing references AND fallbacks for the GLB props — see loadPropModel. Each
+// one also decides the prop's world size, since the GLB is matched to it.
+const crateMesh = makeMesh(new THREE.BoxGeometry(20, 16, 20),
+  new THREE.MeshStandardMaterial({color:0x8a6a42, roughness:0.85, metalness:0.0}), 500);
+const gravestoneMesh = makeMesh(new THREE.BoxGeometry(12, 22, 4),
+  new THREE.MeshStandardMaterial({color:0x8a8f92, roughness:0.9, metalness:0.0}), 500);
 // Sizing reference AND fallback for the barrel prop — see loadPropModel.
 const barrelMesh = makeMesh(new THREE.CylinderGeometry(8, 7, 20, 10),
   new THREE.MeshStandardMaterial({color:0x7a5433, roughness:0.85, metalness:0.0}), 500);
@@ -1809,7 +1815,7 @@ const PLACEABLES = {
   campfire:     { label:'Campfire',     emoji:'🔥', invKey:'campfire',     mesh:()=>campfireMesh,      y:3,  scale:3.0, flame:{y:10,s:1.5}, light:true,  surfaces:['ground'],
                   burn:{ fuelSec:DAY_CYCLE_SEC, spent:'douse', relight:{wood:1} } },
   // 32×14×20 → 112×49×70 ≈ 1.6m wide, 0.7m high. Waist-high bench.
-  workbench:    { label:'Workbench',    emoji:'🛠', invKey:'workbench',    mesh:()=>workbenchMesh,     y:7,  scale:3.5, flame:null,         light:false, surfaces:['ground'] },
+  workbench:    { label:'Workbench',    emoji:'🛠', invKey:'workbench',    mesh:()=>propMeshes.workbench||workbenchMesh, y:7,  scale:3.5, flame:null,         light:false, surfaces:['ground'] },
   // r14/16 h24 → r42/48 h72 ≈ 1.35m wide, 1m tall. Chest-high stone forge.
   forge:        { label:'Forge',        emoji:'🏭', invKey:'forge',        mesh:()=>forgeMesh,         y:12, scale:3.0, flame:null,         light:true,  surfaces:['ground'] },
   // 22×12×16 → 66×36×48 ≈ 0.95m wide, 0.5m tall. Knee-high strongbox.
@@ -1828,6 +1834,8 @@ const PLACEABLES = {
   // Pure decor — no burn, no light, no menu. The cheapest kind of prop to add and
   // the kind a town needs most of.
   barrel:       { label:'Barrel',       emoji:'🛢', invKey:'barrel',       mesh:()=>propMeshes.barrel||barrelMesh, y:10, scale:2.2, flame:null,         light:false, surfaces:['ground','house'] },
+  crate:        { label:'Crate Pile',   emoji:'📦', invKey:'crate',        mesh:()=>propMeshes.crate||crateMesh,           y:8,  scale:2.2, flame:null,         light:false, surfaces:['ground','house'] },
+  gravestone:   { label:'Gravestone',   emoji:'🪦', invKey:'gravestone',   mesh:()=>propMeshes.gravestone||gravestoneMesh, y:11, scale:2.0, flame:null,         light:false, surfaces:['ground'] },
 };
 // ── Burning down ──────────────────────────────────────────────────
 // Fuel is DERIVED, never ticked: an object records `litAt` from worldNow() and
@@ -3068,6 +3076,9 @@ const loadedModels = {};   // file → {template, clips, natH, yOff}
 // loader it uses is constructed.
 loadPropModel('secure_chest', 'chest_closed.glb', secureChestMesh, 500);
 loadPropModel('barrel',       'barrel_old.glb',   barrelMesh,      500);
+loadPropModel('crate',        'crate_pile.glb',   crateMesh,       500);
+loadPropModel('gravestone',   'gravestone.glb',   gravestoneMesh,  500);
+loadPropModel('workbench',    'workbench.glb',    workbenchMesh,   500);
 
 function pickClip(clips, res){ return clips.find(c=>res.test(c.name)) || null; }
 
@@ -5040,6 +5051,8 @@ const RECIPES=[
   {id:'anvil',    top:'5 iron ingots → anvil',        adv:true,sub:()=>nearbyObject('workbench',3)&&nearbyObject('forge',3)?'have: '+(inv.iron_ingot||0)+' ingots':'need: workbench & forge'},
   {id:'lantern',  top:'2 iron ingots + 1 hide → lantern',adv:true,sub:()=>nearbyObject('workbench',3)?'have: '+(inv.iron_ingot||0)+'i  '+inv.hide+'h':'need: workbench'},
   {id:'barrel',   top:'2 planks → barrel (decor)',   adv:false,sub:()=>'have: '+inv.planks+' planks'},
+  {id:'crate',    top:'3 planks → crate pile (decor)',adv:false,sub:()=>'have: '+inv.planks+' planks'},
+  {id:'gravestone',top:'4 stone → gravestone (decor)',adv:false,sub:()=>'have: '+inv.stone+' stone'},
 ];
 const PANEL_H=HEADER_H+PANEL_PAD+Math.ceil(RECIPES.length/2)*(BTN_H+BTN_GAP)-BTN_GAP+PANEL_PAD;
 // ── Draggable panels ──────────────────────────────────────────────
