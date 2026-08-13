@@ -10,6 +10,8 @@
     "check:e2e": "node tools/check_e2e.mjs",
     "oplog": "node tools/oplog_report.mjs",
     "build:world": "node server/build-world-data.mjs",
-    "check:client": "node tools/check_client.mjs"
+    "check:client": "node tools/check_client.mjs",
+    "check:model": "node tools/check_model.mjs",
+    "optimize:model": "node tools/optimize_model.mjs"
   }
 }

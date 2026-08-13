@@ -917,6 +917,28 @@ Chosen direction (from the depth discussion): **contract board → progression c
 
 ---
 
+## Models
+
+`tools/optimize_model.mjs` shrinks a source character GLB for the web. The zombie
+arrived at **17.9MB and left at 1.14MB (93.6% smaller)** with all 7 animations
+intact. Run it on every new asset:
+
+```bash
+npm i @gltf-transform/core @gltf-transform/extensions @gltf-transform/functions meshoptimizer sharp
+node tools/optimize_model.mjs in.glb models/out.glb --tris 12000 --tex 1024
+node tools/check_model.mjs models/out.glb      # needs playwright + a server on :5173
+```
+
+⚠ **Two exporter defaults render characters WRONG, and both are invisible until
+you look at a render.** The optimizer fixes both, and `check_model.mjs` fails if
+they come back:
+- `emissiveFactor [1,1,1]` + an emissive texture → the model glows at night and
+  ignores scene light. This shipped once on the protagonist and the horse and
+  cost a session to find, because every theory about the *lighting* was wrong.
+- **`metallicFactor` defaults to 1.0 when the exporter omits it** → a fully
+  metallic character with nothing to reflect renders **black**. The zombie's
+  first in-game render was four black silhouettes in bright noon sun.
+
 ## Test suite (fast, no renderer, no server unless noted)
 
 ```bash
