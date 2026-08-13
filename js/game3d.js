@@ -1714,6 +1714,31 @@ const torchMesh = makeMesh(new THREE.CylinderGeometry(1.5, 2, 28, 6), new THREE.
 const hearthMesh = makeMesh(new THREE.BoxGeometry(24, 20, 24), new THREE.MeshStandardMaterial({color:0x555555, roughness:0.9, map:rockTex}), 500);
 const anvilMesh = makeMesh(new THREE.BoxGeometry(18, 10, 10), new THREE.MeshStandardMaterial({color:0x333333, metalness:0.8, roughness:0.3}), 500);
 const placedLanternMesh = makeMesh(new THREE.CylinderGeometry(2.5, 2.5, 8, 6), new THREE.MeshStandardMaterial({color:0x1a1a1a, metalness:0.9, roughness:0.1}), 1000);
+// ── Street-lamp post ──────────────────────────────────────────────
+// The city's lanterns stand on posts rather than sitting in the road. This is
+// deliberately NOT a PLACEABLES row: every entry there is a craftable the player
+// can hold, so adding one would put a "Lamppost" in the bag, in ITEM_EQUIP, and
+// in the economy cross-check, for a thing nobody can pick up. Instead the post
+// is a companion mesh drawn beside the lantern head — the same arrangement
+// lootChestMesh/lootChestLidMesh already use for a two-part object.
+//
+// Local space runs 0 (ground) to LAMP_POST_H at the collar, so the lantern head
+// simply mounts at LAMP_POST_H. Scale is 1: these are authored at world size
+// because nothing rescales them.
+const LAMP_POST_H = 150;                 // ≈2.2m at ~69 units/m — head at eye level and above
+const lampPostMesh = makeMesh(propGeo([
+  // [w, h, d, x, y, z, ry, colour]
+  // ⚠ Warm greys, not blue-greys. 0x2a2c30 is a *cool* dark grey, and under this
+  // scene's sky ambient it read as painted BLUE rather than iron in daylight.
+  [14, 5,  14, 0, 2.5,              0, 0, 0x4a453d],   // footing
+  [10, 6,  10, 0, 7,                0, 0, 0x413c35],   // plinth
+  [4.5, LAMP_POST_H - 26, 4.5, 0, 10 + (LAMP_POST_H - 26) / 2, 0, 0, 0x38332c],  // post
+  [7,  3,  7,  0, LAMP_POST_H - 14, 0, 0, 0x8a6d33],   // brass collar
+  [6,  9,  6,  0, LAMP_POST_H - 5,  0, 0, 0x38332c],   // bracket under the head
+]),
+  // ⚠ Low metalness. At 0.6 the posts mirrored the sky and read BLUE in daylight
+  // — painted ironwork, not chrome. Roughness carries the material instead.
+  new THREE.MeshStandardMaterial({ vertexColors:true, color:0xffffff, roughness:0.72, metalness:0.25 }), 200);
 // Glowing flame blobs on torches / campfires / lanterns so every placed light
 // source visibly reads as one (the actual PointLights come from the pool below).
 const placedFlameMesh = makeMesh(new THREE.SphereGeometry(4, 7, 6), new THREE.MeshBasicMaterial({
@@ -1868,6 +1893,7 @@ const FACE_DIR = { e:[1,0], w:[-1,0], s:[0,1], n:[0,-1] };
 // Tiles a 'ground' placeable may stand on. CAVE_FLOOR is new — you could not put
 // a torch down in a dungeon before, which was most of where you'd want one.
 const PLACE_GROUND = new Set([T.GRASS, T.PATH, T.CAVE_FLOOR, T.CAVE_ENTRANCE]);
+let _lastNightFactor = 0;
 const PLACEABLE_LIGHTS = new Set(Object.keys(PLACEABLES).filter(k=>PLACEABLES[k].light));
 
 let wallDirty=true, treeDirty=true, stoneDirty=true, ironDirty=true, caveDirty=true, customDirty=true, placedObjectsDirty=true;
@@ -2123,7 +2149,7 @@ function rebuildIron() {
 }
 const _placedCount = new Map();          // mesh → instances written this rebuild
 function rebuildPlacedObjects() {
-  let nFlame=0;
+  let nFlame=0, nLampPost=0;
   const capFlame=placedFlameMesh.instanceMatrix.count;
   const addFlame=(x,y,z,s)=>{
     if(nFlame>=capFlame) return;
@@ -2166,14 +2192,25 @@ function rebuildPlacedObjects() {
     // which is measured from the wall they hang on, and the wall instances
     // already ride the terrain — so only the free-standing branch needs this.
     const oGY = heightAt(o.x, o.y);
-    _pos.set(o.x, oGY + def.y*s, o.y); _sc1.set(s,s,s);
+    // A civic lantern is a STREET LAMP: it rides a post instead of sitting in
+    // the road. The post is its own instanced mesh, so the head, its flame and
+    // its PointLight (see the placement-light loop) all shift up by the same
+    // LAMP_POST_H — keep the three in step or the glow detaches from the glass.
+    let lift = 0;
+    if(o.civic && nLampPost < lampPostMesh.instanceMatrix.count){
+      lift = LAMP_POST_H;
+      _pos.set(o.x, oGY, o.y); _sc1.set(1,1,1);
+      _m4.compose(_pos,_qId,_sc1); lampPostMesh.setMatrixAt(nLampPost++,_m4);
+    }
+    _pos.set(o.x, oGY + lift + def.y*s, o.y); _sc1.set(s,s,s);
     _m4.compose(_pos,_qId,_sc1); mesh.setMatrixAt(n,_m4);
     _placedCount.set(mesh, n+1);
-    if(fscale>0) addFlame(o.x, oGY + def.flame.y*s, o.y, fscale);
+    if(fscale>0) addFlame(o.x, oGY + lift + def.flame.y*s, o.y, fscale);
   }
   // Every registry mesh must be marked, including ones that drew nothing this
   // pass — otherwise a mesh keeps last window's count and ghosts stay on screen.
   for(const k in PLACEABLES){ const m=PLACEABLES[k].mesh(); markInst(m, _placedCount.get(m)||0); }
+  markInst(lampPostMesh, nLampPost);
   markInst(placedFlameMesh,nFlame);
   rebuildWorldChests();
 }
@@ -2308,7 +2345,7 @@ function updateEnvironmentCycle(dt) {
   else if (time < DUSK0) dayF = 1;
   else if (time < DUSK1) dayF = 1 - (time - DUSK0) / (DUSK1 - DUSK0);
   else                   dayF = 0;
-  const nightFactor = 1 - dayF;
+  const nightFactor = 1 - dayF; _lastNightFactor = nightFactor;
 
   // ── Moon phase cycle (8 phases over 8 day/night cycles) ──
   // Phase 0=New, 1=Waxing Crescent, 2=First Quarter, 3=Waxing Gibbous,
@@ -2432,7 +2469,7 @@ function updateEnvironmentCycle(dt) {
   // Placed lights: campfires, forges, torches, hearths, lanterns
   // isLit(), not just "is a light type" — a doused campfire has to go dark.
   const lightSources = placedObjects.filter(o => PLACEABLE_LIGHTS.has(o.type) && isLit(o))
-    .map(o => ({ type: o.type, x: o.x, y: o.y }));
+    .map(o => ({ type: o.type, x: o.x, y: o.y, civic: !!o.civic, gy: heightAt(o.x, o.y) }));
 
   // Cave-mouth arch torches glow too (one light per archway)
   for (const a of archLightSrcs) lightSources.push({ type: 'arch', x: a.x, y: a.y });
@@ -2450,10 +2487,37 @@ function updateEnvironmentCycle(dt) {
     o.dist = Math.hypot(o.x - player.x, o.y - player.y);
   });
   lightSources.sort((a,b) => a.dist - b.dist);
-  
+
+  // ⚠ Reserve part of the budget for lights the PLAYER put down.
+  //
+  // The city has 16 civic lanterns and MAX_PLACEMENT_LIGHTS is also 16, so a
+  // straight nearest-first sort let the street lamps take every slot: standing
+  // in town, your own campfire, torch, forge or hearth got no light at all. The
+  // lanterns were added to fix a dark city and would have broken every light a
+  // player owns inside it.
+  //
+  // Civic lights are scenery, so they yield. The backfill matters just as much:
+  // out in the wild there is nothing to reserve slots FOR, and holding six back
+  // would darken six lanterns for no one's benefit.
+  const CIVIC_CAP = Math.max(1, MAX_PLACEMENT_LIGHTS - 6);
+  const chosen = [], civicOverflow = [];
+  let civicUsed = 0;
+  for (const o of lightSources) {
+    if (chosen.length >= MAX_PLACEMENT_LIGHTS) break;
+    if (o.civic) {
+      if (civicUsed >= CIVIC_CAP) { civicOverflow.push(o); continue; }
+      civicUsed++;
+    }
+    chosen.push(o);
+  }
+  for (const o of civicOverflow) {
+    if (chosen.length >= MAX_PLACEMENT_LIGHTS) break;
+    chosen.push(o);
+  }
+
   for (let i = 0; i < MAX_PLACEMENT_LIGHTS; i++) {
     const pl = placementLights[i];
-    const src = lightSources[i];
+    const src = chosen[i];
     if (src && src.dist < TILE * 24) {
       const type = src.type;
       const isTorch = type === 'torch' || type === 'arch';
@@ -2474,25 +2538,49 @@ function updateEnvironmentCycle(dt) {
         baseY = 14; baseInt = 1.4; colorHex = 0xff6622; dist = TILE * 8;
       } else if (isLantern) {
         baseY = 8; baseInt = 1.2; colorHex = 0xffeedd; dist = TILE * 10;
+        // Street lamp: the head is up the post, so the light has to go up with
+        // it. baseY is otherwise measured from y=0, not from the ground under
+        // the object — fine for a lantern sitting in the dirt, wrong for one
+        // 150 units in the air on sloping ground.
+        if (src.civic) { baseY = src.gy + LAMP_POST_H + 8; baseInt = 1.5; dist = TILE * 12; }
       } else if (isHouseLight) {
         baseY = 24; baseInt = 1.2 * nightFactor; colorHex = 0xffeedd; dist = TILE * 8;
       } else if (type === 'campfire') {
-        baseY = 6; baseInt = 1.3; colorHex = 0xff7722; dist = TILE * 7;
+        // ⚠ y was 6 — BELOW the grass, which stands ~20 units tall. The pool lit
+        // the blades from inside instead of spilling across the ground, so a fire
+        // you were standing next to looked unlit. Sit the light in the flame.
+        baseY = 16; baseInt = 1.5; colorHex = 0xff7722; dist = TILE * 8;
+      } else if (type === 'forge') {
+        baseY = 18; baseInt = 1.4; colorHex = 0xff6a20; dist = TILE * 7;
       }
 
       pl.position.set(src.x, baseY, src.y);
       pl.color.setHex(colorHex);
       pl.distance = dist;
 
-      if (isTorch || isHearth) {
+      // ⚠ CAMPFIRE AND FORGE BELONG HERE. They used to fall through to the plain
+      // `baseInt * nightFactor` branch below, which has no floor — so at DUSK,
+      // exactly when a player lights a fire, nightFactor is ~0.3 and a campfire
+      // produced 1.3 x 0.15 = 0.2 intensity. Invisible. It only looked right at
+      // full midnight, which is not when anyone lights one. Torches and hearths
+      // already had the max(0.35, …) floor; a fire is a fire.
+      const isFire = type === 'campfire' || type === 'forge';
+      if (isTorch || isHearth || isFire) {
         const flicker = 0.85 + Math.random() * 0.3;
-        if (inCave || inHouse || isHearth || type === 'arch') {
+        if (inCave || inHouse || isHearth || isFire || type === 'arch') {
           pl.intensity = baseInt * flicker;
         } else {
           pl.intensity = baseInt * flicker * (nightFactor > 0.3 ? 1.0 : Math.max(0.35, nightFactor));
         }
       } else if (isHouseLight) {
         pl.intensity = baseInt;
+      } else if (src.civic) {
+        // Street lamps exist so a new player arriving after dark can see the
+        // town, and dusk is when they arrive. The generic curve below multiplies
+        // straight by nightFactor, so at dusk (~0.3) a lamp gave 0.45 — the same
+        // fault that made campfires invisible. Lamplighting starts at dusk and
+        // holds; they still go out in daylight.
+        pl.intensity = nightFactor > 0.12 ? baseInt * Math.max(0.6, nightFactor) : 0;
       } else if (inCave || inHouse) {
         pl.intensity = baseInt;
       } else {
@@ -3704,7 +3792,34 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
   // rig's ~2fps it can go many seconds without a turn — a test would screenshot
   // an empty field and blame the prop.
   markPlacedDirty(){ placedObjectsDirty=false; rebuildPlacedObjects(); return true; },
+  // What intensity did each placed light actually get? "the fire gives no light"
+  // needs the number the game assigned, not a look at the screen.
+  lightProbe(){
+    return { nightFactor: +(_lastNightFactor||0).toFixed(2),
+      // ⚠ World y is position.Z. three.js y is the HEIGHT, and reporting it as
+      // `y` made every "is there a light at this object" test compare a world
+      // coordinate against a height and conclude the light did not exist.
+      lights: placementLights.filter(l=>l.intensity>0)
+        .map(l=>({int:+l.intensity.toFixed(2), dist:l.distance,
+                  x:Math.round(l.position.x), y:Math.round(l.position.z), h:Math.round(l.position.y)})),
+      sources: placedObjects.filter(o=>PLACEABLE_LIGHTS.has(o.type)).map(o=>({t:o.type, lit:isLit(o)})) };
+  },
   propMeshes:()=>Object.fromEntries(Object.entries(propMeshes).map(([k,m])=>[k,{count:m.count,tris:m.geometry.index?m.geometry.index.count/3:0}])),
+  // Where a panel ACTUALLY landed this frame, versus where the hotbar is. "the
+  // tooltip covers the toolbar and I can't hit Next" is a geometry claim, and
+  // the only honest way to check the fix is to read both rects after a real
+  // render — re-deriving the clamp arithmetic in the test would just restate it.
+  // Rects go stale: panelRects keeps the last frame each panel drew, so compare
+  // r.t against G.gameTime before trusting one.
+  panelRect:(name)=>panelRects[name]?{...panelRects[name]}:null,
+  hotbarRect:()=>hotbarRect(),
+  // The city's lanterns are civic scenery that has to survive three separate
+  // wholesale replacements of placedObjects. Each one gets a handle so a test
+  // can drive it rather than trust the reading.
+  lampPostCount:()=>lampPostMesh.count,
+  buildSave:()=>buildSave(),
+  removePlaced:(o)=>removePlacedObject(o),
+  applyServerPlaced:(list)=>applyServerPlacedObjects(list),
   // Where did the instances actually land, and how big are they? "count is 1 but
   // I see nothing" needs the matrix, not the count.
   propProbe(){
@@ -4194,8 +4309,14 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     refreshEquipStats(); return 'equipped '+it.name; },
   socketFirst(slot,gem){ const it=player.equippedItems[slot]; if(!it)return 'nothing equipped';
     const idx=it.sockets.findIndex(s=>!s.gem); if(idx<0)return 'no open socket';
-    const ok=socketGem(it,idx,gem); refreshEquipStats(); return ok?('socketed '+gem):'socket failed'; },
-  markPlacedDirty(){placedObjectsDirty=true;}};
+    const ok=socketGem(it,idx,gem); refreshEquipStats(); return ok?('socketed '+gem):'socket failed'; }};
+// ⚠ There was a SECOND markPlacedDirty here — `{placedObjectsDirty=true;}` — in
+// the same object literal as the real one above. A duplicate key is legal, and
+// the last one wins silently, so every test that called _dev.markPlacedDirty()
+// was only setting a flag: the rebuild then waited on the dirty dispatch, an
+// else-if chain with placed objects LAST, which at the rig's ~2fps can go many
+// seconds without a turn. Tests read the instance counts before anything was
+// written and concluded the props did not exist.
 // Console hook for quick placement tuning without the panel, e.g.
 //   _tune('iron_helm', {pos:[0,6,1], rot:[0,0,0], scale:16})
 window._tune=(key,patch)=>{ const adj=adjustFor(key); if(!adj)return 'unknown key';
@@ -4992,6 +5113,73 @@ function tileAt(px,py){
 function nearbyObject(type,tileRadius){
   const r2=(tileRadius*TILE)**2;
   return placedObjects.some(o=>o.type===type&&(o.x-player.x)**2+(o.y-player.y)**2<r2);
+}
+// Where a new character appears. Inside CITY (the PvP safe zone) and next to the
+// square rather than in a wall — findClearSpawn() nudges off any blocked tile.
+const CITY_SPAWN = { x: 310*TILE+TILE/2, y: 362*TILE+TILE/2 };
+
+// ── City street lanterns ──────────────────────────────────────────
+// ⚠ A new player arriving after dark could not see the city at all — the tutorial
+// spawn is here, the shops are here, and at night it was a black screen with a
+// HUD on it.
+//
+// Laid out along the streets between the landmarks people actually walk to —
+// spawn, bank, healer, blacksmith, mage — not scattered, so they light the ROUTES.
+const CITY_LANTERNS = [
+  [310,362],[310,356],[310,350],[310,368],          // main north-south street
+  [304,362],[316,362],[298,362],[322,362],          // east-west cross street
+  [310,344],[310,367],                              // healer / bank doors
+  [319,357],[301,367],                              // blacksmith / mage doors
+  [304,350],[316,350],[304,374],[316,374],          // corners of the square
+];
+// These are SCENERY, not player placements — they belong to the town the way the
+// buildings do. That distinction is what `civic:true` marks, and it has to be
+// honoured in four places or the fix silently undoes itself:
+//
+//   1. placedObjects is REPLACED WHOLESALE by three different paths — a new
+//      character (resetForNewCharacter), a save load (loadGame), and the
+//      server's authoritative broadcast (net.onPlacedObjects). Seeding once at
+//      boot therefore lasts only until the first of those runs, and online that
+//      is a couple of seconds. Every one of them re-seeds; this function is
+//      idempotent so calling it again is free.
+//   2. buildSave() strips them, so they never enter a save blob. Otherwise the
+//      first save would bake this list into every character's file forever, and
+//      moving a lantern later would leave the old one stranded in old saves.
+//   3. netObjectPlace is never called for them — the server knows nothing about
+//      them, so they cost no rows and cannot be griefed off the map.
+//   4. removePlacedObject refuses them, or the first player to walk through town
+//      would pocket sixteen free lanterns and turn the lights off behind them.
+//
+// Lanterns are the right fixture rather than campfires: they have no `burn`
+// block so they never expire, they are the brightest placeable, and they read as
+// civic rather than as something a player dropped. `civic` also puts each one on
+// a STREET LAMP POST (see lampPostMesh) and lifts its light to the head, so they
+// throw light down the road instead of glowing at ankle height.
+function seedCityLanterns(){
+  for(const [tx,ty] of CITY_LANTERNS){
+    const p = clearLampSpot(tx, ty);
+    if(!p) continue;                    // walled in on every side: no lamp here
+    if(placedObjects.some(o=>Math.hypot(o.x-p.x,o.y-p.y)<TILE*0.5)) continue;
+    // ⚠ The id is derived from the ORIGINAL tile, not the nudged position, so a
+    // lamp keeps one identity even if the city layout shifts it a tile over.
+    placedObjects.push({ type:'lantern', x:p.x, y:p.y, id:'citylamp_'+tx+'_'+ty, civic:true });
+  }
+  placedObjectsDirty=true;
+}
+// A lamp buried in a building is worse than no lamp: it is invisible, it lights
+// the inside of a wall, and it still spends one of the sixteen placement-light
+// slots. The hand-written tile list above was authored against the street plan,
+// so a building edit is exactly the kind of change that would quietly bury one.
+// Nudge to the nearest open tile within two, and give up rather than guess.
+function clearLampSpot(tx, ty){
+  for(let radius=0; radius<=2; radius++)
+    for(let dy=-radius; dy<=radius; dy++)
+      for(let dx=-radius; dx<=radius; dx++){
+        if(Math.max(Math.abs(dx),Math.abs(dy))!==radius) continue;
+        const x=(tx+dx)*TILE+TILE/2, y=(ty+dy)*TILE+TILE/2;
+        if(!boxBlocked(x, y, 10)) return {x, y};
+      }
+  return null;
 }
 function findClearSpawn(){
   const stx=Math.floor(player.x/TILE),sty=Math.floor(player.y/TILE);
@@ -5797,12 +5985,65 @@ function netObjectPlace(o) {
 // chest online would each see their own contents. Making that authoritative
 // needs the server to arbitrate transfers, which is a bigger change.
 function syncPlacedObject(o){ netObjectPlace(o); }
+// Adopt the server's list of shared placed items (torches, lanterns, forges…).
+//
+// ⚠ At module scope on purpose, NOT inside the net-wiring function. Handlers
+// defined in there only exist when the client is online, which makes them
+// untestable offline — the same trap that let a broken rollback path ship once
+// already, because the test called a null handler and reported success.
+function applyServerPlacedObjects(list){
+  if(!Array.isArray(list)) return false;
+  // Snapshot BEFORE clearing: chest contents are client-side only, so they
+  // have to be carried across the rebuild. Looking them up after the clear
+  // would silently empty every chest on each server broadcast.
+  const prevList = placedObjects.slice();
+  placedObjects.length=0;
+  for(const o of list){
+    const p={id:o.id,type:o.type,x:o.x,y:o.y,owner:o.owner};
+    // Only `face` crosses the wire; mountY is derivable from the registry, so
+    // the server never has to know about it. Rebuilding the object field by
+    // field is why this needs saying — a plain copy would have dropped it.
+    if(o.face && FACE_DIR[o.face]){
+      p.face=o.face;
+      p.mountY=(PLACEABLES[o.type]&&PLACEABLES[o.type].wallY)||WALL_H*0.6;
+    }
+    // litAt is what makes burnout agree across clients — it's an absolute
+    // world-clock stamp, so everyone derives the same remaining fuel.
+    if(o.litAt>0) p.litAt=o.litAt;
+    // Chest lock state. Contents are NOT synced (see syncPlacedObject), so
+    // carry over whatever this client already had for that chest rather than
+    // wiping it every time the server re-broadcasts the list.
+    if(o.locked) p.locked=true;
+    if(o.type==='secure_chest'){
+      const prev=prevList.find(q=>q.type==='secure_chest'&&Math.hypot(q.x-o.x,q.y-o.y)<6);
+      p.items=(prev&&prev.items)||{};
+      p.hp=(prev&&prev.hp)||150; p.maxHp=(prev&&prev.maxHp)||150;
+    }
+    placedObjects.push(p);
+  }
+  // ⚠ This broadcast REPLACES the whole list, and it arrives within seconds of
+  // joining — so without this line the city lanterns lit the town only until the
+  // socket connected, which is to say never, online. They are deliberately not
+  // server-side state: the server would then persist them, sync them, and let
+  // players remove sixteen rows that are really just scenery.
+  seedCityLanterns();
+  placedObjectsDirty=true;
+  return true;
+}
 function netObjectRemove(x, y) {
   if (net.status === 'online' && net.room) {
     net.room.send('object_remove', { x, y });
   }
 }
 function removePlacedObject(obj, returnItem = true) {
+  // Town fixtures are not loot. Without this the first player through the gate
+  // pockets sixteen free lanterns and leaves the city dark for everyone behind
+  // them — and since civic objects are never synced, the server would not even
+  // know to put them back.
+  if (obj && obj.civic) {
+    addFloater(obj.x, obj.y - 12, 'the town keeps its lanterns');
+    return;
+  }
   const idx = placedObjects.indexOf(obj);
   if (idx !== -1) {
     placedObjects.splice(idx, 1);
@@ -7590,7 +7831,17 @@ function renderTutorialPanel(){
   const ctx=G.ctx, W=400, rowH=17;
   const page=TUT_PAGES[tutPage];
   const H=46+34+page.rows.length*rowH+46;
-  const {px,py}=panelAt('tutorial', Math.round(G.canvas.width/2-W/2), Math.round(G.canvas.height/2-H/2), W, H);
+  // ⚠ Centring alone put the FIRST page — the longest — over the hotbar, so its
+  // `next ▶` button sat on top of the toolbar and was near-impossible to click:
+  // the click landed on a hotbar slot instead. Centre it, then lift it so its
+  // bottom edge clears the hotbar with a margin. If the page is too tall to fit
+  // above the bar at all, pin it to the top rather than let it overlap — a panel
+  // clipped at the top still has usable buttons at the bottom, which is the way
+  // round that matters.
+  const _hb = hotbarRect();
+  const _maxY = Math.max(8, _hb.y - H - 12);
+  const _wantY = Math.round(G.canvas.height/2 - H/2);
+  const {px,py}=panelAt('tutorial', Math.round(G.canvas.width/2-W/2), Math.min(_wantY, _maxY), W, H);
   tutHit=[];
   ctx.fillStyle='rgba(14,16,10,.96)';ctx.fillRect(px,py,W,H);
   ctx.strokeStyle='#8fb85a';ctx.lineWidth=1.5;ctx.strokeRect(px,py,W,H);
@@ -8185,7 +8436,9 @@ function applyAuthoritative(doc){
 
 function buildSave(){
   return {px:player.x,py:player.y,hp:player.hp,inv:{...inv},hasAxe:player.hasAxe,hasSword:player.hasSword,hasBow:player.hasBow,hasPickaxe:player.hasPickaxe,hasArmor:player.hasArmor,weapon:player.weapon,swordTier:player.swordTier||1,bowTier:player.bowTier||1,pickaxeTier:player.pickaxeTier||1,autoDefend:G.autoDefend!==false,aggroMode:!!G.aggroMode,armor:{...player.armor},bank:{gold:bank.gold},skillXp:{tactics:skills.tactics.xp,archery:skills.archery.xp,hiding:skills.hiding.xp,healing:skills.healing.xp,wrestling:skills.wrestling.xp},quests:{idx:questState.idx,prog:questState.prog},hasHouseTool:player.hasHouseTool,placedHouses:net.status==='online'?undefined:G.placedHouses,gambits,gambitsOn:!!G.gambitsOn,
-    placedObjects:placedObjects.map(o=>({...o})),
+    // Civic scenery is town furniture, not this character's stuff — baking it
+    // into the blob would freeze today's lantern layout into every save file.
+    placedObjects:placedObjects.filter(o=>!o.civic).map(o=>({...o})),
     hasHorse:!!player.hasHorse,onHorse:!!player.onHorse,horseDown:!!player.horseDown,horseX:player.horseX||0,horseY:player.horseY||0,
     artifactInv:player.artifactInv.map(it=>({...it})),equippedArtifacts:{...player.equippedArtifacts},dollGender:player.dollGender,
     name:player.name,gender:player.gender,race:player.race,stats:{...(player.stats||{str:10,dex:10,int:10,vit:10})},
@@ -8263,6 +8516,16 @@ function resetForNewCharacter(){
   G.antiqStock=null; G.antiqStockAt=0; G.bounty=null; G.bountyAt=0;
   G.placedHouses=[];
   placedObjects.length=0; placedObjectsDirty=true;
+  seedCityLanterns();      // civic scenery is not the character's, so it survives the wipe
+  // ⚠ START IN THE CITY. New characters used to appear at the world default
+  // (tile 240,300), open grassland well outside the walls — so a first-time
+  // player read the tutorial while wolves and bandits walked up on them, and
+  // died before finishing it. The city is the PvP safe zone and the guards live
+  // there, so it is the only place a tutorial can be read in peace. This sits
+  // here rather than in the creator's callback so that EVERY path which makes a
+  // fresh hero gets it, including the offline demo.
+  player.x=CITY_SPAWN.x; player.y=CITY_SPAWN.y;
+  findClearSpawn();        // nudge off a wall if the square tile is occupied
   recomputeArtifactBonus();
   refreshEquipStats();
   updateArmorVisuals();
@@ -8301,7 +8564,11 @@ function loadGame(blob){
     if(inv.relics===undefined)inv.relics=0;
     if(Array.isArray(s.placedObjects)){
       placedObjects.length=0;
-      s.placedObjects.forEach(o=>placedObjects.push(o));
+      // Old saves (made before the lanterns existed) carry none; saves made
+      // since have them stripped by buildSave. Either way the town's own
+      // fixtures come from seedCityLanterns, never from the blob.
+      s.placedObjects.forEach(o=>{ if(!o.civic) placedObjects.push(o); });
+      seedCityLanterns();
       placedObjectsDirty=true;
     }
     player.artifactInv=Array.isArray(s.artifactInv)?s.artifactInv.map(it=>({...it})):[];
@@ -11298,7 +11565,8 @@ function render3D(t){
       // Starting kit for a brand new character. Deliberately no sword/bow/
       // pickaxe — the tutorial chain has you craft each of those, and handing
       // them over up front skips the quests and makes a "new" hero feel used.
-      findClearSpawn();
+      // (The city spawn is set by resetForNewCharacter above, so every path that
+      // makes a fresh hero gets it, not just this one.)
       inv.wood = 0; inv.stone = 0; inv.planks = 0; inv.arrows = 10; inv.gold = 20; inv.bandages = 2;
       player.hasAxe = true; player.hasSword = false; player.hasBow = false; player.hasPickaxe = false;
       player.weapon = 'axe';
@@ -11973,39 +12241,7 @@ if(MP_ENABLED){
     }
   };
   net.onHouses=list=>applyServerHouses(list);       // shared houses
-  net.onPlacedObjects=list=>{                       // shared persistent placed items (torches, lanterns, forges, etc.)
-    if(Array.isArray(list)){
-      // Snapshot BEFORE clearing: chest contents are client-side only, so they
-      // have to be carried across the rebuild. Looking them up after the clear
-      // would silently empty every chest on each server broadcast.
-      const prevList = placedObjects.slice();
-      placedObjects.length=0;
-      for(const o of list){
-        const p={id:o.id,type:o.type,x:o.x,y:o.y,owner:o.owner};
-        // Only `face` crosses the wire; mountY is derivable from the registry, so
-        // the server never has to know about it. Rebuilding the object field by
-        // field is why this needs saying — a plain copy would have dropped it.
-        if(o.face && FACE_DIR[o.face]){
-          p.face=o.face;
-          p.mountY=(PLACEABLES[o.type]&&PLACEABLES[o.type].wallY)||WALL_H*0.6;
-        }
-        // litAt is what makes burnout agree across clients — it's an absolute
-        // world-clock stamp, so everyone derives the same remaining fuel.
-        if(o.litAt>0) p.litAt=o.litAt;
-        // Chest lock state. Contents are NOT synced (see syncPlacedObject), so
-        // carry over whatever this client already had for that chest rather than
-        // wiping it every time the server re-broadcasts the list.
-        if(o.locked) p.locked=true;
-        if(o.type==='secure_chest'){
-          const prev=prevList.find(q=>q.type==='secure_chest'&&Math.hypot(q.x-o.x,q.y-o.y)<6);
-          p.items=(prev&&prev.items)||{};
-          p.hp=(prev&&prev.hp)||150; p.maxHp=(prev&&prev.maxHp)||150;
-        }
-        placedObjects.push(p);
-      }
-      placedObjectsDirty=true;
-    }
-  };
+  net.onPlacedObjects=list=>applyServerPlacedObjects(list);
   // server save = source of truth: on join, adopt the server's copy of our
   // gold/inventory/skills/position (anti-tamper, and no lost loot on reconnect)
   // Adopt the server's clock so everyone shares one sky (sent on join, then
@@ -12063,6 +12299,7 @@ function loop(t=0){
 // ── Boot ───────────────────────────────────────────────────────────
 G.gameTime = worldNow();   // start on the shared clock, not at 00:00
 findClearSpawn();
+seedCityLanterns();        // the city is lit before anyone arrives after dark
 const acc = AccountManager.getAccount();
 // ── Account gate ──────────────────────────────────────────────────
 // Log in BEFORE the character list is shown. The account owns the characters,
