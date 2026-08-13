@@ -49,7 +49,7 @@ const ITEM_KEYS = new Set([
   'runic_ingot', 'steel_ingot', 'siege_ram', 'skull', 'relics',
   'ruby', 'sapphire', 'emerald', 'diamond',
   // placeables — the inventory key equals the placeable type
-  'campfire', 'workbench', 'forge', 'secure_chest', 'torch', 'hearth', 'anvil', 'lantern',
+  'campfire', 'workbench', 'forge', 'secure_chest', 'torch', 'hearth', 'anvil', 'lantern', 'barrel',
 ]);
 const MAX_STACK = 99999;
 

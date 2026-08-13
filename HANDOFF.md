@@ -939,6 +939,22 @@ they come back:
   metallic character with nothing to reflect renders **black**. The zombie's
   first in-game render was four black silhouettes in bright noon sun.
 
+### ⚠ Props: quantization vs client-side rescaling
+
+`tools/optimize_model.mjs` quantizes positions, which stores them as **normalized
+integer** attributes. `BufferGeometry.scale()` / `applyMatrix4()` then write floats
+back into an integer array and truncate — the chest and barrel normalised to 2
+units instead of ~13 and rendered as invisible specks with `count:1` and
+`visible:true`, which looks exactly like "the model failed to load".
+
+`loadPropModel()` now VERIFIES the baked height and keeps the procedural mesh when
+it is wrong, so this degrades safely. To actually land a GLB prop, either add a
+`--no-quantize` path to the optimizer for props (they are small; quantization buys
+little) or dequantize to Float32 in the loader before transforming.
+
+**Status: chest_closed.glb and barrel_old.glb are optimized and committed, but the
+game is still drawing the procedural chest and barrel.**
+
 ## Test suite (fast, no renderer, no server unless noted)
 
 ```bash
