@@ -21,6 +21,36 @@ handoff is invisible to the next session and causes collisions.
 **Production, pre-beta.** Not a prototype any more — the standing instruction is
 to build so nothing has to be redone.
 
+- **Playtest fixes (pre-deploy).** Four reports from the last test, all fixed and
+  covered by browser assertions:
+  1. *Died during the tutorial.* New characters spawned at the world default
+     (tile 240,300), open grassland outside the walls. They now start at
+     `CITY_SPAWN` (310,362), inside the PvP safe zone with the guards. Set in
+     `resetForNewCharacter()`, **not** in the creator's callback, so every path
+     that makes a fresh hero gets it — including the offline demo.
+  2. *First tooltip covered the toolbar.* The tutorial panel now clamps its `y`
+     against `hotbarRect()`, so it can never sit over the hotbar.
+  3. *City was pitch black at night.* 16 civic street lamps (`CITY_LANTERNS`),
+     each on a post (`lampPostMesh`), lit from dusk.
+  4. *Fires gave no light.* `campfire`/`forge` fell through to the ungated
+     `baseInt * nightFactor * 0.5` branch — at dusk that is 0.2 intensity,
+     invisible, which is exactly when a player lights one. They now use the
+     floored branch like torches and hearths, and the campfire light moved from
+     y=6 (under the ~20u grass) to y=16, in the flame.
+- ⚠ **The city lamps are CIVIC SCENERY, marked `civic:true`, and that flag has to
+  be honoured in five places or the fix silently undoes itself.** `placedObjects`
+  is replaced wholesale by three separate paths — `resetForNewCharacter()`,
+  `loadGame()` and `applyServerPlacedObjects()` (the server broadcast, which
+  lands seconds after joining, so seeding once at boot lasts *no time at all*
+  online). All three re-seed. `buildSave()` strips them so they never enter a
+  save blob, and `removePlacedObject()` refuses them so nobody pockets sixteen
+  free lanterns and darkens the town behind them.
+- ⚠ **`MAX_PLACEMENT_LIGHTS` is 16 and the city now has 16 lamps.** A plain
+  nearest-first sort therefore let street lamps take the entire light budget, so
+  a player's own campfire lit nothing while they stood in town. The selection now
+  reserves 6 slots for non-civic lights and backfills unused ones with lanterns.
+  **Adding more civic lights means revisiting that reservation.**
+
 - **Trees: fixed.** Canopies were being built in several disconnected pieces
   (leaf balls in the sky) and read as broccoli from the game camera. Both fixed;
   crowns now have a solved mass count, a welded chain, a real scale hierarchy and
@@ -822,6 +852,24 @@ copy never arriving. Server-owned characters removed that cover.
 ---
 
 ## Known gotchas / things that bit us
+- ⚠ **A duplicate key in an object literal is legal, silent, and the LAST one
+  wins.** `window._dev` is one enormous literal and it carried `markPlacedDirty`
+  **twice** — the good one (`placedObjectsDirty=false; rebuildPlacedObjects();`,
+  synchronous, returns `true`) at the top, and a bare `{placedObjectsDirty=true;}`
+  ~500 lines later. The second silently replaced the first, so every test calling
+  `_dev.markPlacedDirty()` only set a flag and then read the instance counts
+  before the rebuild ran. The dirty dispatch is an `else if` chain with placed
+  objects LAST, which at the rig's ~2fps can go many seconds without a turn, so
+  the counts really were 0 — and the honest-looking conclusion was "the prop
+  doesn't render". Cost an hour on the lamp posts. **When a `_dev` helper seems
+  not to do what its body says, grep for a second definition of the same key
+  before debugging the feature.**
+- ⚠ **`lightProbe()` reported three.js `position.y` as world `y`.** In this engine
+  world y is `position.Z`; `position.y` is the HEIGHT. Any test asking "is there a
+  light at this object" compared a world coordinate against a height, found
+  nothing within range, and reported the light missing — while the light was
+  there and correct the whole time. The probe now returns `y` (world) and `h`
+  (height) separately.
 - ⚠ **Overhead renders cannot validate 3D art. Take a low shot.** Four of the five
   tree canopy variants were built in *more than one piece* — one was in three — so the
   wood had leaf balls hanging in the sky with nothing under them. Every overhead 3/4
