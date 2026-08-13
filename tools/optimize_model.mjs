@@ -116,11 +116,51 @@ await doc.transform(textureCompress({
 // ⚠ weld() FIRST. simplify() collapses edges, and an unwelded mesh has no shared
 // edges to collapse — it silently achieves almost nothing and reports success.
 await MeshoptSimplifier.ready;
+
+// ⚠ ...and weld() alone is NOT always enough. It merges only vertices identical
+// across EVERY attribute, so a model exported with per-corner normals or many UV
+// islands has no two vertices alike and welds to nothing. Liliana arrived that
+// way: 233,707 vertices for 102,385 triangles (the zombie had 85,589), and
+// simplify then reduced 102,385 → 98,243 — a 4% cut reported as success, at any
+// error tolerance, even 1.0. The mesh was not resistant to simplification; it
+// was topologically DUST, and there were no edges to collapse.
+//
+// The fix is the standard meshopt pipeline: bridge topology by POSITION first,
+// so the simplifier can see a connected surface.
+//
+// ⚠ This has a real cost and it is why it is conditional: rewriting indices
+// through a position remap makes every corner at a shared position use ONE
+// vertex's UV, so genuine UV seams get pulled. Only worth it when welding has
+// visibly failed — hence the 1.5 verts-per-triangle test, which a normally
+// welded mesh passes comfortably (the zombie sits at 0.84).
+for (const mesh of root.listMeshes()) {
+  for (const prim of mesh.listPrimitives()) {
+    const posAttr = prim.getAttribute('POSITION'), idx = prim.getIndices();
+    if (!posAttr || !idx) continue;
+    const vpt = posAttr.getCount() / (idx.getCount() / 3);
+    if (vpt < 1.5) continue;                       // already welded well enough
+    const raw = posAttr.getArray();
+    const posF = raw instanceof Float32Array ? raw : Float32Array.from(raw);
+    const remap = MeshoptSimplifier.generatePositionRemap(posF, 3);
+    const src = idx.getArray(), out = new Uint32Array(src.length);
+    for (let i = 0; i < src.length; i++) out[i] = remap[src[i]];
+    idx.setArray(out);
+    console.log(`  · bridged topology by position (${posAttr.getCount()} verts → ` +
+                `${new Set(remap).size} unique) — weld alone could not simplify this mesh`);
+  }
+}
+
 const ratio = Math.min(1, TARGET_TRIS / Math.max(1, trisBefore));
 await doc.transform(
   weld(),
-  simplify({ simplifier: MeshoptSimplifier, ratio, error: 0.01, lockBorder: true }),
+  simplify({ simplifier: MeshoptSimplifier, ratio, error: 0.05, lockBorder: false }),
+  prune({ keepAttributes: false, keepLeaves: false }),
 );
+// Say so when the target is missed rather than printing a number that looks fine.
+const trisNow = countTris();
+if (trisNow > TARGET_TRIS * 1.5)
+  console.log(`  ⚠ simplify missed the target: ${Math.round(trisNow)} tris vs ${TARGET_TRIS} asked. ` +
+              `The mesh may be split in a way weld and the position bridge cannot fix.`);
 
 // ── 6 + 7. animation keyframes, then quantization ──
 await doc.transform(

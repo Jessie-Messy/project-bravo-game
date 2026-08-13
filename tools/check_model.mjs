@@ -27,16 +27,36 @@ await withGame(async (page, ctx) => {
     out.transparent = !!(mat && mat.transparent);
     out.doubleSided = !!(mat && mat.side === THREE.DoubleSide);
 
-    // Same matcher the game uses (buildSlotModel). Kept in step by eye, which is
-    // why this test prints the mapping rather than just asserting it is non-null.
+    // ⚠ These regexes are a COPY of buildSlotModel's, and the first version drifted
+    // from it within one model: the checker reported walk → Limping_Walk_3_inplace
+    // while the game's pickWalk() excludes in-place clips entirely. A checker that
+    // does not test the real matcher tests itself. They are pulled from the source
+    // at runtime now, so they cannot disagree.
+    const src = await fetch('js/game3d.js').then(r => r.text());
+    const block = src.slice(src.indexOf('const actions = {'), src.indexOf('const inst = { type, obj'));
+    const reOf = name => {
+      const m = new RegExp(name + ':\\s*mk\\(([\\s\\S]*?)\\),\\n').exec(block);
+      return m ? m[1] : null;
+    };
     const pick = re => (gltf.animations.find(a => re.test(a.name)) || {}).name || null;
+    const evalPick = expr => {
+      if (!expr) return null;
+      for (const m of expr.matchAll(/\/((?:[^\/\\]|\\.)+)\/([a-z]*)/g)) {
+        const hit = pick(new RegExp(m[1], m[2]));
+        if (hit) return hit;
+      }
+      return null;
+    };
+    // walk goes through pickWalk(); mirror its exclusion rule.
+    const walkList = gltf.animations.filter(a => /walk|shamble|shuffle|limp/i.test(a.name)
+                                             && !/inplace|in_place/i.test(a.name)).map(a => a.name);
     out.states = {
-      idle:   pick(/(^|\|)idle$/i) || pick(/idle/i) || pick(/inplace|in_place/i),
-      walk:   pick(/shaky_walk|limping_walk/i) || pick(/(^|\|)walk/i) || pick(/gallop|run/i),
-      run:    pick(/(^|\|)running|(^|\|)run$|gallop|sprint/i),
-      attack: pick(/attack|punch|bite|scream/i),
-      hit:    pick(/hit_?reaction|hit|flinch|damage/i),
-      death:  pick(/(^|\|)dead|death|dying/i),
+      idle:   evalPick(reOf('idle')),
+      walk:   walkList[0] || evalPick(reOf('walk')),
+      run:    evalPick(reOf('run')),
+      attack: evalPick(reOf('attack')),
+      hit:    evalPick(reOf('hit')),
+      death:  evalPick(reOf('death')),
     };
 
     // Every state must actually move the skeleton, and by a DIFFERENT amount —
@@ -49,19 +69,35 @@ await withGame(async (page, ctx) => {
       mixer.stopAllAction();
       const clip = gltf.animations.find(a => a.name === name);
       mixer.clipAction(clip).reset().play();
-      mixer.setTime(0); gltf.scene.updateMatrixWorld(true);
-      const p0 = new THREE.Vector3(); bone.getWorldPosition(p0);
-      mixer.setTime(Math.min(clip.duration * 0.5, 1.0)); gltf.scene.updateMatrixWorld(true);
-      const p1 = new THREE.Vector3(); bone.getWorldPosition(p1);
-      out.motion[state] = +p0.distanceTo(p1).toFixed(4);
+      // ⚠ Sample the whole clip, not two instants. A walk cycle returns to nearly
+      // the same pose at its midpoint, so a single before/after comparison
+      // reported Quick_Walk as "never moves the skeleton" — a false alarm about
+      // a perfectly good animation, which is how a checker gets switched off.
+      const pts = [];
+      for (let k = 0; k <= 8; k++) {
+        mixer.setTime(clip.duration * k / 8);
+        gltf.scene.updateMatrixWorld(true);
+        const p = new THREE.Vector3(); bone.getWorldPosition(p); pts.push(p);
+      }
+      let maxD = 0;
+      for (let a = 0; a < pts.length; a++) for (let b = a + 1; b < pts.length; b++)
+        maxD = Math.max(maxD, pts[a].distanceTo(pts[b]));
+      out.motion[state] = +maxD.toFixed(4);
     }
     // Walk variety: a model with several walk clips should hand a different one
     // to each pool slot rather than making every instance shamble in lockstep.
     const walks = gltf.animations.filter(a => /walk|shamble|shuffle|limp/i.test(a.name)
                                           && !/inplace|in_place/i.test(a.name)).map(a => a.name);
     out.walkVariants = walks;
+    // Boss abilities name their own clip (BOSS_ABILITIES.anim). Those are USED,
+    // and reporting them as unused would send the next person hunting for a bug
+    // that is not there.
+    const esrc = await fetch('js/enemies.js').then(r => r.text());
+    const abilityAnims = [...esrc.matchAll(/anim:\s*'([^']+)'/g)].map(m => m[1]);
+    out.abilityAnims = abilityAnims.filter(n => gltf.animations.some(a => a.name === n));
     out.unusedClips = gltf.animations.map(a => a.name)
-      .filter(n => !Object.values(out.states).includes(n) && !walks.includes(n));
+      .filter(n => !Object.values(out.states).includes(n) && !walks.includes(n)
+                && !abilityAnims.includes(n));
     return out;
   }, FILE);
 
@@ -84,6 +120,8 @@ await withGame(async (page, ctx) => {
   for (const [s, n] of Object.entries(r.states))
     console.log(`  ${s.padEnd(7)} → ${String(n).padEnd(24)} bone moves ${r.motion[s]}`);
   console.log(`  walk variants: ${r.walkVariants.join(', ') || 'none'}  (one per pool slot)`);
+  if (r.abilityAnims && r.abilityAnims.length)
+    console.log(`  ability clips: ${r.abilityAnims.join(', ')}  (BOSS_ABILITIES.anim)`);
   if (r.unusedClips.length) console.log(`  unused clips : ${r.unusedClips.join(', ')}`);
   console.log(fails.length ? '\nFAIL\n  ' + fails.join('\n  ') : '\nPASS');
   process.exit(fails.length ? 1 : 0);
