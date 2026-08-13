@@ -434,5 +434,17 @@
       "planks": 2
     },
     "placeable": "barrel"
+  },
+  "crate": {
+    "cost": {
+      "planks": 3
+    },
+    "placeable": "crate"
+  },
+  "gravestone": {
+    "cost": {
+      "stone": 4
+    },
+    "placeable": "gravestone"
   }
 }

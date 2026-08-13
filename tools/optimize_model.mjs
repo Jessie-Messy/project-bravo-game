@@ -1,5 +1,7 @@
 // Shrink a character GLB for the web.
-//   node tools/optimize_model.mjs <in.glb> <out.glb> [--tris 12000] [--tex 1024]
+//   node tools/optimize_model.mjs <in.glb> <out.glb> [--tris N] [--tex N] [--no-quantize]
+//
+// ⚠ PROPS MUST USE --no-quantize. See the note at the quantize step.
 //
 // Needs (dev-only, deliberately NOT repo dependencies — this runs once per asset):
 //   npm i @gltf-transform/core @gltf-transform/extensions @gltf-transform/functions \
@@ -163,10 +165,27 @@ if (trisNow > TARGET_TRIS * 1.5)
               `The mesh may be split in a way weld and the position bridge cannot fix.`);
 
 // ── 6 + 7. animation keyframes, then quantization ──
-await doc.transform(
-  resample(),
-  quantize({ quantizePosition: 14, quantizeNormal: 10, quantizeTexcoord: 12, quantizeWeight: 8 }),
-);
+//
+// ⚠ --no-quantize IS REQUIRED FOR PROPS, and this is not a preference.
+// Quantization stores positions as NORMALIZED INTEGER attributes. Characters are
+// used exactly as authored, so that is free — but a PROP is rescaled on load
+// (loadPropModel matches each GLB to the procedural mesh it replaces), and
+// BufferGeometry.scale() writes floats back into an integer array and TRUNCATES.
+// The chest and barrel came out 2 units tall instead of ~13 and rendered as
+// invisible specks with instance count 1 and visible:true — indistinguishable
+// from "the model never loaded".
+//
+// It costs almost nothing to skip: on a 1,500-triangle prop the quantization win
+// is a few tens of KB against a file already under 250KB.
+const QUANTIZE = !args.includes('--no-quantize');
+await doc.transform(resample());
+if (QUANTIZE) {
+  await doc.transform(
+    quantize({ quantizePosition: 14, quantizeNormal: 10, quantizeTexcoord: 12, quantizeWeight: 8 }),
+  );
+} else {
+  console.log('  · quantization SKIPPED (--no-quantize) — required for props, which are rescaled on load');
+}
 
 await io.write(outPath, doc);
 
