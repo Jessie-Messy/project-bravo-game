@@ -1441,6 +1441,75 @@ topMeshes.forEach(m => {
 // Kept so the many existing single-mesh references still resolve; variant 0 is
 // the representative one for anything that only needs a material or a handle.
 const trunkMesh = trunkMeshes[0], topMesh = topMeshes[0];
+// ── Prop models (GLB) ─────────────────────────────────────────────
+// Placeables are InstancedMeshes over ONE geometry, so a GLB prop has to be
+// flattened into that shape rather than added to the scene as a node tree.
+//
+// ⚠ The GLB is rescaled to match the PROCEDURAL mesh it replaces, instead of the
+// defs being retuned. Every placeable's `scale`, `y`, wall-mount offset and flame
+// position was tuned by eye against the procedural body; normalising the GLB to
+// some fresh "1 unit tall" convention would invalidate all of it and turn a
+// two-line swap into a re-tune of every prop. Matching the old bounds makes this
+// a genuine drop-in — and it means a failed load degrades to the old mesh at the
+// same size rather than to nothing.
+const propMeshes = {};                  // key → InstancedMesh, once its GLB loads
+function loadPropModel(key, file, likeMesh, cap){
+  gltfLoader.load('models/'+file, gltf => {
+    try{
+      const geos = [];
+      gltf.scene.updateMatrixWorld(true);
+      let mat = null;
+      gltf.scene.traverse(o => {
+        if(!o.isMesh || !o.geometry) return;
+        const gm = o.geometry.clone();
+        gm.applyMatrix4(o.matrixWorld);          // bake the node transform in
+        // mergeGeometries needs identical attribute sets across inputs.
+        for(const a of Object.keys(gm.attributes)) if(!['position','normal','uv','color'].includes(a)) gm.deleteAttribute(a);
+        if(!gm.attributes.uv) gm.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(gm.attributes.position.count*2), 2));
+        geos.push(gm);
+        if(!mat) mat = o.material;
+      });
+      if(!geos.length) return;
+      let geo = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
+      if(!geo) return;
+      // Match the mesh we are replacing: same height, same base, same centre.
+      likeMesh.geometry.computeBoundingBox(); geo.computeBoundingBox();
+      const a = likeMesh.geometry.boundingBox, b = geo.boundingBox;
+      const targetH = a.max.y - a.min.y;
+      const s = targetH / Math.max(1e-6, b.max.y - b.min.y);
+      geo.scale(s, s, s); geo.computeBoundingBox();
+      const c = geo.boundingBox;
+      geo.translate(-(c.min.x+c.max.x)/2, a.min.y - c.min.y, -(c.min.z+c.max.z)/2);
+
+      // ⚠ VERIFY THE RESULT, do not assume it. The first version of this shipped
+      // both props at a geometry height of 2 units instead of ~13 — a twentieth
+      // of their size, which against tall grass is indistinguishable from "the
+      // model failed to load". The instance count said 1, the mesh said visible,
+      // and the screenshot was empty; only reading the baked bounding box found
+      // it. A swap that silently produces a speck is worse than no swap, because
+      // the fallback is a perfectly good procedural prop.
+      geo.computeBoundingBox();
+      const gotH = geo.boundingBox.max.y - geo.boundingBox.min.y;
+      if(!isFinite(gotH) || gotH < targetH * 0.5 || gotH > targetH * 2){
+        console.warn(`[prop] ${file} normalised to ${gotH.toFixed(1)}u but should be `
+          + `${targetH.toFixed(1)}u — keeping the procedural mesh. CAUSE: optimize_model.mjs `
+          + `quantizes positions, which stores them as NORMALIZED INTEGER attributes; `
+          + `geometry.scale() then writes floats into an int array and truncates. Re-export `
+          + `the prop with --no-quantize, or dequantize to Float32 before transforming.`);
+        return;
+      }
+      const m = makeMesh(geo, mat, cap);
+      m.count = 0;
+      propMeshes[key] = m;
+      // The procedural mesh must stop drawing, or both render in the same spot.
+      likeMesh.count = 0; likeMesh.visible = false;
+      placedObjectsDirty = true;
+      console.log(`[prop] ${file} → ${key} (${gotH.toFixed(1)}u tall, `
+        + `${geo.index ? geo.index.count/3 : 0} tris)`);
+    }catch(e){ console.warn('[prop] '+file+' could not be used:', e.message); }
+  }, undefined, err => console.warn('[prop] load failed', file, err && err.message));
+}
+
 // ── Canopy wind ───────────────────────────────────────────────────
 // A forest of perfectly still cones reads as scenery, not as a place. This is
 // the cheapest possible fix: a vertex-shader sway, no CPU cost per tree and no
@@ -1632,6 +1701,9 @@ const secureChestMesh = makeMesh(propGeo([
 // player's own storage. Body + lid are separate instanced meshes.
 const lootChestMesh = makeMesh(new THREE.BoxGeometry(24, 13, 17), new THREE.MeshStandardMaterial({color:0x8a6a2a, roughness:0.5, metalness:0.45}), 400);
 const lootChestLidMesh = makeMesh(new THREE.BoxGeometry(25, 4, 18), new THREE.MeshStandardMaterial({color:0xd8b24a, roughness:0.35, metalness:0.7, emissive:0x2a1e06}), 400);
+// Sizing reference AND fallback for the barrel prop — see loadPropModel.
+const barrelMesh = makeMesh(new THREE.CylinderGeometry(8, 7, 20, 10),
+  new THREE.MeshStandardMaterial({color:0x7a5433, roughness:0.85, metalness:0.0}), 500);
 const torchMesh = makeMesh(new THREE.CylinderGeometry(1.5, 2, 28, 6), new THREE.MeshStandardMaterial({color:0x6b4226, roughness:0.8, metalness:0.0}), 2000);
 const hearthMesh = makeMesh(new THREE.BoxGeometry(24, 20, 24), new THREE.MeshStandardMaterial({color:0x555555, roughness:0.9, map:rockTex}), 500);
 const anvilMesh = makeMesh(new THREE.BoxGeometry(18, 10, 10), new THREE.MeshStandardMaterial({color:0x333333, metalness:0.8, roughness:0.3}), 500);
@@ -1742,7 +1814,7 @@ const PLACEABLES = {
   forge:        { label:'Forge',        emoji:'🏭', invKey:'forge',        mesh:()=>forgeMesh,         y:12, scale:3.0, flame:null,         light:true,  surfaces:['ground'] },
   // 22×12×16 → 66×36×48 ≈ 0.95m wide, 0.5m tall. Knee-high strongbox.
   // Stands anywhere; only gains a lock when it sits inside a house you own.
-  secure_chest: { label:'Secure Chest', emoji:'🧰', invKey:'secure_chest', mesh:()=>secureChestMesh,   y:6,  scale:3.6, flame:null,         light:false, surfaces:['ground','house'] },
+  secure_chest: { label:'Secure Chest', emoji:'🧰', invKey:'secure_chest', mesh:()=>propMeshes.secure_chest||secureChestMesh, y:6,  scale:3.6, flame:null,         light:false, surfaces:['ground','house'] },
   // h28 → h45 ≈ 0.65m. Held torch was tuned separately (WEAPON_ADJUST); this is
   // the PLACED mesh, and it's what mounts on walls — 45u against a 168u wall.
   torch:        { label:'Torch',        emoji:'🔥', invKey:'torch',        mesh:()=>torchMesh,         y:14, scale:1.6, flame:{y:30,s:1.0}, light:true,  surfaces:['ground','wall'], wallY:WALL_H*0.62,
@@ -1753,6 +1825,9 @@ const PLACEABLES = {
   anvil:        { label:'Anvil',        emoji:'⚒',  invKey:'anvil',        mesh:()=>anvilMesh,         y:5,  scale:2.2, flame:null,         light:false, surfaces:['ground'] },
   // h8 → h24 ≈ 0.35m. Carried lantern was tuned separately; this is the placed one.
   lantern:      { label:'Lantern',      emoji:'🏮', invKey:'lantern',      mesh:()=>placedLanternMesh, y:4,  scale:3.0, flame:{y:8,s:0.7},  light:true,  surfaces:['ground','wall'], wallY:WALL_H*0.58 },
+  // Pure decor — no burn, no light, no menu. The cheapest kind of prop to add and
+  // the kind a town needs most of.
+  barrel:       { label:'Barrel',       emoji:'🛢', invKey:'barrel',       mesh:()=>propMeshes.barrel||barrelMesh, y:10, scale:2.2, flame:null,         light:false, surfaces:['ground','house'] },
 };
 // ── Burning down ──────────────────────────────────────────────────
 // Fuel is DERIVED, never ticked: an object records `litAt` from worldNow() and
@@ -2988,6 +3063,12 @@ const loadedModels = {};   // file → {template, clips, natH, yOff}
     }, undefined, err => console.warn('model load failed', f, err));
   }
 }
+// ⚠ Called HERE, after gltfLoader exists — loadPropModel is defined far above
+// (next to the other prop meshes, where it belongs) but must not run before the
+// loader it uses is constructed.
+loadPropModel('secure_chest', 'chest_closed.glb', secureChestMesh, 500);
+loadPropModel('barrel',       'barrel_old.glb',   barrelMesh,      500);
+
 function pickClip(clips, res){ return clips.find(c=>res.test(c.name)) || null; }
 
 // ── GLB prop art swaps ────────────────────────────────────────────
@@ -3605,6 +3686,29 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
   // file). Exposed so a test can prove the table actually loaded and that the
   // client agrees with the server about what a recipe costs.
   recipes:()=>RECIPE_DATA, shopData:()=>SHOP_DATA,
+  // Placed props are instanced and only rebuilt when marked dirty, so a test that
+  // pushes into placedObjects directly must say so or nothing appears.
+  // ⚠ Rebuilds SYNCHRONOUSLY rather than just setting the flag. The dirty
+  // dispatch is an else-if chain with placed objects LAST, so under the headless
+  // rig's ~2fps it can go many seconds without a turn — a test would screenshot
+  // an empty field and blame the prop.
+  markPlacedDirty(){ placedObjectsDirty=false; rebuildPlacedObjects(); return true; },
+  propMeshes:()=>Object.fromEntries(Object.entries(propMeshes).map(([k,m])=>[k,{count:m.count,tris:m.geometry.index?m.geometry.index.count/3:0}])),
+  // Where did the instances actually land, and how big are they? "count is 1 but
+  // I see nothing" needs the matrix, not the count.
+  propProbe(){
+    const out={}, m4=new THREE.Matrix4(), p=new THREE.Vector3(), q=new THREE.Quaternion(), sc=new THREE.Vector3();
+    for(const [k,mesh] of Object.entries(propMeshes)){
+      const rows=[];
+      for(let i=0;i<mesh.count;i++){ mesh.getMatrixAt(i,m4); m4.decompose(p,q,sc);
+        rows.push({x:Math.round(p.x),y:Math.round(p.y),z:Math.round(p.z),s:+sc.x.toFixed(2)}); }
+      mesh.geometry.computeBoundingBox(); const bb=mesh.geometry.boundingBox;
+      out[k]={count:mesh.count, visible:mesh.visible, inScene:!!mesh.parent,
+              geoH:+(bb.max.y-bb.min.y).toFixed(1), geoW:+(bb.max.x-bb.min.x).toFixed(1), at:rows};
+    }
+    out.player={x:Math.round(player.x),y:Math.round(player.y)};
+    return out;
+  },
   // Phase 2: apply a server document over local state (the flip). Exposed so a
   // test can prove the client honours the server's word without a live socket.
   applyDoc:(doc)=>applyAuthoritative(doc),
@@ -4935,6 +5039,7 @@ const RECIPES=[
   {id:'hearth',   top:'8 stone + 4 wood → hearth',    adv:true,sub:()=>nearbyObject('workbench',3)?'have: '+inv.stone+'s  '+inv.wood+'w':'need: workbench nearby'},
   {id:'anvil',    top:'5 iron ingots → anvil',        adv:true,sub:()=>nearbyObject('workbench',3)&&nearbyObject('forge',3)?'have: '+(inv.iron_ingot||0)+' ingots':'need: workbench & forge'},
   {id:'lantern',  top:'2 iron ingots + 1 hide → lantern',adv:true,sub:()=>nearbyObject('workbench',3)?'have: '+(inv.iron_ingot||0)+'i  '+inv.hide+'h':'need: workbench'},
+  {id:'barrel',   top:'2 planks → barrel (decor)',   adv:false,sub:()=>'have: '+inv.planks+' planks'},
 ];
 const PANEL_H=HEADER_H+PANEL_PAD+Math.ceil(RECIPES.length/2)*(BTN_H+BTN_GAP)-BTN_GAP+PANEL_PAD;
 // ── Draggable panels ──────────────────────────────────────────────
