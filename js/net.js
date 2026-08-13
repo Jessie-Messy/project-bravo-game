@@ -18,6 +18,9 @@ export const net = {
   onHouses: null,       // full shared-house list from the server
   onPlacedObjects: null, // persistent shared placed objects from the server (torches, lanterns, etc.)
   onSave: null,         // server-side save blob to apply on join
+  character: null,      // PHASE 0 shadow document (not authoritative yet)
+  onCharacter: null,
+  onTxResult: null,     // PHASE 1 transaction outcome {seq,kind,ok,deltas|reason}
   onWorldTime: null,    // authoritative world clock {t} — keeps everyone's sky in sync
   onDropAdd: null, onDropGone: null, onDropGot: null,   // shared ground drops
   onTradeInvite: null, onTradeStart: null, onTradeUpdate: null, onTradeDone: null, onTradeEnd: null,
@@ -29,9 +32,28 @@ let getSelf = null, sendAcc = 0, lastSent = null, retryT = null;
 const params = new URLSearchParams(location.search);
 export const MP_ENABLED = params.get('mp') !== 'off';
 
+// The name we join the world under. This MUST be the selected character, not a
+// separate per-browser nickname.
+//
+// ⚠ It used to read only `bravoName`, a key nothing ever wrote except the
+// random fallback below. So picking "Gideon" on the select screen still joined
+// as "Traveler1234": the server claimed THAT name for your account and sent
+// back Traveler's (empty) save — the character you picked never loaded, which
+// defeats the entire point of server-side characters. The active slot is the
+// authority; `bravoName` is only a fallback for a session with no character.
+export function activeCharacterName() {
+  try {
+    const acc = JSON.parse(localStorage.getItem('bravo_account_v1') || 'null');
+    const s = acc && acc.slots && acc.slots[acc.activeSlot || 0];
+    if (s && s.name) return ('' + s.name).slice(0, 16);
+  } catch (_) {}
+  return null;
+}
 export function playerName() {
   const q = params.get('name');
   if (q && q.trim()) return q.trim().slice(0, 16);
+  const chosen = activeCharacterName();
+  if (chosen) return chosen;
   let n = localStorage.getItem('bravoName');
   if (!n) {
     n = 'Traveler' + (1000 + Math.floor(Math.random() * 9000));
@@ -40,15 +62,71 @@ export function playerName() {
   return n;
 }
 
-// Per-device secret that claims our name on the server the first time we
-// join with it; the server rejects later joins under this name without it.
-function playerToken() {
-  let t = localStorage.getItem('bravoToken');
-  if (!t) {
-    t = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
-    localStorage.setItem('bravoToken', t);
+// ── Accounts ──────────────────────────────────────────────────────
+// Identity used to be a random per-device token in localStorage. That token IS
+// the identity, and it cannot leave the browser that made it — so logging in
+// from a second computer generated a new one, the server saw it did not match
+// the name's claim, and refused the join. You could not reach your own
+// character from another machine. Now the account lives on the server and you
+// carry a username and password instead.
+//
+// The session token below is still cached in localStorage, but only as a
+// convenience so a reload doesn't re-prompt; losing it costs a re-login, not a
+// character.
+export const auth = { username: null, session: null, characters: [] };
+
+function authOrigin() {
+  const h = location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1' || location.port === '5173')
+    return location.protocol + '//' + h + ':2567';
+  return location.origin;                    // production: same host as the game
+}
+async function authPost(path, body) {
+  try {
+    const r = await fetch(authOrigin() + path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, error: j.error || ('server said ' + r.status) };
+    return j;
+  } catch (e) {
+    return { ok: false, error: 'cannot reach the server' };
   }
-  return t;
+}
+function rememberSession(j) {
+  auth.username = j.username; auth.session = j.token; auth.characters = j.characters || [];
+  try { localStorage.setItem('bravoSession', JSON.stringify({ u: j.username, t: j.token })); } catch (_) {}
+  return { ok: true };
+}
+export async function accountRegister(username, password) {
+  const j = await authPost('/auth/register', { username, password });
+  return j.ok ? rememberSession(j) : j;
+}
+export async function accountLogin(username, password) {
+  const j = await authPost('/auth/login', { username, password });
+  return j.ok ? rememberSession(j) : j;
+}
+// Re-use a cached session on reload. Returns false if it expired, in which case
+// the login screen must be shown again.
+export async function accountResume() {
+  let c = null;
+  try { c = JSON.parse(localStorage.getItem('bravoSession') || 'null'); } catch (_) {}
+  if (!c || !c.t) return false;
+  const j = await authPost('/auth/characters', { token: c.t });
+  if (!j.ok) { try { localStorage.removeItem('bravoSession'); } catch (_) {} return false; }
+  auth.username = j.username; auth.session = c.t; auth.characters = j.characters || [];
+  return true;
+}
+export async function accountRefreshCharacters() {
+  if (!auth.session) return [];
+  const j = await authPost('/auth/characters', { token: auth.session });
+  if (j.ok) auth.characters = j.characters || [];
+  return auth.characters;
+}
+export function accountLogout() {
+  auth.username = auth.session = null; auth.characters = [];
+  try { localStorage.removeItem('bravoSession'); } catch (_) {}
 }
 
 function serverUrl() {
@@ -85,15 +163,35 @@ function scheduleRetry() {
   retryT = setTimeout(() => { retryT = null; if (net.status !== 'online') initNet(getSelf); }, 20000);
 }
 
+// Re-join under whatever character is active now. The world connection is
+// opened at boot, BEFORE the player has picked a character, so the first join
+// uses whatever name was active last time (or none). Selecting a character has
+// to move the connection to that character, or you would be standing in the
+// world under the previous one and saving over its blob.
+export async function netRejoinAsActiveCharacter() {
+  if (!MP_ENABLED || !auth.session) return;
+  const want = playerName();
+  if (net.room && net.joinedAs === want) return;      // already the right one
+  try { if (net.room) await net.room.leave(); } catch (_) {}
+  net.room = null; net.remotes.clear();
+  await initNet(getSelf);
+}
+
 export async function initNet(getSelfFn) {
   if (!MP_ENABLED) return;
-  getSelf = getSelfFn;
+  if (getSelfFn) getSelf = getSelfFn;
   net.status = 'connecting';
   try {
     const Colyseus = await loadLib();
     const client = new Colyseus.Client(serverUrl());
-    const room = await client.joinOrCreate('bravo', { name: playerName(), token: playerToken() });
+    // No session → stay offline rather than joining anonymously. Joining
+    // without an account would let the world hand out a character name that
+    // nobody owns, which is what the account system exists to prevent.
+    if (!auth.session) { net.status = 'offline'; net.error = 'not logged in'; return; }
+    const joinName = playerName();
+    const room = await client.joinOrCreate('bravo', { name: joinName, session: auth.session });
     net.room = room; net.selfId = room.sessionId; net.status = 'online';
+    net.joinedAs = joinName;               // so a character switch knows to re-join
     lastSent = null;                       // force an immediate first send
     room.state.players.onAdd((p, id) => {
       if (id !== room.sessionId) net.remotes.set(id, p);
@@ -129,6 +227,20 @@ export async function initNet(getSelfFn) {
       if (net.chatLog.length > 50) net.chatLog.shift();
       if (net.onChat) net.onChat({ name: '', text: m.text, feed: true });
     });
+    // PHASE 0 (docs/SERVER_AUTHORITY.md): pull the server's character document
+    // alongside the save. Nothing reads it authoritatively yet -- it is a shadow
+    // copy, and having the client hold it makes the divergence visible on this
+    // side too rather than only in the server log.
+    room.onMessage('character_state', doc => { net.character = doc; if (net.onCharacter) net.onCharacter(doc); });
+    room.onMessage('tx_result', m => { if (net.onTxResult) net.onTxResult(m); });
+    room.send('request_character');
+    // Ask for our save now that every handler above is attached.
+    // ⚠ The server also pushes it from onJoin, but that send happens while we
+    // are still inside joinOrCreate() with no handlers registered, so it is
+    // delivered to nobody and dropped. That is why a character could join with
+    // the right name, against a server holding the right save, and still come
+    // up with a default inventory. Do not remove this in favour of the push.
+    room.send('request_save');
     room.onLeave(() => {
       net.status = 'off'; net.room = null;
       net.remotes.clear(); net.mobs.clear(); updateCount();
@@ -223,4 +335,44 @@ export function netTp(reason) {
   if (net.status !== 'online' || !net.room || !getSelf) return;
   const s = getSelf();
   net.room.send('tp', { x: s.x, y: s.y, reason });
+}
+
+// ── Transactions (PHASE 1 of docs/SERVER_AUTHORITY.md) ────────────
+// Send an INTENT and get an authoritative answer. The caller has normally
+// already applied the change locally (prediction) — that is what keeps crafting
+// and pickups feeling instant — so the reply either confirms it or is a
+// rejection the caller must undo.
+//
+// ⚠ Each intent carries a monotonic `seq` and the server echoes it back. Without
+// it, two intents in flight at once cannot be told apart on reply, and a
+// rejection would roll back whichever action the client guessed at — which
+// presents as an item vanishing for no reason. `pending` holds what each seq
+// predicted so the reconciler knows exactly what to reverse.
+let txSeq = 0;
+export const txPending = new Map();   // seq -> {kind, intent, predicted}
+
+// Offline is a demo/tutorial only (see docs/SERVER_AUTHORITY.md, Decisions), so
+// there is deliberately no local transaction path here: single-player keeps its
+// own client-side rules and never round-trips.
+export function netTx(kind, intent, predicted) {
+  if (net.status !== 'online' || !net.room) return 0;
+  const seq = ++txSeq;
+  txPending.set(seq, { kind, intent, predicted: predicted || null, at: Date.now() });
+  // A reply that never arrives would leak an entry per action for the whole
+  // session; drop anything older than a generous round trip.
+  if (txPending.size > 64) {
+    const cut = Date.now() - 30000;
+    for (const [k, v] of txPending) if (v.at < cut) txPending.delete(k);
+  }
+  net.room.send('tx', { seq, kind, intent });
+  return seq;
+}
+
+// ── Preferences (PHASE 2) ─────────────────────────────────────────
+// UI settings only: hotbar layout, gambits, toggles. A DIFFERENT message from
+// `save` on purpose — the character and the player's settings are now two
+// different things with two different owners, and sharing one endpoint is how
+// they would quietly become one thing again.
+export function netPrefs(prefs) {
+  if (net.status === 'online' && net.room) net.room.send('prefs', prefs);
 }

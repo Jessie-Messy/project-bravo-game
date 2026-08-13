@@ -1,3 +1,18 @@
 {
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "check": "node tools/check_tables.mjs && node tools/check_tx.mjs && node tools/check_world_data.mjs && node tools/check_deploy.mjs",
+    "check:tables": "node tools/check_tables.mjs",
+    "check:tx": "node tools/check_tx.mjs",
+    "check:world": "node tools/check_world_data.mjs",
+    "check:deploy": "node tools/check_deploy.mjs",
+    "check:canopy": "node tools/check_canopy.mjs",
+    "check:e2e": "node tools/check_e2e.mjs",
+    "oplog": "node tools/oplog_report.mjs",
+    "build:world": "node server/build-world-data.mjs",
+    "check:client": "node tools/check_client.mjs",
+    "check:model": "node tools/check_model.mjs",
+    "optimize:model": "node tools/optimize_model.mjs",
+    "check:playtest": "node tools/check_playtest.mjs"
+  }
 }

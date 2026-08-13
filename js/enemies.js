@@ -27,6 +27,11 @@ export const ENEMY_CFG = {
   piper:       { maxHp:520, speed:65,  damage:42, attackRange:TILE*1.6, aggroRange:TILE*12, attackCooldown:2.0, r:26 },
   giant_rat:   { maxHp:15,  speed:120, damage:4,  attackRange:TILE*0.9, aggroRange:TILE*4,  attackCooldown:1.2, r:8  },
   ratman_archer: { maxHp:34, speed:100, damage:10, attackRange:TILE*5.0, aggroRange:TILE*6,  attackCooldown:1.8, r:10 },
+  // Slow, tanky, relentless. Tuned around the model's own animation set: it has a
+  // shambling walk AND a run, so the aggro range is long and the speed low —
+  // a zombie that noticed you from a long way off and then shuffled after you is
+  // the fantasy, and the run clip only appears once it is close and committed.
+  zombie:      { maxHp:70,  speed:44,  damage:14, attackRange:TILE*1.1, aggroRange:TILE*7,  attackCooldown:1.7, r:12 },
 };
 
 // ── Utility: tileAt / blockedAt / boxBlocked ───────────────────────
@@ -400,6 +405,39 @@ export const BOSS_ABILITIES = {
     { id:'marrow_quake',name:'MARROW QUAKE',  tell:2.0, cd:17, range:TILE*99, belowHp:0.55,
       shape:'circle', r:TILE*5.2, at:'self',   dmg:2.8, stun:1.0 },
   ],
+  // ── Liliana, the Zombie Queen ──
+  // Her ability set is designed around the animation clips she actually ships
+  // with, not the other way round: every `anim` below is a real clip, and the
+  // `tell` is the wind-up the player reads. The renderer stretches the clip to
+  // fit the tell (see buildSlotModel/animModel), so the swing lands ON the beat
+  // the damage resolves — a telegraph whose animation finishes early or late is
+  // worse than no animation, because it teaches the wrong timing.
+  //
+  // The rhythm is deliberate: a fast punish (2.2s), two mid AoEs, and one huge
+  // 3.2s wind-up that is her "run away NOW" move. Mixed direct and area, so
+  // neither "always melee" nor "always kite" is an answer.
+  liliana: [
+    // DIRECT, single target. Cheapest tell, so it is the one that catches you
+    // greedy — and it takes your damage away rather than your health, which
+    // punishes staying in longer than it punishes being hit.
+    { id:'wither',     name:'WITHERING GAZE', tell:1.2, cd:8,  range:TILE*9,
+      shape:'line', len:TILE*8, w:TILE*1.3, at:'player', dmg:1.4, weak:8,
+      anim:'mage_soell_cast_4' },
+    // AREA at your feet. Poison, so standing in the cloud is not the mistake —
+    // being there when it lands is.
+    { id:'plague_bloom',name:'PLAGUE BLOOM',  tell:1.6, cd:11, range:TILE*10,
+      shape:'circle', r:TILE*2.4, at:'player', dmg:1.6, poison:6, poisonDmg:7,
+      anim:'Charged_Spell_Cast' },
+    // AREA on herself. The melee-punish: it says "stop hitting me".
+    { id:'grave_slam', name:'GRAVE SLAM',     tell:1.5, cd:12, range:TILE*4,
+      shape:'circle', r:TILE*3.0, at:'self',  dmg:2.2, stun:1.4, slow:6,
+      anim:'Charged_Ground_Slam' },
+    // Phase move, wounded only. The longest tell in the game and the biggest
+    // zone — readable from across the room, lethal if ignored.
+    { id:'corpse_hurl',name:'CORPSE TIDE',    tell:3.2, cd:20, range:TILE*99, belowHp:0.6,
+      shape:'circle', r:TILE*5.0, at:'self',  dmg:3.0, slow:8,
+      anim:'Crouch_Charge_and_Throw' },
+  ],
   molloch: [
     { id:'shriek',      name:'PIERCING SHRIEK', tell:1.2, cd:10, range:TILE*10,
       shape:'line', len:TILE*9, w:TILE*1.7, at:'player', dmg:2.4, stun:1.2 },
@@ -432,7 +470,7 @@ function _bossPickAbility(e){
 }
 function _bossStartCast(e, a){
   const tell = a.tell * (_bossEnraged(e)?0.75:1);
-  const c = { id:a.id, name:a.name, t:0, dur:tell, shape:a.shape };
+  const c = { id:a.id, name:a.name, t:0, dur:tell, shape:a.shape, anim:a.anim };
   if(a.shape==='line'){
     c.x=e.x; c.y=e.y; c.len=a.len; c.w=a.w;
     c.ang=Math.atan2(player.y-e.y, player.x-e.x);        // locked at cast time
@@ -472,8 +510,16 @@ function _bossResolveCast(e){
   damagePlayer(Math.round(e.damage*(a.dmg||1)), e);
   if(a.stun && player.stunTimer<=0){ player.stunTimer=a.stun; floaters.push({x:player.x,y:player.y-24,text:'STUNNED!',life:0.9}); }
   if(a.web && player.webTimer<=0){ player.webTimer=a.web; floaters.push({x:player.x,y:player.y-24,text:'BOUND!',life:0.9}); }
-  if(a.poison && player.poisonTimer<=0){ player.poisonTimer=a.poison; player.poisonDmg=5; player.poisonTick=0;
+  if(a.poison && player.poisonTimer<=0){ player.poisonTimer=a.poison; player.poisonDmg=a.poisonDmg||5; player.poisonTick=0;
     floaters.push({x:player.x,y:player.y-24,text:'PLAGUED!',life:0.9}); }
+  // ⚠ These REFRESH rather than only applying when expired, unlike stun/web/poison
+  // above. A stun that re-applies is a stun-lock and unplayable; a damage or speed
+  // debuff that refreshes is just pressure, and it is the pressure that makes a
+  // long fight feel like it is closing in on you.
+  if(a.weak){ player.weakTimer=Math.max(player.weakTimer||0, a.weak);
+    floaters.push({x:player.x,y:player.y-24,text:'WEAKENED!',life:0.9}); }
+  if(a.slow){ player.slowTimer=Math.max(player.slowTimer||0, a.slow);
+    floaters.push({x:player.x,y:player.y-24,text:'MIRED!',life:0.9}); }
 }
 
 // ── updateEnemy ────────────────────────────────────────────────────

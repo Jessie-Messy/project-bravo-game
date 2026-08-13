@@ -16,6 +16,105 @@ handoff is invisible to the next session and causes collisions.
 
 ---
 
+## Where this stands (latest session)
+
+**Production, pre-beta.** Not a prototype any more — the standing instruction is
+to build so nothing has to be redone.
+
+- **Playtest fixes (pre-deploy).** Four reports from the last test, all fixed and
+  covered by browser assertions:
+  1. *Died during the tutorial.* New characters spawned at the world default
+     (tile 240,300), open grassland outside the walls. They now start at
+     `CITY_SPAWN` (310,362), inside the PvP safe zone with the guards. Set in
+     `resetForNewCharacter()`, **not** in the creator's callback, so every path
+     that makes a fresh hero gets it — including the offline demo.
+  2. *First tooltip covered the toolbar.* The tutorial panel now clamps its `y`
+     against `hotbarRect()`, so it can never sit over the hotbar.
+  3. *City was pitch black at night.* 16 civic street lamps (`CITY_LANTERNS`),
+     each on a post (`lampPostMesh`), lit from dusk.
+  4. *Fires gave no light.* `campfire`/`forge` fell through to the ungated
+     `baseInt * nightFactor * 0.5` branch — at dusk that is 0.2 intensity,
+     invisible, which is exactly when a player lights one. They now use the
+     floored branch like torches and hearths, and the campfire light moved from
+     y=6 (under the ~20u grass) to y=16, in the flame.
+- ⚠ **The city lamps are CIVIC SCENERY, marked `civic:true`, and that flag has to
+  be honoured in five places or the fix silently undoes itself.** `placedObjects`
+  is replaced wholesale by three separate paths — `resetForNewCharacter()`,
+  `loadGame()` and `applyServerPlacedObjects()` (the server broadcast, which
+  lands seconds after joining, so seeding once at boot lasts *no time at all*
+  online). All three re-seed. `buildSave()` strips them so they never enter a
+  save blob, and `removePlacedObject()` refuses them so nobody pockets sixteen
+  free lanterns and darkens the town behind them.
+- ⚠ **`MAX_PLACEMENT_LIGHTS` is 16 and the city now has 16 lamps.** A plain
+  nearest-first sort therefore let street lamps take the entire light budget, so
+  a player's own campfire lit nothing while they stood in town. The selection now
+  reserves 6 slots for non-civic lights and backfills unused ones with lanterns.
+  **Adding more civic lights means revisiting that reservation.**
+
+- **Trees: fixed.** Canopies were being built in several disconnected pieces
+  (leaf balls in the sky) and read as broccoli from the game camera. Both fixed;
+  crowns now have a solved mass count, a welded chain, a real scale hierarchy and
+  per-tree colour. See the first four gotchas below — they are the transferable
+  lessons, not tree trivia. Guard: `tools/check_canopy.mjs`.
+- **Server authority: Phase 0, 1 and 2 done** — the server now OWNS items,
+  wallet, tools, tiers, armor and standing (`character.AUTHORITATIVE`). A client
+  save cannot author them; a tampered save claiming 10⁹ gold changes nothing.
+  ⚠ Progression (xp, hp, skills, quests, contracts, mount) still comes from the
+  save — it has no transaction yet, so flipping it would delete it, not secure
+  it. Phase 3 moves it. **Do not add a field to `AUTHORITATIVE` without a
+  transaction that can author it.**
+- *(historical)* **Phase 0 done, Phase 1 steps 5–6 done**
+  (`docs/SERVER_AUTHORITY.md`). The server now validates and applies `craft`,
+  `buy`, `bank`, `pickup` and `gather` against its own character document and
+  answers with deltas (`server/tx.js`). Still runs alongside the legacy `save`,
+  so nothing is authoritative yet — that is Phase 2.
+  - ⚠ **Phase 1 step 7 is the gate on Phase 2 and it needs REAL PLAY.** Watch
+    the server log for `[character] DIVERGENCE` lines: each one names a mutation
+    the client makes that the server does not model, and every one is Phase 2
+    rework if it is skipped. It cannot be finished at a desk.
+  - Client rollback on rejection is written but deliberately **off**
+    (`_txRollback` in game3d.js). Turning it on before `save` is reduced would
+    make every modelling gap a visible item loss. Phase 2 flips both together.
+- **Crafting and shop prices now live in `shared/*.json`, read by BOTH sides.**
+  They used to be stated twice inside game3d.js alone (a `>=` gate in `canCraft`,
+  a subtraction in `doCraft`). Change a cost in `shared/recipes.json` and both
+  the client and the server pick it up — do **not** re-add a copy in either.
+- **Tests, all fast and renderer-free — run them:** `node tools/check_tx.mjs`
+  (64 transaction cases), `node tools/check_canopy.mjs <three/build>` (canopy
+  integrity). `server/world-data.json` now carries a resource layer; regenerate
+  it with `node server/build-world-data.mjs` after ANY world edit or the server
+  will refuse gathers on tiles the client thinks are trees.
+- **Three architecture decisions are recorded** in `docs/SERVER_AUTHORITY.md`
+  under "Decisions taken": offline is demo/tutorial only (this *retires* the
+  dual-side-purity constraint — a large simplification), kills/deaths are
+  server-owned reputation feeding notoriety (`standing`, schema v2), and document
+  writes batch on a 2s timer. Read them before designing Phase 1; each one
+  removes a constraint the plan was originally written to respect.
+- **Blocked on the owner — deploy.** `deploy_server_to_vps.bat`, restart, and
+  ⚠ **nginx must proxy `/auth/*`** the way it already proxies `/bravo-ws`, or
+  accounts will 404 in production while working perfectly locally.
+  - ⚠ **The deploy scripts were BROKEN and are now fixed.** They listed their
+    files by hand and had gone stale: the server one never copied `accounts.js`,
+    `character.js`, `tx.js` or `shared/` (it would have crash-looped), and the
+    client one never copied `shared/` (crafting would have refused everything in
+    production while working locally). Both now copy by wildcard and run
+    `tools/check_deploy.mjs` first, which reads the scripts themselves and
+    aborts on a gap. **Never go back to a hand-written file list.**
+- **Read `CHANGELOG.md`** for everything on this branch and what to watch when it
+  goes live, and **`docs/HOTFIX.md`** when something is broken in production —
+  symptom → cause → fix, plus the first-five-minutes checks.
+- **Nothing here has been played yet.** It is covered by automated tests, a
+  headless browser boot and end-to-end runs against a real server, but no human
+  has held the controls. First session: check `/health`, then run
+  `node tools/oplog_report.mjs`.
+- **The server now keeps an operations log** (`server/oplog.js` →
+  `server/data/oplog-YYYY-MM-DD.jsonl`): every transaction accepted or refused
+  with its intent and deltas, every divergence, saves, joins, leaves. Console
+  output does not survive a session; this does, and it is what the Phase 2 gate
+  is assessed from. Read it with `node tools/oplog_report.mjs`.
+
+---
+
 ## Graphics overhaul — COMMITTED and on `master`
 
 ⚠ This section used to read "IN PROGRESS — branch `graphics-overhaul`, UNCOMMITTED".
@@ -84,14 +183,32 @@ casts stay consistent by construction.
 - ⚠ Still to tune: **dusk is too bright and not warm enough** — 19:00 should be
   amber at the horizon and currently reads near-neutral.
 
-**Water — the coverage range is NOT 0..1.** `buildWaterField` blurs with
-`WFIELD_R=1` then floors real water tiles at `WFIELD_KEEP=0.52`, so a 2-3 tile
-river sits at roughly **0.52-0.75 across its whole width** and never approaches
-1.0. Both the foam band (was 0.50-0.94) and the depth ramp (was 0.34-0.90) were
-written assuming open water reaches ~1.0, which put the *entire river* inside
-the foam band — it rendered white like pack ice. Now foam is 0.16-0.54 (i.e.
-below the 0.5 contour, on the shallow ramp) and depth is 0.30-0.66. Anything
-else keyed off coverage must respect this range.
+**⚠ Water coverage — the note that used to be here was WRONG and caused three
+separate regressions. Read this before touching any ramp.**
+There are TWO different signals and they do not have the same range:
+- **`_wField`** (the CPU-side blurred field) really does sit at ~**0.52-0.75**.
+  `buildWaterField` blurs with `WFIELD_R=1` then floors real water tiles at
+  `WFIELD_KEEP=0.52`. That is what the old note described, and it is true — of
+  the field.
+- **The MASK TEXTURE the shader actually samples is not that.** `paintWaterMask`
+  puts the field through a WEDGE remap — `(cov-0.5)/0.16+0.5`, clamped — before
+  writing the texel. **Measured** over an 80×80-tile block at the river: 11,900
+  non-zero texels, **10,202 of them (86%) at exactly 1.0**. A transect across
+  the river reads `0, 0.05, 0.66, 0.84, 1.0 ×33, 0.97, 0.69, 0.29, 0.06, 0`.
+So `cov` in the shader is a **silhouette with a ~¾-tile antialias fringe**, not a
+shore gradient. Any ramp keyed directly off `cov` can only ever paint a hairline
+at the bank with one flat colour everywhere inside — which is exactly what
+happened when the depth stops were tuned to 0.30/0.66, then to 0.52/1.15, on the
+strength of the old note.
+- **The fix is `wideCov()`** in water.js: 8 extra mask taps on rings at 2.4 and
+  5.2 tiles recover a real distance-from-bank, with no extra pass and no depth
+  read. The depth ramp, shore wash and caustics all key off THAT. Offsets derive
+  from `uMapRepeat`, so no map constants leak into the shader.
+- The white foam band is gone entirely, replaced by a wide soft shore wash keyed
+  off distance and brightest a tile *in* from the bank, so it can never draw an
+  edge. The reference art has no surf line.
+- ⚠ **`patch` is a reserved word in GLSL ES.** A fragment shader using it fails
+  to compile while `node --check` passes happily. Renamed to `clump`.
 
 **Gotchas paid for the hard way:**
 - **A raw `ShaderMaterial` with `fog: true` MUST merge `THREE.UniformsLib.fog`.**
@@ -314,15 +431,81 @@ plan's original 50fps merge gate is comfortably met.
 **Not started:** GTAO (needs the additive-FX reparent under an `fxGroup` — the
 plan assumed ~8 materials, the real count is **297 additive meshes**).
 
-**Open, from the critic pass (verify each before acting — one of its findings
-was a misdiagnosis):** characters reportedly don't attenuate at night while the
-world goes black; masonry reportedly picks up a red cast at night (suspicious,
-since night ambient `0x0c102b` is blue, so the stated cause can't be right);
-dusk reads neutral where it should be amber; the forest is a visible rectangular
-grid of identical clones (cheap fix: jitter position/rotation/scale per
-instance). Its claim that `calls:1, tris:1` means "dead instrumentation" is
-**wrong** — that's `renderer.info` reflecting the composer's final fullscreen
-pass, which is expected once EffectComposer is in play.
+**Critic pass — status after the 2026-08-08 verification round.** Every item
+below was measured in a real running build (see "Headless measurement rig"),
+not read off the source.
+
+- ✅ **Characters don't attenuate at night — CONFIRMED, root-caused, FIXED.**
+  The hero was not being lit at all, it was **emitting**. See the gotcha entry
+  below; this one is worth reading before touching any model-loading code.
+- ✅ **Masonry red cast at night — NOT A BUG**, exactly as suspected here. On a
+  Human the only active lights at midnight are ambient `#0c102b`, moon
+  `#7799cc` and the grey carry-light. Nothing red exists to cast it. It is
+  Vampire Night Vision on the test character.
+- ✅ **`calls:1, tris:1` is not dead instrumentation** — unchanged, still right.
+- ⬜ **Dusk amber** — not re-measured this round. Note the file contradicts
+  itself: this line says dusk reads neutral, while "Dusk warmth" below records
+  the `horizonF` divisor fix (0.30 → 0.55) with verified per-hour samples. The
+  later fix probably supersedes this, but it wants an eyeball, not a code read.
+- ⬜ **Forest lattice** — not re-measured. The tree `InstancedMesh`es are
+  unnamed, so a variance probe has to find them by geometry, not `name`.
+  "Per-tree variation" below claims this is already done.
+
+**⚠ Two models were 100% SELF-LIT — and it is an ASSET defect, not a code one.**
+`Protag_animations_basic.glb` and `Horse.glb` both declare
+`emissiveFactor [1,1,1]` with an `emissiveTexture` whose index is **the same
+texture object as `baseColorTexture`**. The model therefore emits exactly its
+own albedo and is immune to every light in the scene.
+- Measured before the fix: with **all lights locked to zero intensity and
+  `scene.environment` removed**, the character still rendered at luminance
+  **45** while the ground beside it was **0**. At midnight it was **8.05x the
+  ground** (0.58x at noon). After: **0.0** with lights off, and **0.72x** at
+  midnight. That is the test to repeat — kill the lights and see if it is still
+  there.
+- `simplifyPropMaterial` already strips emissive but **deliberately skips
+  materials carrying an `emissiveMap`**, since a map normally means the thing
+  genuinely glows (19 props depend on that). These two are false positives and
+  cannot be distinguished from a real glow without knowing the asset, so they
+  opt in explicitly: `simplifyPropMaterial(m, {stripEmissiveMap:true})`.
+  **Do not weaken the general rule to catch them.** Originals go to `userData`.
+- ⚠ The protagonist loader was also the **one GLB path that never called
+  `simplifyPropMaterial` at all**; the horse loader had the same gap. If you add
+  another model loader, route it through that function.
+- **This bug hid itself three ways**, which is why it survived a review: the
+  blocky fallback rig *is* lit correctly, so it only appears once the GLB
+  finishes loading async (a noon screenshot taken early looks perfect); it is
+  immune to every lighting knob, so a sweep of the carry-light from 0.35 to 0.08
+  moved character luminance **<4%** and made the lights look innocent; and the
+  bogus emissive is invisible in any material dump that only checks
+  `emissive !== 0 && !emissiveMap`, which is the obvious audit to write.
+- ⚠ **The hero is now genuinely dark at night, and cranking the carry-light is
+  NOT the fix.** With the emissive gone the figure sits at ~0.7x the ground at
+  midnight — correct, but hard to see. The obvious response is to raise
+  `NIGHT_FILL_I`; **measured, that makes it worse.** `playerLight` sits ~18u off
+  the ground, so raising it lights the GROUND: at 3.5 the character is a black
+  silhouette in a bright green puddle of lit grass. Readability at night needs
+  light that reaches the figure (mount it at torso height, or a character-only
+  fill / rim), not more intensity on a ground-hugging point light.
+  `NIGHT_FILL_I` / `CAVE_FILL_I` are split (outdoor night vs cave/interior) and
+  both still sit at the original `0.35` — unchanged behaviour. Tune with
+  `_dev.nightLight({night, cave})`.
+- ⚠ **Measurement trap that nearly sold the wrong fix:** a screen-space sample
+  box around the character also catches the ground around it. That is what made
+  the intensity sweep look like it was brightening the *character* when it was
+  brightening the grass. Sample a tight torso box, and **look at the frame** —
+  the puddle is obvious in a screenshot and invisible in the numbers.
+
+**Headless measurement rig (how the above was measured).** The game runs in
+headless Chromium under SwiftShader with `_dev` driven directly and screenshots
+measured per-region — that is what makes claims like "8.05x" possible instead of
+"looks bright". Two traps cost real time and will cost it again:
+- **Boot lands on the character-select overlay**, with the world dimmed behind
+  it. The first measurement pass was reading a UI panel and confidently reported
+  noon and midnight as identically dark. Clear `G.charSelectOpen` and every
+  `*Open` flag, then assert none survived.
+- The **Draco decoder is served from `gstatic`, not jsdelivr**, so every GLB
+  silently fails to decode if only the jsdelivr host is reachable — and the
+  fallback rigs render fine, so the scene looks plausible.
 
 ---
 
@@ -437,6 +620,45 @@ pass, which is expected once EffectComposer is in play.
   - `litAt` crosses the wire alongside `face` — same three sites as Phase 3.
 - Dev: `_dev.burns()` (state of everything), `_dev.burn(i,sec)` (back-date so it expires in `sec`, negative = overdue), `_dev.sweep()`, `_dev.relight(i)`, `_dev.pickTest(i)`.
 - Dev: `_dev.craft(id)`, `_dev.hold(type)`, `_dev.placeAt(type,dtx,dty)`, `_dev.placeBlocker(type,dtx,dty)`, `_dev.removePlaced(i)` — these drive the *real* functions, so a green result means the real path works.
+- ✅ **Phase 5 (2026-08-09) — chest as real storage, workbench as a real station.**
+  - **Chest stands anywhere now.** `surfaces` was evaluated as an if/else chain, so
+    `'house'` silently meant *house ONLY* and listing both was impossible. Ground and
+    house are independent permissions now; `secure_chest` carries both.
+  - **Capacity** `CHEST_CAP` total units, with a bar and used/cap readout. `+All`
+    deposits **partially** when the lot would overflow. ⚠ The **pack is uncapped**, so
+    this is a real bound on the chest rather than "bigger than the pack" — if the pack
+    ever gains a cap, revisit this number so the chest stays the upgrade.
+  - **Lock** only while the chest is in a house you own. ⚠ The house test is part of the
+    **access check**, not just the toggle: a chest locked indoors and later moved outside
+    must not stay sealed forever.
+  - **Workbench/forge/anvil answer `E`** and open the craft panel. Before this a bench
+    had *no* interaction at all — it was purely a proximity test unlocking `adv` recipes
+    in the `C` panel, which is why it read as scenery.
+  - ⚠ **The chest panel was taller than the viewport.** ~29 `BAG_ITEMS` rows at
+    `BAG_ROWH` is ~850px against an 800px screen, so the bottom rows and the whole lock
+    strip sat off-screen — the button existed and could never be clicked. The list is
+    clamped and wheel-scrolled now (same pattern as the pack grid) with the strip pinned
+    to the bottom. **Every placement and open test passed while this was broken**; it
+    only showed up in a screenshot of the panel.
+  - ⚠ **Grass swallowed the props.** A placed chest was invisible in open country — not a
+    rebuild failure (instance counts confirmed it was drawing), just 120 blades/tile of
+    waist-high grass over a knee-high object. `rebuildGrass` now skips tiles carrying a
+    placed object. The occupied-tile set is rebuilt each pass rather than cached, because
+    a stale one leaves grass growing through a chest with nothing to point at.
+  - **Art:** both were single boxes. Now merged multi-part geometry via `propGeo()` —
+    ⚠ **merged, not grouped**: these are `InstancedMesh`es and a Group would multiply
+    draw calls by the part count. Both keep the bounds of the box they replaced, because
+    the registry's `y` and `scale` are tuned against those numbers.
+  - ⚠ **Chest CONTENTS are client-side only.** The server stores `id/type/x/y/owner/face/
+    litAt` and nothing item-shaped, so `items` lives in the local save; two players
+    sharing a chest online would each see their own. `locked` *does* cross the wire —
+    `object_place` doubles as the update path since the server drops anything within 6
+    units of the incoming point, and it now preserves the previous `owner` on such an
+    update instead of reassigning it to whoever last touched it.
+  - ◐ **NEEDS VISUAL SIGN-OFF:** the workbench is confirmed good in-game (plank top,
+    legs, shelf, vice all read at camera distance). The **chest geometry has not been
+    eyeballed up close** — it is confirmed *drawing* and its grass patch clears, but
+    every capture attempt framed it badly. Stand next to one and look before trusting it.
 
 ### Worn armor (paper-doll)
 - Only **helms, gorgets, chest pieces** render on the animated player (the limb pieces deformed badly worn — see "Lootable gear" below for where they went instead).
@@ -503,6 +725,80 @@ pass, which is expected once EffectComposer is in play.
 - Own instanced mesh rebuilt alongside `rebuildWalls`; placement is a **deterministic hash of tile+face**, so windows never flicker or reshuffle as the render window slides.
 - **Player-placed walls are skipped** — those get used as fences and keeps, and punching windows in them unasked would be worse than plain.
 
+### Accounts — a character follows you between computers (2026-08-10, Headline)
+**Log in with a username and password; the server owns your characters.** Before
+this, identity was a random token generated in the browser and kept in
+localStorage. That token *was* the identity, so it could never leave the machine
+that made it: a second computer generated a new one, the server compared it to
+the name's stored claim, and **refused the join**. You could not reach your own
+character from another machine.
+- `server/accounts.js` — accounts + character ownership. Passwords are
+  **scrypt-hashed with a per-account salt** (node's own `crypto`, no new
+  dependency), compared in constant time, and a *missing* account still pays the
+  hash cost so "no such user" and "wrong password" are indistinguishable. Same
+  SQLite-or-JSON dual backend as `storage.js`.
+- **HTTP auth before the room join** (`/auth/register`, `/auth/login`,
+  `/auth/characters`) so the login screen can show a real reason and list your
+  characters without a join opaquely succeeding. Per-IP throttled — scrypt is
+  deliberately slow, so unbounded attempts are a guessing oracle *and* a CPU DoS.
+- `onAuth` verifies the session and claims the character for that account,
+  refusing a name owned by another. Legacy browser tokens are cleared on first
+  account login so they can never reject the rightful owner.
+- `js/login.js` is **DOM, not canvas** — deliberately. Password masking,
+  clipboard, autofill and mobile keyboards come free from a real `<input>`.
+  Offline play is offered so single-player never needs a server.
+- ⚠ **On the VPS, nginx must proxy the `/auth/*` routes to the world server**,
+  the same way it already proxies `/bravo-ws`. The client derives the auth URL
+  from `location.origin` in production; without the proxy rule login fails with
+  "cannot reach the server".
+
+**⚠⚠ THREE bugs sat between "logged in" and "has your stuff". All three were
+invisible until a character was actually loaded on a second machine, and TWO
+predate the account work** — they were masked because every client also had the
+character in localStorage, so the local copy quietly covered for the server's
+copy never arriving. Server-owned characters removed that cover.
+1. **The join used the wrong name.** `playerName()` read `localStorage.bravoName`
+   — a key nothing ever wrote except its own random fallback. Picking "Gideon"
+   still joined as "Traveler1234", so the server claimed *that* name and returned
+   *its* empty save. The active character slot is the authority now, and
+   selecting or creating a character calls `netRejoinAsActiveCharacter()`: the
+   socket opens at boot before any character exists, so without a re-join you
+   play as the previous character **and save over its blob**.
+2. **The save raced the client's handlers.** The server pushed the blob from
+   `onJoin`, while the client was still inside `joinOrCreate()` with no
+   `onMessage` handlers attached — delivered to nobody, dropped. The client now
+   sends **`request_save`** once its handlers are up. Keep both: the push is
+   harmless and wins for fast clients, the request is what makes it deterministic.
+3. **The payload is a STRING, not an object.** `storage.saveBlob` writes
+   `JSON.stringify` into a TEXT column and the server sends that string back
+   verbatim; `loadGame()` takes a parsed object and, handed a string, walks
+   properties that don't exist **inside a try/catch that swallows it**. Every
+   layer logged success and the data was discarded at the last step.
+   `net.onSave` now accepts either shape.
+- **Verified end to end**: two isolated browser profiles (separate localStorage
+  = genuinely different machines), same account — machine A set gold 4841 /
+  planks 77 and saved, machine B logged in and read **4841 / 77**. Also verified
+  from an empty database: register → creator opens.
+- **Save observability** (this is what finally made it debuggable): the server
+  logs `save ok: <name> (N bytes)`, `save sent on request:`, `no stored save
+  for`, and `SAVE REJECTED` with a reason. Client-side `_dev.saveNow()` forces
+  the real save path and `_dev.saveState()` reports net status, the autosave
+  timer and whether the player is flagged dead.
+- ⚠ **The autosave interval is frame-rate dependent, not wall-clock.**
+  `autoSaveTick` accumulates `adt`, which is **clamped to 0.1/frame**, so at
+  60fps "20 seconds" is ~20s but a throttled or backgrounded tab stretches it
+  arbitrarily. Under software rendering it measured **0.02 per real second** —
+  ~15 minutes to fire, which looked exactly like "saving is broken" for several
+  test rounds. There is also **no save on tab close**. A `beforeunload` save and
+  a wall-clock timer are worth doing.
+- ⚠ **This is sync, not anti-cheat.** The client still computes loot, XP and
+  inventory and tells the server what it holds. Making it authoritative means
+  moving transactions server-side (see the chest note) — a separate project.
+- ◐ **Not done:** chest contents are still client-side (deliberately deferred);
+  server-seeded character slots show placeholder details (Human · male, all 10s)
+  until the save arrives, because `ensureSlotForName` only knows the name —
+  `/auth/characters` should return race/gender/level too.
+
 ### Shared world clock (server-authoritative time)
 - `G.gameTime` was a **per-session counter starting at 0**, so every browser began its own day at 00:00 on load — two players side by side saw different skies, and a reload reset your day.
 - Now derived from **wall-clock seconds** (`worldNow()` = `Date.now()/1000 + worldTimeOffset + _timeShift`), re-derived every frame. Epoch seconds tick at exactly the rate the cycle wants (`DAY_CYCLE_SEC` real seconds = one game day) and, being absolute, make the **moon phase agree for everyone** too.
@@ -556,6 +852,50 @@ pass, which is expected once EffectComposer is in play.
 ---
 
 ## Known gotchas / things that bit us
+- ⚠ **A duplicate key in an object literal is legal, silent, and the LAST one
+  wins.** `window._dev` is one enormous literal and it carried `markPlacedDirty`
+  **twice** — the good one (`placedObjectsDirty=false; rebuildPlacedObjects();`,
+  synchronous, returns `true`) at the top, and a bare `{placedObjectsDirty=true;}`
+  ~500 lines later. The second silently replaced the first, so every test calling
+  `_dev.markPlacedDirty()` only set a flag and then read the instance counts
+  before the rebuild ran. The dirty dispatch is an `else if` chain with placed
+  objects LAST, which at the rig's ~2fps can go many seconds without a turn, so
+  the counts really were 0 — and the honest-looking conclusion was "the prop
+  doesn't render". Cost an hour on the lamp posts. **When a `_dev` helper seems
+  not to do what its body says, grep for a second definition of the same key
+  before debugging the feature.**
+- ⚠ **`lightProbe()` reported three.js `position.y` as world `y`.** In this engine
+  world y is `position.Z`; `position.y` is the HEIGHT. Any test asking "is there a
+  light at this object" compared a world coordinate against a height, found
+  nothing within range, and reported the light missing — while the light was
+  there and correct the whole time. The probe now returns `y` (world) and `h`
+  (height) separately.
+- ⚠ **Overhead renders cannot validate 3D art. Take a low shot.** Four of the five
+  tree canopy variants were built in *more than one piece* — one was in three — so the
+  wood had leaf balls hanging in the sky with nothing under them. Every overhead 3/4
+  render looked correct, because from above a detached lobe still lands on the crown's
+  footprint. It only showed in a deliberate low-pitch shot, and only for whichever
+  trees happened to be in frame. `tools/check_canopy.mjs` now asserts it geometrically
+  (one connected blob + inside the height box) in about a second with no renderer —
+  **run it after any change to `js/render/trees.js`.** It needs a local three.js:
+  `node tools/check_canopy.mjs /path/to/three/build`.
+- ⚠ **Measure procedural art at the dimensions the GAME builds it at.** The same
+  canopy check passed at the probe's convenient `height:100, radius:34` and failed at
+  the real `TOPH:146, TILE*0.86:41.3` — the shape table scales height and radius
+  *independently*, so a variant that is 1.10× tall and 0.74× wide has a completely
+  different mass-count requirement. A probe with tidy round numbers is not a probe.
+- ⚠ **A "fit to box" solve that picks its extremes before scaling is wrong.** It
+  bit twice in one session: the canopy fit chose the highest/lowest lobe from the
+  unscaled layout, then moved everything, and a lobe with a lower centre but a bigger
+  radius overtook the one the solve was pinned to. Once it undershot 20%, once it
+  overshot 13%, and both times it read as a bad constant. Iterate to a fixed point
+  (re-pick the extremes under the current fit, re-solve, ~3 passes) and it stays
+  correct when the layout changes.
+- ⚠ **The fit can be "satisfied" by the very lobe that is broken.** The canopy
+  reached its height box only because a *detached* lobe was sitting at the extreme.
+  Fixing the detachment made the fit numbers look worse, which is the fit finally
+  measuring the real crown. A geometric invariant that passes because of a defect is
+  worse than no invariant.
 - **`constants.js` crash**: an unclosed object literal in `RACES` (missing `}`) took the whole game down (every module failed to import). If the game shows a blank page, syntax-check `constants.js` first: `node --input-type=module -e "import('./js/constants.js').then(()=>console.log('ok')).catch(e=>console.log(e.message))"`.
 - **Naming collisions across sessions**: my char-panel `CHAR_W/CHAR_H` collided with the existing character-model-height `CHAR_H`. Renamed panel consts to `CHARP_W/CHARP_H`. Grep before adding top-level consts.
 - **`state.js` is edited by multiple sessions** — merge its `player{}` and `G{}` carefully; both sessions add fields there.
@@ -622,3 +962,72 @@ Chosen direction (from the depth discussion): **contract board → progression c
 - **Before big edits to `game3d.js`**: re-read the region right before editing (it's ~8k lines and shared).
 - **Verify behavior**, not just load — drive the real flow (`_dev.simulateKill`, open the panel, check `localStorage`). Load-without-error ≠ works.
 - New full-screen panels must be added to `uiBlocking()` and `modalOpen()`, get a render call in the draw list, and a click route in the mouse handler.
+
+---
+
+## Models
+
+`tools/optimize_model.mjs` shrinks a source character GLB for the web. The zombie
+arrived at **17.9MB and left at 1.14MB (93.6% smaller)** with all 7 animations
+intact. Run it on every new asset:
+
+```bash
+npm i @gltf-transform/core @gltf-transform/extensions @gltf-transform/functions meshoptimizer sharp
+node tools/optimize_model.mjs in.glb models/out.glb --tris 12000 --tex 1024
+node tools/check_model.mjs models/out.glb      # needs playwright + a server on :5173
+```
+
+⚠ **Two exporter defaults render characters WRONG, and both are invisible until
+you look at a render.** The optimizer fixes both, and `check_model.mjs` fails if
+they come back:
+- `emissiveFactor [1,1,1]` + an emissive texture → the model glows at night and
+  ignores scene light. This shipped once on the protagonist and the horse and
+  cost a session to find, because every theory about the *lighting* was wrong.
+- **`metallicFactor` defaults to 1.0 when the exporter omits it** → a fully
+  metallic character with nothing to reflect renders **black**. The zombie's
+  first in-game render was four black silhouettes in bright noon sun.
+
+### ⚠ PROPS MUST BE OPTIMIZED WITH `--no-quantize`
+
+```bash
+node tools/optimize_model.mjs in.glb models/out.glb --tris 2000 --tex 512 --no-quantize
+```
+
+Quantization stores positions as **normalized integer** attributes. Characters are
+fine (used exactly as authored), but a PROP is rescaled on load — `loadPropModel()`
+matches each GLB to the procedural mesh it replaces so every def's hand-tuned
+scale/offset keeps working — and `BufferGeometry.scale()` writes floats into an
+integer array and **truncates**. The chest and barrel came out 2 units tall instead
+of ~13 and drew as invisible specks with `count:1` and `visible:true`, which is
+indistinguishable from "the model never loaded".
+
+`loadPropModel()` verifies the baked height and keeps the procedural mesh if it is
+wrong, so a mistake here degrades safely instead of deleting a prop.
+
+**Live props:** secure_chest, barrel, crate, gravestone, workbench.
+
+## Test suite (fast, no renderer, no server unless noted)
+
+```bash
+npm run check                  # tables + transactions + world data + deploy
+node tools/check_canopy.mjs <three/build>   # canopies are one blob, in their box
+node tools/check_e2e.mjs       # needs: server running + `npm i colyseus.js`
+node tools/oplog_report.mjs    # read a play session's operations log
+node tools/check_coverage.mjs  # informational: the Phase 2 worklist
+```
+
+⚠ **`check_coverage.mjs` already gives you the Phase 2 worklist without play
+data** — 12 unmodelled fields, including the bounty and antiquarian-stock roll
+TIMERS, which the client currently owns and can therefore re-roll at will. See
+`docs/SERVER_AUTHORITY.md`.
+
+⚠ `check_tables.mjs` earns its keep on the bugs that **do not crash**. It has
+already found two: the four gems were missing from the server's item whitelist
+(so they could never have been recorded on a character), and the server's blank
+document had no axe while the client hands every new character one — which
+refused **every tree chop** for a new player until their first save.
+
+It also now verifies the world constants the server restates by hand (`TILE`,
+`MAP_W/H`, `CITY`, the blacksmith), and `check_world_data.mjs` catches a stale
+`server/world-data.json` — the case where the server and the client disagree
+about where the world *is*, with no error raised anywhere.

@@ -1,0 +1,41 @@
+{
+  "_doc": [
+    "SHOP PRICES — single source of truth, read by both the client (fetched at",
+    "boot) and the server (required by server/tx.js). Same reasoning as",
+    "recipes.json: a price the client shows and a price the server charges must",
+    "come from one place, or the disagreement is an exploit on one side and an",
+    "unexplainable rejection on the other.",
+    "",
+    "kind:",
+    "  tool   grants player.has<X>, gated on not already owning it",
+    "  tier   raises a tool tier; needTool must be owned and the tier must be below",
+    "  armor  equips an armor piece of that material rank",
+    "  item   adds a stackable to the pack; maxStack caps it if present",
+    "",
+    "Transcribed from SMITH_ITEMS and MAGE_ITEMS in js/game3d.js."
+  ],
+
+  "smith": {
+    "sword":   { "price": 30,  "kind": "tool", "tool": "sword",   "weapon": "sword", "label": "Sword" },
+    "bow":     { "price": 25,  "kind": "tool", "tool": "bow",     "weapon": "bow",   "label": "Bow" },
+    "pickaxe": { "price": 20,  "kind": "tool", "tool": "pickaxe",                    "label": "Pickaxe" },
+
+    "sword2":  { "price": 60,  "kind": "tier", "tier": { "sword": 2 }, "needTool": "sword", "label": "Iron Sword" },
+    "bow2":    { "price": 50,  "kind": "tier", "tier": { "bow": 2 },   "needTool": "bow",   "label": "Iron-tip Bow" },
+    "sword4":  { "price": 200, "kind": "tier", "tier": { "sword": 4 }, "needTool": "sword", "label": "Mithril Sword" },
+    "bow4":    { "price": 160, "kind": "tier", "tier": { "bow": 4 },   "needTool": "bow",   "label": "Mithril Bow" },
+    "sword5":  { "price": 400, "kind": "tier", "tier": { "sword": 5 }, "needTool": "sword", "label": "Runic Sword" },
+    "bow5":    { "price": 350, "kind": "tier", "tier": { "bow": 5 },   "needTool": "bow",   "label": "Runic Bow" },
+
+    "barmor":  { "price": 45,  "kind": "armor", "armor": 3, "label": "Bronze Armor" },
+    "sarmor":  { "price": 90,  "kind": "armor", "armor": 4, "label": "Steel Armor" },
+    "marmor":  { "price": 180, "kind": "armor", "armor": 5, "label": "Mithril Armor" },
+    "rarmor":  { "price": 320, "kind": "armor", "armor": 6, "label": "Runic Armor" },
+
+    "bandage": { "price": 8,   "kind": "item", "item": "bandages", "count": 1, "label": "Bandage" }
+  },
+
+  "mage": {
+    "potion":  { "price": 15,  "kind": "item", "item": "potions", "count": 1, "maxStack": 10, "label": "Heal Potion" }
+  }
+}

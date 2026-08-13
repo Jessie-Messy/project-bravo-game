@@ -5,9 +5,11 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { netRejoinAsActiveCharacter } from './net.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave,
   netHousePlace, netHouseUpdate, netHouseRemove,
   netDropAdd, netDropTake, netTradeReq, netTradeAccept, netTradeOffer, netTradeConfirm, netTradeCancel,
+  netTx, txPending, netPrefs,
   playerName, MP_ENABLED } from './net.js';
 import { TILE, MAP_W, MAP_H, T, BLOCKING, CITY,
   HARVEST_RANGE, SWORD_RANGE, SWORD_ARC, TREE_HP, STONE_HP, IRON_HP, RESPAWN_TREE, RESPAWN_STONE, RESPAWN_IRON, DAY_CYCLE_SEC,
@@ -21,6 +23,8 @@ import { TILE, MAP_W, MAP_H, T, BLOCKING, CITY,
   DUNGEON_X0, DUNGEON_Y0, DUNGEON_W, DUNGEON_H,
   RACES, getXpForLevel,
 } from './constants.js';
+import { ensureAccount } from './login.js';
+import { auth as netAuth } from './net.js';
 import { AccountManager, renderCharSelect, renderCharCreator, handleCharSelectClick, handleCharCreatorClick, openCreator, hideNameInput } from './char_creator.js';
 import { addPlayerXp, generateLootDrop, getEquipmentStats, socketGem } from './loot_system.js';
 import { G, map, resourceHp, respawnAt, origTile, playerPlacedWalls, player,
@@ -46,7 +50,12 @@ import { createSky } from './render/sky.js';
 import { createWaterMaterial } from './render/water.js';
 import { createComposer } from './render/composer.js';
 import { makeBladeGeometry, makeBladeTexture, makeGrassMaterial } from './render/grass.js';
-import { makeConiferCanopy, makeTrunk } from './render/trees.js';
+import { makeConiferCanopy, makeTrunk, makeBroadleafCanopy, makeBroadleafTrunk,
+         makeBroadleafCanopySet, makeBroadleafTrunkSet } from './render/trees.js';
+// Placed props are InstancedMeshes — one geometry each, drawn in a single call —
+// so a prop built from several boxes has to be MERGED, not grouped. Grouping
+// would multiply the draw calls by the part count and break instancing outright.
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createHeightField } from './render/terrain.js';
 
 // ── Dual-canvas setup ─────────────────────────────────────────────
@@ -314,6 +323,24 @@ scene.add(moon);
 const playerLight = new THREE.PointLight(0xffbbaa, 0.0, TILE * 10, 0);
 scene.add(playerLight);
 
+// ── Carry-light fallback (readability, not a real light) ──────────
+// With no torch or lantern the player would be invisible in the dark, so a
+// small point light rides the character. Split into two cases purely so they
+// can be tuned apart — a cave has no other light at all, while outdoors the
+// moon and sky ambient are already lighting the scene. Both currently sit at
+// the original single value; changing them is a deliberate act, not a default.
+// Tune live: _dev.nightLight({night:0.2, cave:0.4}).
+let NIGHT_FILL_I = 0.35;               // outdoors, after dark
+let NIGHT_FILL_COL = 0xaaaaaa;
+let CAVE_FILL_I = 0.35;                // caves/interiors: nothing else lights you
+let CAVE_FILL_COL = 0xaaaaaa;
+// Mount height of the carry light above the ground, in world units. This lights
+// the GROUND around the player — a lantern glow — and it cannot light the player
+// however it is tuned — see the night-readability notes in HANDOFF.md before
+// reaching for this knob, because three separate approaches through it failed.
+let CARRY_Y = 18;
+
+
 // ── Sky + dynamic environment ─────────────────────────────────────
 // Replaces the flat clear colour AND the one-shot 64x256 gradient env map.
 // The gradient above stays as a boot placeholder so materials have something
@@ -346,6 +373,30 @@ function _mergeEdits(src){
 }
 try{ _mergeEdits(await fetch('world_edits.json').then(r=>r.ok?r.json():null).catch(()=>null)); }catch(_){}
 try{ _mergeEdits(JSON.parse(localStorage.getItem(EDITS_KEY)||'null')); }catch(_){}
+
+// ── Shared economy tables ─────────────────────────────────────────
+// Crafting costs and shop prices come from shared/*.json, which the SERVER also
+// reads (server/tx.js). They used to be stated twice inside this file alone —
+// once as a >= check in canCraft and again as a subtraction in doCraft — with
+// nothing keeping the two in step. Adding a third copy on the server would have
+// made a silent disagreement inevitable, and a disagreement here is not cosmetic:
+// it is either an exploit or a rejection the player cannot understand ("it says
+// I can afford it").
+//
+// ⚠ Fetched, so it is ONE file on disk rather than a copy compiled into each
+// side. If the fetch fails the tables are empty and crafting refuses everything,
+// which is the correct failure — quietly falling back to a second hard-coded
+// copy would recreate exactly the drift this removes.
+let RECIPE_DATA = {}, SHOP_DATA = { smith:{}, mage:{} };
+try{
+  const r = await fetch('shared/recipes.json').then(r=>r.ok?r.json():null).catch(()=>null);
+  if(r){ delete r._doc; RECIPE_DATA = r; }
+  else console.error('[craft] shared/recipes.json failed to load — crafting will be unavailable');
+}catch(_){}
+try{
+  const s = await fetch('shared/shop.json').then(r=>r.ok?r.json():null).catch(()=>null);
+  if(s){ delete s._doc; SHOP_DATA = s; }
+}catch(_){}
 function saveEdits(){ try{ localStorage.setItem(EDITS_KEY,JSON.stringify(worldEdits)); }catch(_){} }
 // ── Pending-respawn tracker (avoids full-map scan every frame) ─────
 const pendingRespawns = new Set();   // entries are "x,y" strings
@@ -1082,9 +1133,11 @@ const groundDetail = makeCanvasTex(128,128,(x,w,h)=>{
 // density for ground that's only a few pixels tall on screen.
 const GRASS_CFG = {
   low:    { radius: 0,  perTile: 0   },
-  medium: { radius: 22, perTile: 60  },
-  high:   { radius: 30, perTile: 120 },
-  ultra:  { radius: 38, perTile: 190 },
+  // Raised ~1.5x with the thinner blade above: a narrower blade covers less, so
+  // holding the old counts would thin the field rather than refine it.
+  medium: { radius: 22, perTile: 130 },
+  high:   { radius: 30, perTile: 180 },
+  ultra:  { radius: 38, perTile: 280 },
 };
 const _grassCfg = () => GRASS_CFG[getTier()] || GRASS_CFG.medium;
 // Sized empirically, NOT as radius² × perTile. That worst case assumes every
@@ -1095,7 +1148,12 @@ const _grassCfg = () => GRASS_CFG[getTier()] || GRASS_CFG.medium;
 // unusually open vista just thins slightly rather than breaking.
 const GRASS_MAX = 260000;
 
-const grassGeo = makeBladeGeometry(THREE, { height: 1, width: 0.22, curve: 0.24 });
+// Blade width sits BETWEEN ours and the painted reference. The reference's
+// grass is essentially a fine pile with no readable individual blades; at 0.22
+// ours read as separate spikes. 0.15 keeps a blade legible up close while the
+// field reads as texture at distance. Going finer without raising density just
+// opens gaps and shows the ground through.
+const grassGeo = makeBladeGeometry(THREE, { height: 1, width: 0.15, curve: 0.26 });
 const _grassMat = makeGrassMaterial(THREE, { map: makeBladeTexture(THREE), windAmount: 4.0 });
 const grassMesh = new THREE.InstancedMesh(grassGeo, _grassMat.material, GRASS_MAX);
 grassMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(GRASS_MAX*3), 3);
@@ -1132,11 +1190,23 @@ function rebuildGrass(){
   const ptx = Math.floor(player.x/TILE), pty = Math.floor(player.y/TILE);
   let i = 0;
   const cap = GRASS_MAX;
+  // Rebuilt from scratch each pass rather than cached behind a dirty flag —
+  // placedObjects is a few dozen entries at most, and a stale set here would
+  // leave grass growing through a chest (or a bald patch where one used to be)
+  // with nothing to point at.
+  const placedTiles = new Set();
+  for(const o of placedObjects)
+    placedTiles.add(Math.floor(o.x/TILE) + ',' + Math.floor(o.y/TILE));
   for(let ty = pty-radius; ty <= pty+radius && i < cap; ty++){
     const row = map[ty]; if(!row) continue;
     for(let tx = ptx-radius; tx <= ptx+radius && i < cap; tx++){
       if(row[tx] !== T.GRASS) continue;
       if(!tileInView(tx, ty)) continue;          // cone-culled like the obstacles
+      // Keep grass off tiles carrying a placed object. Blades are waist-high on
+      // a knee-high prop, so a chest dropped in open country is swallowed whole
+      // — verified: it renders (instance count confirms) and is still invisible.
+      // Clearing its own tile reads as trampled ground under the object.
+      if(placedTiles.has(tx + ',' + ty)) continue;
       const d = Math.hypot(tx-ptx, ty-pty);
       if(d > radius) continue;
       const dr = d/radius;
@@ -1174,14 +1244,29 @@ function rebuildGrass(){
         // Height variety is what stops a field reading as mown turf. The cubic
         // bias keeps most blades short with a few tall ones standing proud.
         const hv = (0.62 + rr*rr*rr*1.05) * Math.max(0.05, rimH);
-        _gScale.set(1, 1, 1).multiplyScalar(TILE*0.26*hv);
+        // Height and girth must NOT scale together. A uniform multiply makes a
+        // tall blade proportionally fat, which is the opposite of a real sward
+        // and reads as a bunch of leaves; sqrt on x/z keeps tall blades slender
+        // while short ones stay stocky. The shader's per-blade width spread
+        // cannot do this — it cannot see the instance's height.
+        const hw = Math.sqrt(hv);
+        _gScale.set(TILE*0.26*hw, TILE*0.26*hv, TILE*0.26*hw);
         _gM4.compose(_gPos, _gQ, _gScale);
         grassMesh.setMatrixAt(i, _gM4);
         // Tint follows the same low-frequency idea as the terrain macro noise,
         // so patches of grass agree with the ground they stand in instead of
         // floating over it as a separate green.
+        // Two frequencies: a broad patch tone (>>2 = ~4-tile cells) plus a
+        // per-blade jitter. The reference's ground swings from warm yellow-green
+        // to deep shadowed green across a single clearing; one flat tint is what
+        // made ours read as astroturf.
         const t = _gHash(tx>>2, ty>>2, 7);
-        _gCol.setRGB(0.78 + t*0.34, 0.86 + t*0.22, 0.70 + t*0.20);
+        const j = _gHash(tx, ty, k*3+2) * 0.16 - 0.08;
+        // Broad-patch amplitude kept LOW: at 0.62 the 4-tile cells read as
+        // distinct moss blobs with visible seams, not as a meadow. Most of the
+        // variety comes from the per-blade jitter, which breaks up tone without
+        // drawing patch boundaries.
+        _gCol.setRGB(0.86 + t*0.26 + j, 0.92 + t*0.14 + j*0.6, 0.70 + t*0.14 + j*0.4);
         grassMesh.setColorAt(i, _gCol);
         i++;
       }
@@ -1320,10 +1405,111 @@ const wallMesh  = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardM
 // Stacked-skirt canopy and flared trunk instead of a bare cone on a cylinder.
 // Both merge down to ONE geometry each, so this is the same two draw calls the
 // primitives cost — the tier count is free.
-const _canopyGeo = makeConiferCanopy(THREE, { height:TOPH, radius:TILE*0.72, tiers:4, seed:20260801 });
-const _trunkGeo  = makeTrunk(THREE, { height:TRUNKH, top:9, bottom:12, seed:4242 });
-const trunkMesh = makeMesh(_trunkGeo,  new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0}), nTree+4000);
-const topMesh   = makeMesh(_canopyGeo, new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0}), nTree+4000);
+// Broadleaf, not conifer — the painted reference is a deciduous wood: clumped
+// crowns with lit tops and shaded undersides, on forking trunks. The conifer
+// builders are still exported and can be swapped back in here.
+// FIVE distinct crowns, not one. An InstancedMesh draws a single geometry, so
+// every tree sharing one mesh is literally the same tree — position jitter,
+// spin and scale cannot disguise a repeated silhouette, and that repetition is
+// what reads as artificial in a wood. Five variants means five draw calls for
+// the entire forest, which is nothing next to what it buys.
+const TREE_VARIANTS = 5;
+const _canopyGeos = makeBroadleafCanopySet(THREE, { height:TOPH, radius:TILE*0.86, count:TREE_VARIANTS, seed:20260801 });
+const _trunkGeos  = makeBroadleafTrunkSet(THREE,  { height:TRUNKH, top:7, bottom:13, count:TREE_VARIANTS, seed:4242 });
+// Per-variant meshes. Capacity is split across them with headroom, since the
+// tile hash will not distribute perfectly evenly over a windowed region.
+const _treeCap = Math.ceil((nTree+4000) / TREE_VARIANTS) + 512;
+// vertexColors: the canopy carries a baked top-lit gradient (pale crown, deep
+// underside). Without it the lobe undersides face away from every light and the
+// whole crown renders as one flat dark mass.
+const trunkMeshes = _trunkGeos.map(g => makeMesh(g,
+  new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0}), _treeCap));
+const topMeshes = _canopyGeos.map(g => makeMesh(g,
+  new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0, vertexColors:true}), _treeCap));
+// ⚠ Per-TREE colour, on top of the per-lobe bake. Five variants is enough
+// silhouette variety, but every crown still came out the same VALUE, and from
+// the overhead camera a stand of same-valued crowns fuses into one green mat
+// with no gap between one tree and the next — measured as the single worst
+// thing about the forest, ahead of crown shape. instanceColor multiplies the
+// vertex colours in the shader, so a hash-driven jitter per tile separates
+// neighbours for free. Real stands vary far more than this; ±9% value is the
+// most that stays inside one species.
+topMeshes.forEach(m => {
+  m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(_treeCap*3), 3);
+  m.instanceColor.setUsage(THREE.DynamicDrawUsage);
+});
+// Kept so the many existing single-mesh references still resolve; variant 0 is
+// the representative one for anything that only needs a material or a handle.
+const trunkMesh = trunkMeshes[0], topMesh = topMeshes[0];
+// ── Prop models (GLB) ─────────────────────────────────────────────
+// Placeables are InstancedMeshes over ONE geometry, so a GLB prop has to be
+// flattened into that shape rather than added to the scene as a node tree.
+//
+// ⚠ The GLB is rescaled to match the PROCEDURAL mesh it replaces, instead of the
+// defs being retuned. Every placeable's `scale`, `y`, wall-mount offset and flame
+// position was tuned by eye against the procedural body; normalising the GLB to
+// some fresh "1 unit tall" convention would invalidate all of it and turn a
+// two-line swap into a re-tune of every prop. Matching the old bounds makes this
+// a genuine drop-in — and it means a failed load degrades to the old mesh at the
+// same size rather than to nothing.
+const propMeshes = {};                  // key → InstancedMesh, once its GLB loads
+function loadPropModel(key, file, likeMesh, cap){
+  gltfLoader.load('models/'+file, gltf => {
+    try{
+      const geos = [];
+      gltf.scene.updateMatrixWorld(true);
+      let mat = null;
+      gltf.scene.traverse(o => {
+        if(!o.isMesh || !o.geometry) return;
+        const gm = o.geometry.clone();
+        gm.applyMatrix4(o.matrixWorld);          // bake the node transform in
+        // mergeGeometries needs identical attribute sets across inputs.
+        for(const a of Object.keys(gm.attributes)) if(!['position','normal','uv','color'].includes(a)) gm.deleteAttribute(a);
+        if(!gm.attributes.uv) gm.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(gm.attributes.position.count*2), 2));
+        geos.push(gm);
+        if(!mat) mat = o.material;
+      });
+      if(!geos.length) return;
+      let geo = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
+      if(!geo) return;
+      // Match the mesh we are replacing: same height, same base, same centre.
+      likeMesh.geometry.computeBoundingBox(); geo.computeBoundingBox();
+      const a = likeMesh.geometry.boundingBox, b = geo.boundingBox;
+      const targetH = a.max.y - a.min.y;
+      const s = targetH / Math.max(1e-6, b.max.y - b.min.y);
+      geo.scale(s, s, s); geo.computeBoundingBox();
+      const c = geo.boundingBox;
+      geo.translate(-(c.min.x+c.max.x)/2, a.min.y - c.min.y, -(c.min.z+c.max.z)/2);
+
+      // ⚠ VERIFY THE RESULT, do not assume it. The first version of this shipped
+      // both props at a geometry height of 2 units instead of ~13 — a twentieth
+      // of their size, which against tall grass is indistinguishable from "the
+      // model failed to load". The instance count said 1, the mesh said visible,
+      // and the screenshot was empty; only reading the baked bounding box found
+      // it. A swap that silently produces a speck is worse than no swap, because
+      // the fallback is a perfectly good procedural prop.
+      geo.computeBoundingBox();
+      const gotH = geo.boundingBox.max.y - geo.boundingBox.min.y;
+      if(!isFinite(gotH) || gotH < targetH * 0.5 || gotH > targetH * 2){
+        console.warn(`[prop] ${file} normalised to ${gotH.toFixed(1)}u but should be `
+          + `${targetH.toFixed(1)}u — keeping the procedural mesh. CAUSE: optimize_model.mjs `
+          + `quantizes positions, which stores them as NORMALIZED INTEGER attributes; `
+          + `geometry.scale() then writes floats into an int array and truncates. Re-export `
+          + `the prop with --no-quantize, or dequantize to Float32 before transforming.`);
+        return;
+      }
+      const m = makeMesh(geo, mat, cap);
+      m.count = 0;
+      propMeshes[key] = m;
+      // The procedural mesh must stop drawing, or both render in the same spot.
+      likeMesh.count = 0; likeMesh.visible = false;
+      placedObjectsDirty = true;
+      console.log(`[prop] ${file} → ${key} (${gotH.toFixed(1)}u tall, `
+        + `${geo.index ? geo.index.count/3 : 0} tris)`);
+    }catch(e){ console.warn('[prop] '+file+' could not be used:', e.message); }
+  }, undefined, err => console.warn('[prop] load failed', file, err && err.message));
+}
+
 // ── Canopy wind ───────────────────────────────────────────────────
 // A forest of perfectly still cones reads as scenery, not as a place. This is
 // the cheapest possible fix: a vertex-shader sway, no CPU cost per tree and no
@@ -1340,7 +1526,7 @@ const topMesh   = makeMesh(_canopyGeo, new THREE.MeshStandardMaterial({map:leafT
 // we want to bend, and it keeps leaning (felled) trees correct for free.
 const _windU = { value: 0 };
 const WIND_AMP = 7.0;   // world units of tip travel at full sway
-topMesh.material.onBeforeCompile = (shader) => {
+const _applyCanopyWind = (mat) => { mat.onBeforeCompile = (shader) => {
   shader.uniforms.uWindTime = _windU;
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', '#include <common>\nuniform float uWindTime;')
@@ -1359,9 +1545,15 @@ topMesh.material.onBeforeCompile = (shader) => {
         transformed.x += sway * w;
         transformed.z += sway * w * 0.6;
       }`);
-};
+}; };
+// ⚠ Every variant needs its own patched material, and each needs a DISTINCT
+// cache key or three reuses one compiled program across them.
+topMeshes.forEach((m, i) => { _applyCanopyWind(m.material); m.material.customProgramCacheKey = () => 'canopy-wind-v' + i; });
 
-const treeInstTile = [];   // instance index → packed ty*MAP_W+tx, so a canopy raycast maps back to a tile
+// Per-VARIANT instance→tile maps. With one mesh this was a flat array; a hit now
+// has to be resolved against the mesh it came from, or a canopy click maps to
+// whatever tile happened to share that instance index in another variant.
+const treeInstTiles = Array.from({length:TREE_VARIANTS}, () => []);
 const wallInstTile = [];   // same idea for walls, so clicking a wall FACE finds its tile
 const caveInstTile = [];
 
@@ -1375,25 +1567,35 @@ const TREE_MAX_LEAN = 0.34;          // how far a near-dead standing tree tilts 
 const TREE_FALL_ANGLE = Math.PI * 0.5;   // flat on the ground
 const _leanQ = new THREE.Quaternion(), _leanAxis = new THREE.Vector3(), _leanOff = new THREE.Vector3();
 const _yQ = new THREE.Quaternion();   // per-tree spin, see rebuildTrees
+const _treeCol = new THREE.Color();   // scratch for per-tree crown tint
 function treeFallAngleFor(tx,ty){ return _terrNoise(tx*13+1, ty*7+3) * Math.PI * 2; }
 function treeLeanAxis(tx,ty,out){
   const a=treeFallAngleFor(tx,ty);
   return out.set(Math.sin(a), 0, -Math.cos(a)).normalize();   // ⟂ to the fall direction, so the top tips toward it
 }
-function makeTreeActor(){
+function makeTreeActor(vIdx){
   // Same maps as the standing trees, so a felled trunk matches the forest.
   const tMat=new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0, transparent:true});
-  const cMat=new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0, transparent:true});
-  // Shares the standing forest's merged geometry, so a tree doesn't change
-  // shape at the moment it topples.
-  const trunk=new THREE.Mesh(_trunkGeo, tMat); trunk.position.y=TRUNKH/2; trunk.castShadow=true;
-  const canopy=new THREE.Mesh(_canopyGeo, cMat); canopy.position.y=TRUNKH+TOPH/2; canopy.castShadow=true;
+  const cMat=new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0, transparent:true, vertexColors:true});
+  // Shares the standing forest's merged geometry so a tree doesn't change shape
+  // at the moment it topples. ⚠ There are TREE_VARIANTS crowns now, so the pool
+  // carries one actor per variant and spawnFallingTree picks the one matching
+  // the tile — otherwise every felled tree morphs into variant 0 as it falls.
+  const v=vIdx%TREE_VARIANTS;
+  const trunk=new THREE.Mesh(_trunkGeos[v], tMat); trunk.position.y=TRUNKH/2; trunk.castShadow=true;
+  const canopy=new THREE.Mesh(_canopyGeos[v], cMat); canopy.position.y=TRUNKH+TOPH/2; canopy.castShadow=true;
   const grp=new THREE.Group(); grp.add(trunk,canopy); grp.visible=false; grp.frustumCulled=false; scene.add(grp);
-  return {grp, tMat, cMat, active:false, t:0, dur:0.8, startLean:0, axis:new THREE.Vector3(), tint:null};
+  return {grp, tMat, cMat, variant:v, active:false, t:0, dur:0.8, startLean:0, axis:new THREE.Vector3(), tint:null};
 }
-const _treeActors = Array.from({length:10}, makeTreeActor);
+// Two actors per variant: enough that a couple of trees can fall at once
+// without a felled trunk changing species mid-topple.
+const _treeActors = Array.from({length:TREE_VARIANTS*2}, (_,k)=>makeTreeActor(k));
 function spawnFallingTree(tx,ty,tint){
-  const a=_treeActors.find(x=>!x.active) || _treeActors[0];
+  // Prefer a free actor of the SAME variant as the standing tree; fall back to
+  // any free one rather than dropping the animation.
+  const want=Math.min(TREE_VARIANTS-1, (_gHash(tx,ty,21)*TREE_VARIANTS)|0);
+  const a=_treeActors.find(x=>!x.active && x.variant===want)
+        || _treeActors.find(x=>!x.active) || _treeActors[0];
   a.active=true; a.t=0; a.dur=0.8;
   a.grp.position.set(tx*TILE+TILE/2, 0, ty*TILE+TILE/2);
   treeLeanAxis(tx,ty,a.axis);
@@ -1426,17 +1628,117 @@ const caveMesh  = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardM
 const customMesh = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.6, metalness:0.0, transparent:true, opacity:0.85}), 4000);
 const ironMesh = makeMesh(new THREE.DodecahedronGeometry(STONE_R), new THREE.MeshStandardMaterial({color:0x6a564d, roughness:0.42, metalness:0.88, map:rockTex}), 1500);
 const campfireMesh = makeMesh(new THREE.BoxGeometry(20, 6, 20), new THREE.MeshStandardMaterial({color:0x5c3c24, roughness:0.9, metalness:0.0}), 500);
-const workbenchMesh = makeMesh(new THREE.BoxGeometry(32, 14, 20), new THREE.MeshStandardMaterial({color:0x8b5a2b, roughness:0.85, metalness:0.0}), 500);
+// ── Built props ───────────────────────────────────────────────────
+// Boxes merged into ONE geometry (see the mergeGeometries import). Parts are
+// [w,h,d, x,y,z, ry?] in the prop's own local space, and the whole thing keeps
+// the origin and overall footprint of the single box it replaces — PLACEABLES
+// rows carry a `y` mount offset and a `scale` tuned against those numbers, so
+// changing the bounds here silently sinks or floats the prop.
+// Parts may carry a colour as the 8th element. One merged geometry can only use
+// ONE material, so the parts are tinted with a vertex-colour attribute instead —
+// that is what lets a chest be warm wood with dark iron bands and a brass lock
+// while still drawing in a single instanced call. Materials that use this must
+// set `vertexColors:true` and keep `color` white, since it multiplies.
+function propGeo(parts){
+  const geos = parts.map(([w,h,d,x,y,z,ry,col])=>{
+    const g = new THREE.BoxGeometry(w,h,d);
+    if(ry) g.rotateY(ry);
+    g.translate(x,y,z);
+    const n = g.attributes.position.count, c = new Float32Array(n*3);
+    const r=((col>>16)&255)/255, gr=((col>>8)&255)/255, b=(col&255)/255;
+    for(let i=0;i<n;i++){ c[i*3]=r; c[i*3+1]=gr; c[i*3+2]=b; }
+    g.setAttribute('color', new THREE.BufferAttribute(c,3));
+    return g;
+  });
+  const merged = mergeGeometries(geos, false);
+  for(const g of geos) g.dispose();
+  return merged;
+}
+// Workbench: 32x14x20 overall, origin at the middle of the box it replaces.
+// A plank top with a lip, four legs, a lower shelf and a vice block on one end —
+// enough silhouette to read as a bench from the game's fixed camera angle.
+const WOOD_LT=0xa9764a, WOOD_DK=0x6f4524, IRON_DK=0x3f4348, BRASS=0xb08d3a;
+const workbenchMesh = makeMesh(propGeo([
+  [32, 2.5, 20,   0,  6.0, 0,   0, WOOD_LT],   // top slab — lightest, catches the eye
+  [32, 1.2,  3,   0,  4.4, 8.6, 0, WOOD_DK],   // front lip
+  [32, 1.2,  3,   0,  4.4,-8.6, 0, WOOD_DK],   // back lip
+  [ 3,  9,   3, -13.5,-1.5, 7.5, 0, WOOD_DK],  // legs
+  [ 3,  9,   3,  13.5,-1.5, 7.5, 0, WOOD_DK],
+  [ 3,  9,   3, -13.5,-1.5,-7.5, 0, WOOD_DK],
+  [ 3,  9,   3,  13.5,-1.5,-7.5, 0, WOOD_DK],
+  [26, 1.5, 13,   0, -3.0, 0,   0, WOOD_DK],   // lower shelf
+  [ 5,  4,   6,  12.0, 9.2, 0,  0, IRON_DK],   // vice block on the right end
+  [ 7,  1.4, 1.4, 11.0,11.6, 0, 0, IRON_DK],   // vice handle
+]), new THREE.MeshStandardMaterial({color:0xffffff, vertexColors:true, roughness:0.82, metalness:0.0}), 500);
 const forgeMesh = makeMesh(new THREE.CylinderGeometry(14, 16, 24, 8), new THREE.MeshStandardMaterial({color:0x505050, roughness:0.7, metalness:0.1}), 500);
-const secureChestMesh = makeMesh(new THREE.BoxGeometry(22, 12, 16), new THREE.MeshStandardMaterial({color:0x5c3c24, roughness:0.65, metalness:0.1}), 500);
+// Secure chest: 22x12x16 overall. Body, a stepped lid that reads as a curved
+// hood at this camera distance, iron corner bands, a lock plate and feet.
+// Metalness stays low on the whole thing because it shares one material with
+// the wood — the bands read as iron through their darker colour and the bevel,
+// not through a separate metal shader.
+// ⚠ It renders fine at the old flat dark brown — it was just INVISIBLE against
+// grass: one #5c3c24 block, 36u tall next to a 126u character, on dark green.
+// Verified by tinting it magenta (2674 px on screen) before touching anything.
+// The fix is contrast, not size alone: light wood body, near-black iron bands
+// and a brass lock give it an edge-lit silhouette that separates from the field.
+const secureChestMesh = makeMesh(propGeo([
+  [22,  7,  16,   0, -2.5, 0,   0, WOOD_LT],   // body
+  [22,  2.5,14,   0,  1.8, 0,   0, WOOD_LT],   // lid step 1
+  [20,  2,  11,   0,  3.6, 0,   0, WOOD_LT],   // lid step 2
+  [17,  1.4, 7,   0,  5.0, 0,   0, WOOD_DK],   // lid crown
+  [ 2,  11,  2, -10.5,-1.0, 7.4, 0, IRON_DK],  // corner bands
+  [ 2,  11,  2,  10.5,-1.0, 7.4, 0, IRON_DK],
+  [ 2,  11,  2, -10.5,-1.0,-7.4, 0, IRON_DK],
+  [ 2,  11,  2,  10.5,-1.0,-7.4, 0, IRON_DK],
+  [22,  1.2, 2.4,  0,  1.0, 8.0, 0, IRON_DK],  // band across the front seam
+  [ 4,  4,   1.6,  0, -1.0, 8.6, 0, BRASS],    // lock plate
+  [ 3,  1.6, 3,  -8.5,-6.6, 5.5, 0, IRON_DK],  // feet
+  [ 3,  1.6, 3,   8.5,-6.6, 5.5, 0, IRON_DK],
+  [ 3,  1.6, 3,  -8.5,-6.6,-5.5, 0, IRON_DK],
+  [ 3,  1.6, 3,   8.5,-6.6,-5.5, 0, IRON_DK],
+]), new THREE.MeshStandardMaterial({color:0xffffff, vertexColors:true, roughness:0.6, metalness:0.1}), 500);
 // World treasure chests — brass-banded so they read as loot, not as the
 // player's own storage. Body + lid are separate instanced meshes.
 const lootChestMesh = makeMesh(new THREE.BoxGeometry(24, 13, 17), new THREE.MeshStandardMaterial({color:0x8a6a2a, roughness:0.5, metalness:0.45}), 400);
 const lootChestLidMesh = makeMesh(new THREE.BoxGeometry(25, 4, 18), new THREE.MeshStandardMaterial({color:0xd8b24a, roughness:0.35, metalness:0.7, emissive:0x2a1e06}), 400);
+// Sizing references AND fallbacks for the GLB props — see loadPropModel. Each
+// one also decides the prop's world size, since the GLB is matched to it.
+const crateMesh = makeMesh(new THREE.BoxGeometry(20, 16, 20),
+  new THREE.MeshStandardMaterial({color:0x8a6a42, roughness:0.85, metalness:0.0}), 500);
+const gravestoneMesh = makeMesh(new THREE.BoxGeometry(12, 22, 4),
+  new THREE.MeshStandardMaterial({color:0x8a8f92, roughness:0.9, metalness:0.0}), 500);
+// Sizing reference AND fallback for the barrel prop — see loadPropModel.
+const barrelMesh = makeMesh(new THREE.CylinderGeometry(8, 7, 20, 10),
+  new THREE.MeshStandardMaterial({color:0x7a5433, roughness:0.85, metalness:0.0}), 500);
 const torchMesh = makeMesh(new THREE.CylinderGeometry(1.5, 2, 28, 6), new THREE.MeshStandardMaterial({color:0x6b4226, roughness:0.8, metalness:0.0}), 2000);
 const hearthMesh = makeMesh(new THREE.BoxGeometry(24, 20, 24), new THREE.MeshStandardMaterial({color:0x555555, roughness:0.9, map:rockTex}), 500);
 const anvilMesh = makeMesh(new THREE.BoxGeometry(18, 10, 10), new THREE.MeshStandardMaterial({color:0x333333, metalness:0.8, roughness:0.3}), 500);
 const placedLanternMesh = makeMesh(new THREE.CylinderGeometry(2.5, 2.5, 8, 6), new THREE.MeshStandardMaterial({color:0x1a1a1a, metalness:0.9, roughness:0.1}), 1000);
+// ── Street-lamp post ──────────────────────────────────────────────
+// The city's lanterns stand on posts rather than sitting in the road. This is
+// deliberately NOT a PLACEABLES row: every entry there is a craftable the player
+// can hold, so adding one would put a "Lamppost" in the bag, in ITEM_EQUIP, and
+// in the economy cross-check, for a thing nobody can pick up. Instead the post
+// is a companion mesh drawn beside the lantern head — the same arrangement
+// lootChestMesh/lootChestLidMesh already use for a two-part object.
+//
+// Local space runs 0 (ground) to LAMP_POST_H at the collar, so the lantern head
+// simply mounts at LAMP_POST_H. Scale is 1: these are authored at world size
+// because nothing rescales them.
+const LAMP_POST_H = 150;                 // ≈2.2m at ~69 units/m — head at eye level and above
+const lampPostMesh = makeMesh(propGeo([
+  // [w, h, d, x, y, z, ry, colour]
+  // ⚠ Warm greys, not blue-greys. 0x2a2c30 is a *cool* dark grey, and under this
+  // scene's sky ambient it read as painted BLUE rather than iron in daylight.
+  [14, 5,  14, 0, 2.5,              0, 0, 0x4a453d],   // footing
+  [10, 6,  10, 0, 7,                0, 0, 0x413c35],   // plinth
+  [4.5, LAMP_POST_H - 26, 4.5, 0, 10 + (LAMP_POST_H - 26) / 2, 0, 0, 0x38332c],  // post
+  [7,  3,  7,  0, LAMP_POST_H - 14, 0, 0, 0x8a6d33],   // brass collar
+  [6,  9,  6,  0, LAMP_POST_H - 5,  0, 0, 0x38332c],   // bracket under the head
+]),
+  // ⚠ Low metalness. At 0.6 the posts mirrored the sky and read BLUE in daylight
+  // — painted ironwork, not chrome. Roughness carries the material instead.
+  new THREE.MeshStandardMaterial({ vertexColors:true, color:0xffffff, roughness:0.72, metalness:0.25 }), 200);
 // Glowing flame blobs on torches / campfires / lanterns so every placed light
 // source visibly reads as one (the actual PointLights come from the pool below).
 const placedFlameMesh = makeMesh(new THREE.SphereGeometry(4, 7, 6), new THREE.MeshBasicMaterial({
@@ -1538,11 +1840,12 @@ const PLACEABLES = {
   campfire:     { label:'Campfire',     emoji:'🔥', invKey:'campfire',     mesh:()=>campfireMesh,      y:3,  scale:3.0, flame:{y:10,s:1.5}, light:true,  surfaces:['ground'],
                   burn:{ fuelSec:DAY_CYCLE_SEC, spent:'douse', relight:{wood:1} } },
   // 32×14×20 → 112×49×70 ≈ 1.6m wide, 0.7m high. Waist-high bench.
-  workbench:    { label:'Workbench',    emoji:'🛠', invKey:'workbench',    mesh:()=>workbenchMesh,     y:7,  scale:3.5, flame:null,         light:false, surfaces:['ground'] },
+  workbench:    { label:'Workbench',    emoji:'🛠', invKey:'workbench',    mesh:()=>propMeshes.workbench||workbenchMesh, y:7,  scale:3.5, flame:null,         light:false, surfaces:['ground'] },
   // r14/16 h24 → r42/48 h72 ≈ 1.35m wide, 1m tall. Chest-high stone forge.
   forge:        { label:'Forge',        emoji:'🏭', invKey:'forge',        mesh:()=>forgeMesh,         y:12, scale:3.0, flame:null,         light:true,  surfaces:['ground'] },
   // 22×12×16 → 66×36×48 ≈ 0.95m wide, 0.5m tall. Knee-high strongbox.
-  secure_chest: { label:'Secure Chest', emoji:'🧰', invKey:'secure_chest', mesh:()=>secureChestMesh,   y:6,  scale:3.0, flame:null,         light:false, surfaces:['house'] },
+  // Stands anywhere; only gains a lock when it sits inside a house you own.
+  secure_chest: { label:'Secure Chest', emoji:'🧰', invKey:'secure_chest', mesh:()=>propMeshes.secure_chest||secureChestMesh, y:6,  scale:3.6, flame:null,         light:false, surfaces:['ground','house'] },
   // h28 → h45 ≈ 0.65m. Held torch was tuned separately (WEAPON_ADJUST); this is
   // the PLACED mesh, and it's what mounts on walls — 45u against a 168u wall.
   torch:        { label:'Torch',        emoji:'🔥', invKey:'torch',        mesh:()=>torchMesh,         y:14, scale:1.6, flame:{y:30,s:1.0}, light:true,  surfaces:['ground','wall'], wallY:WALL_H*0.62,
@@ -1553,6 +1856,11 @@ const PLACEABLES = {
   anvil:        { label:'Anvil',        emoji:'⚒',  invKey:'anvil',        mesh:()=>anvilMesh,         y:5,  scale:2.2, flame:null,         light:false, surfaces:['ground'] },
   // h8 → h24 ≈ 0.35m. Carried lantern was tuned separately; this is the placed one.
   lantern:      { label:'Lantern',      emoji:'🏮', invKey:'lantern',      mesh:()=>placedLanternMesh, y:4,  scale:3.0, flame:{y:8,s:0.7},  light:true,  surfaces:['ground','wall'], wallY:WALL_H*0.58 },
+  // Pure decor — no burn, no light, no menu. The cheapest kind of prop to add and
+  // the kind a town needs most of.
+  barrel:       { label:'Barrel',       emoji:'🛢', invKey:'barrel',       mesh:()=>propMeshes.barrel||barrelMesh, y:10, scale:2.2, flame:null,         light:false, surfaces:['ground','house'] },
+  crate:        { label:'Crate Pile',   emoji:'📦', invKey:'crate',        mesh:()=>propMeshes.crate||crateMesh,           y:8,  scale:2.2, flame:null,         light:false, surfaces:['ground','house'] },
+  gravestone:   { label:'Gravestone',   emoji:'🪦', invKey:'gravestone',   mesh:()=>propMeshes.gravestone||gravestoneMesh, y:11, scale:2.0, flame:null,         light:false, surfaces:['ground'] },
 };
 // ── Burning down ──────────────────────────────────────────────────
 // Fuel is DERIVED, never ticked: an object records `litAt` from worldNow() and
@@ -1585,6 +1893,7 @@ const FACE_DIR = { e:[1,0], w:[-1,0], s:[0,1], n:[0,-1] };
 // Tiles a 'ground' placeable may stand on. CAVE_FLOOR is new — you could not put
 // a torch down in a dungeon before, which was most of where you'd want one.
 const PLACE_GROUND = new Set([T.GRASS, T.PATH, T.CAVE_FLOOR, T.CAVE_ENTRANCE]);
+let _lastNightFactor = 0;
 const PLACEABLE_LIGHTS = new Set(Object.keys(PLACEABLES).filter(k=>PLACEABLES[k].light));
 
 let wallDirty=true, treeDirty=true, stoneDirty=true, ironDirty=true, caveDirty=true, customDirty=true, placedObjectsDirty=true;
@@ -1734,7 +2043,11 @@ function rebuildWalls() {
   wallMesh.computeBoundingSphere();   // raycast early-outs on this; stale = missed clicks
 }
 function rebuildTrees() {
-  let i=0; const cap=trunkMesh.instanceMatrix.count, b=_obsBounds();
+  // One counter per variant. `i` is still the running total, used only for the
+  // window cap and the debug count.
+  const vi = new Array(TREE_VARIANTS).fill(0);
+  for(const a of treeInstTiles) a.length = 0;
+  let i=0; const cap=_treeCap*TREE_VARIANTS, b=_obsBounds();
   for(let ty=b.ty0;ty<=b.ty1&&i<cap;ty++) for(let tx=b.tx0;tx<=b.tx1&&i<cap;tx++) {
     if(map[ty][tx]!==T.TREE) continue;
     if(!tileInView(tx,ty)) continue;
@@ -1750,6 +2063,12 @@ function rebuildTrees() {
     // the whole forest twitch as you walk.
     // Jitter stays inside ~a third of a tile so the trunk still sits in the tile
     // that blocks movement — collision is tile-based and is NOT jittered here.
+    // Variant from the TILE hash, like every other per-tree value here: the
+    // window rebuilds constantly and a tree that changed species as you walked
+    // would be far worse than a repeated one.
+    const _tv=Math.min(TREE_VARIANTS-1, (_gHash(tx,ty,21)*TREE_VARIANTS)|0);
+    const _ti=vi[_tv];
+    if(_ti>=_treeCap) continue;
     const jx=(_gHash(tx,ty,11)-0.5)*TILE*0.34;
     const jz=(_gHash(tx,ty,12)-0.5)*TILE*0.34;
     const cx=tx*TILE+TILE/2+jx, cz=ty*TILE+TILE/2+jz;
@@ -1767,26 +2086,35 @@ function rebuildTrees() {
       _leanQ.multiply(_yQ);                  // spin first, then topple
       _leanOff.set(0,th/2,0).applyQuaternion(_leanQ);
       _pos.set(cx+_leanOff.x,gy+_leanOff.y,cz+_leanOff.z);
-      _m4.compose(_pos,_leanQ,_sc1); trunkMesh.setMatrixAt(i,_m4);
+      _m4.compose(_pos,_leanQ,_sc1); trunkMeshes[_tv].setMatrixAt(_ti,_m4);
       _leanOff.set(0,th+oh/2,0).applyQuaternion(_leanQ);
       _pos.set(cx+_leanOff.x,gy+_leanOff.y,cz+_leanOff.z);
-      _m4.compose(_pos,_leanQ,_sc1); topMesh.setMatrixAt(i,_m4);
+      _m4.compose(_pos,_leanQ,_sc1); topMeshes[_tv].setMatrixAt(_ti,_m4);
     } else {
       // Sunk a little: the flared trunk base must bury itself in the slope or
       // an uphill tree shows daylight under its upper side.
       _pos.set(cx,gy+th/2-3,cz);
-      _m4.compose(_pos,_yQ,_sc1); trunkMesh.setMatrixAt(i,_m4);
+      _m4.compose(_pos,_yQ,_sc1); trunkMeshes[_tv].setMatrixAt(_ti,_m4);
       _pos.set(cx,gy+th+oh/2-3,cz);
-      _m4.compose(_pos,_yQ,_sc1); topMesh.setMatrixAt(i,_m4);
+      _m4.compose(_pos,_yQ,_sc1); topMeshes[_tv].setMatrixAt(_ti,_m4);
     }
-    treeInstTile[i]=ty*MAP_W+tx;   // packed int: no per-rebuild object churn
-    i++;
+    // Per-tree crown colour (see the instanceColor note at the mesh). Value and
+    // hue come off the same tile hash as everything else here, so a tree keeps
+    // its colour as the window rebuilds under the player.
+    const _cv = 0.91 + _gHash(tx,ty,16)*0.18;          // value: ±9%
+    const _ch = (_gHash(tx,ty,17)-0.5)*0.10;           // hue: lime ↔ blue-green
+    _treeCol.setRGB(_cv*(1+_ch), _cv, _cv*(1-_ch*1.2));
+    topMeshes[_tv].setColorAt(_ti,_treeCol);
+    treeInstTiles[_tv][_ti]=ty*MAP_W+tx;   // packed int: no per-rebuild object churn
+    vi[_tv]++; i++;
   }
-  treeInstTile.length=i;
-  markInst(trunkMesh,i); markInst(topMesh,i);
+  for(let v=0;v<TREE_VARIANTS;v++){
+    markInst(trunkMeshes[v],vi[v]); markInst(topMeshes[v],vi[v]);
+    _markAttr(topMeshes[v].instanceColor, vi[v]*3);    // 3 floats per colour
+  }
   // canopy-chop raycast early-outs on the bounding sphere — refresh it so it
   // matches the new windowed instances (else chopping misses after moving).
-  trunkMesh.computeBoundingSphere(); topMesh.computeBoundingSphere();
+  for(let v=0;v<TREE_VARIANTS;v++){ trunkMeshes[v].computeBoundingSphere(); topMeshes[v].computeBoundingSphere(); }
 }
 function rebuildStones() {
   let i=0; const cap=stoneMesh.instanceMatrix.count, b=_obsBounds();
@@ -1821,7 +2149,7 @@ function rebuildIron() {
 }
 const _placedCount = new Map();          // mesh → instances written this rebuild
 function rebuildPlacedObjects() {
-  let nFlame=0;
+  let nFlame=0, nLampPost=0;
   const capFlame=placedFlameMesh.instanceMatrix.count;
   const addFlame=(x,y,z,s)=>{
     if(nFlame>=capFlame) return;
@@ -1864,14 +2192,25 @@ function rebuildPlacedObjects() {
     // which is measured from the wall they hang on, and the wall instances
     // already ride the terrain — so only the free-standing branch needs this.
     const oGY = heightAt(o.x, o.y);
-    _pos.set(o.x, oGY + def.y*s, o.y); _sc1.set(s,s,s);
+    // A civic lantern is a STREET LAMP: it rides a post instead of sitting in
+    // the road. The post is its own instanced mesh, so the head, its flame and
+    // its PointLight (see the placement-light loop) all shift up by the same
+    // LAMP_POST_H — keep the three in step or the glow detaches from the glass.
+    let lift = 0;
+    if(o.civic && nLampPost < lampPostMesh.instanceMatrix.count){
+      lift = LAMP_POST_H;
+      _pos.set(o.x, oGY, o.y); _sc1.set(1,1,1);
+      _m4.compose(_pos,_qId,_sc1); lampPostMesh.setMatrixAt(nLampPost++,_m4);
+    }
+    _pos.set(o.x, oGY + lift + def.y*s, o.y); _sc1.set(s,s,s);
     _m4.compose(_pos,_qId,_sc1); mesh.setMatrixAt(n,_m4);
     _placedCount.set(mesh, n+1);
-    if(fscale>0) addFlame(o.x, oGY + def.flame.y*s, o.y, fscale);
+    if(fscale>0) addFlame(o.x, oGY + lift + def.flame.y*s, o.y, fscale);
   }
   // Every registry mesh must be marked, including ones that drew nothing this
   // pass — otherwise a mesh keeps last window's count and ghosts stay on screen.
   for(const k in PLACEABLES){ const m=PLACEABLES[k].mesh(); markInst(m, _placedCount.get(m)||0); }
+  markInst(lampPostMesh, nLampPost);
   markInst(placedFlameMesh,nFlame);
   rebuildWorldChests();
 }
@@ -2006,7 +2345,7 @@ function updateEnvironmentCycle(dt) {
   else if (time < DUSK0) dayF = 1;
   else if (time < DUSK1) dayF = 1 - (time - DUSK0) / (DUSK1 - DUSK0);
   else                   dayF = 0;
-  const nightFactor = 1 - dayF;
+  const nightFactor = 1 - dayF; _lastNightFactor = nightFactor;
 
   // ── Moon phase cycle (8 phases over 8 day/night cycles) ──
   // Phase 0=New, 1=Waxing Crescent, 2=First Quarter, 3=Waxing Gibbous,
@@ -2111,20 +2450,26 @@ function updateEnvironmentCycle(dt) {
     playerLight.intensity = 0.9 * flicker;
     playerLight.color.setHex(0xffaa44);
     playerLight.distance = TILE * 9;
-  } else if (inCave || inHouse || nightFactor > 0.01) {
-    // Dim fallback so players aren't completely blinded but need a light source
-    playerLight.intensity = 0.35;
-    playerLight.color.setHex(0xaaaaaa);
+  } else if (inCave || inHouse) {
+    // Enclosed: nothing else is lighting you, so this fill carries the figure.
+    playerLight.intensity = CAVE_FILL_I;
+    playerLight.color.setHex(CAVE_FILL_COL);
+    playerLight.distance = TILE * 2.5;
+  } else if (nightFactor > 0.01) {
+    playerLight.intensity = NIGHT_FILL_I;
+    playerLight.color.setHex(NIGHT_FILL_COL);
     playerLight.distance = TILE * 2.5;
   } else {
     playerLight.intensity = 0.0;
   }
-  playerLight.position.set(player.x, heightAt(player.x,player.y) + 18, player.y);
-  
+  playerLight.position.set(player.x, heightAt(player.x,player.y) + CARRY_Y, player.y);
+
+
+
   // Placed lights: campfires, forges, torches, hearths, lanterns
   // isLit(), not just "is a light type" — a doused campfire has to go dark.
   const lightSources = placedObjects.filter(o => PLACEABLE_LIGHTS.has(o.type) && isLit(o))
-    .map(o => ({ type: o.type, x: o.x, y: o.y }));
+    .map(o => ({ type: o.type, x: o.x, y: o.y, civic: !!o.civic, gy: heightAt(o.x, o.y) }));
 
   // Cave-mouth arch torches glow too (one light per archway)
   for (const a of archLightSrcs) lightSources.push({ type: 'arch', x: a.x, y: a.y });
@@ -2142,10 +2487,37 @@ function updateEnvironmentCycle(dt) {
     o.dist = Math.hypot(o.x - player.x, o.y - player.y);
   });
   lightSources.sort((a,b) => a.dist - b.dist);
-  
+
+  // ⚠ Reserve part of the budget for lights the PLAYER put down.
+  //
+  // The city has 16 civic lanterns and MAX_PLACEMENT_LIGHTS is also 16, so a
+  // straight nearest-first sort let the street lamps take every slot: standing
+  // in town, your own campfire, torch, forge or hearth got no light at all. The
+  // lanterns were added to fix a dark city and would have broken every light a
+  // player owns inside it.
+  //
+  // Civic lights are scenery, so they yield. The backfill matters just as much:
+  // out in the wild there is nothing to reserve slots FOR, and holding six back
+  // would darken six lanterns for no one's benefit.
+  const CIVIC_CAP = Math.max(1, MAX_PLACEMENT_LIGHTS - 6);
+  const chosen = [], civicOverflow = [];
+  let civicUsed = 0;
+  for (const o of lightSources) {
+    if (chosen.length >= MAX_PLACEMENT_LIGHTS) break;
+    if (o.civic) {
+      if (civicUsed >= CIVIC_CAP) { civicOverflow.push(o); continue; }
+      civicUsed++;
+    }
+    chosen.push(o);
+  }
+  for (const o of civicOverflow) {
+    if (chosen.length >= MAX_PLACEMENT_LIGHTS) break;
+    chosen.push(o);
+  }
+
   for (let i = 0; i < MAX_PLACEMENT_LIGHTS; i++) {
     const pl = placementLights[i];
-    const src = lightSources[i];
+    const src = chosen[i];
     if (src && src.dist < TILE * 24) {
       const type = src.type;
       const isTorch = type === 'torch' || type === 'arch';
@@ -2166,25 +2538,49 @@ function updateEnvironmentCycle(dt) {
         baseY = 14; baseInt = 1.4; colorHex = 0xff6622; dist = TILE * 8;
       } else if (isLantern) {
         baseY = 8; baseInt = 1.2; colorHex = 0xffeedd; dist = TILE * 10;
+        // Street lamp: the head is up the post, so the light has to go up with
+        // it. baseY is otherwise measured from y=0, not from the ground under
+        // the object — fine for a lantern sitting in the dirt, wrong for one
+        // 150 units in the air on sloping ground.
+        if (src.civic) { baseY = src.gy + LAMP_POST_H + 8; baseInt = 1.5; dist = TILE * 12; }
       } else if (isHouseLight) {
         baseY = 24; baseInt = 1.2 * nightFactor; colorHex = 0xffeedd; dist = TILE * 8;
       } else if (type === 'campfire') {
-        baseY = 6; baseInt = 1.3; colorHex = 0xff7722; dist = TILE * 7;
+        // ⚠ y was 6 — BELOW the grass, which stands ~20 units tall. The pool lit
+        // the blades from inside instead of spilling across the ground, so a fire
+        // you were standing next to looked unlit. Sit the light in the flame.
+        baseY = 16; baseInt = 1.5; colorHex = 0xff7722; dist = TILE * 8;
+      } else if (type === 'forge') {
+        baseY = 18; baseInt = 1.4; colorHex = 0xff6a20; dist = TILE * 7;
       }
 
       pl.position.set(src.x, baseY, src.y);
       pl.color.setHex(colorHex);
       pl.distance = dist;
 
-      if (isTorch || isHearth) {
+      // ⚠ CAMPFIRE AND FORGE BELONG HERE. They used to fall through to the plain
+      // `baseInt * nightFactor` branch below, which has no floor — so at DUSK,
+      // exactly when a player lights a fire, nightFactor is ~0.3 and a campfire
+      // produced 1.3 x 0.15 = 0.2 intensity. Invisible. It only looked right at
+      // full midnight, which is not when anyone lights one. Torches and hearths
+      // already had the max(0.35, …) floor; a fire is a fire.
+      const isFire = type === 'campfire' || type === 'forge';
+      if (isTorch || isHearth || isFire) {
         const flicker = 0.85 + Math.random() * 0.3;
-        if (inCave || inHouse || isHearth || type === 'arch') {
+        if (inCave || inHouse || isHearth || isFire || type === 'arch') {
           pl.intensity = baseInt * flicker;
         } else {
           pl.intensity = baseInt * flicker * (nightFactor > 0.3 ? 1.0 : Math.max(0.35, nightFactor));
         }
       } else if (isHouseLight) {
         pl.intensity = baseInt;
+      } else if (src.civic) {
+        // Street lamps exist so a new player arriving after dark can see the
+        // town, and dusk is when they arrive. The generic curve below multiplies
+        // straight by nightFactor, so at dusk (~0.3) a lamp gave 0.45 — the same
+        // fault that made campfires invisible. Lamplighting starts at dusk and
+        // holds; they still go out in daylight.
+        pl.intensity = nightFactor > 0.12 ? baseInt * Math.max(0.6, nightFactor) : 0;
       } else if (inCave || inHouse) {
         pl.intensity = baseInt;
       } else {
@@ -2531,6 +2927,7 @@ const EVIS = {
   hellhound:     [0x881a10, 18,26,40, 0, 1],
   silver_serp:   [0xb0b8c0, 12,12,52, 0, 2],
   piper:         [0x9a6820, 14,34, 9, 6, 0],
+  zombie:        [0x6f7a52, 15,34,10, 6, 0],
 };
 const EVIS_DEF = [0x555555, 14,30,10, 6, 0];
 
@@ -2715,6 +3112,8 @@ const MOB_MODELS = {
   slime:         {file:'slime.glb',     h:24, tint:0x55ee66},
   slime_mini:    {file:'slime.glb',     h:14, tint:0x88ff88},
   silver_serp:   {file:'snake.glb',     h:18, tint:0xdde2ea},
+  zombie:        {file:'zombie.glb',    h:38},
+  liliana:       {file:'liliana.glb',   h:52},
 };
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
@@ -2760,6 +3159,15 @@ const loadedModels = {};   // file → {template, clips, natH, yOff}
     }, undefined, err => console.warn('model load failed', f, err));
   }
 }
+// ⚠ Called HERE, after gltfLoader exists — loadPropModel is defined far above
+// (next to the other prop meshes, where it belongs) but must not run before the
+// loader it uses is constructed.
+loadPropModel('secure_chest', 'chest_closed.glb', secureChestMesh, 500);
+loadPropModel('barrel',       'barrel_old.glb',   barrelMesh,      500);
+loadPropModel('crate',        'crate_pile.glb',   crateMesh,       500);
+loadPropModel('gravestone',   'gravestone.glb',   gravestoneMesh,  500);
+loadPropModel('workbench',    'workbench.glb',    workbenchMesh,   500);
+
 function pickClip(clips, res){ return clips.find(c=>res.test(c.name)) || null; }
 
 // ── GLB prop art swaps ────────────────────────────────────────────
@@ -2779,7 +3187,15 @@ function pickClip(clips, res){ return clips.find(c=>res.test(c.name)) || null; }
 // mirror; tune live with _dev.gfx({metalness, roughness}).
 const PROP_PBR={ metalness:0.70, roughness:0.62, normalScale:1.0 };
 const _propMats=new Set();
-function simplifyPropMaterial(m){
+// opts.stripEmissiveMap — also kill emissive on materials that DO carry an
+// emissiveMap. Normally having a map is the signal that a material genuinely
+// glows, so it's left alone. Some exports from this generator ship
+// emissiveFactor [1,1,1] *plus* a full-coverage emissive texture that is really
+// just a second albedo, which makes the model 100% self-lit and immune to every
+// light in the scene. The protagonist GLB is exactly that, and it can only be
+// told apart from a real glow by knowing the asset — hence an explicit opt-in
+// at the call site rather than a guess in here.
+function simplifyPropMaterial(m, opts){
   _propMats.add(m);
   m.metalness=PROP_PBR.metalness;
   if(!m.roughnessMap) m.roughness=PROP_PBR.roughness;
@@ -2796,9 +3212,13 @@ function simplifyPropMaterial(m){
   // near-black under the old two-light rig. There's a real sky and IBL now, so
   // the workaround costs more than it buys. Materials that genuinely glow keep
   // their emissiveMap and are untouched.
-  if(m.emissive && !m.emissiveMap && m.emissive.getHex()!==0){
+  const forceStrip = !!(opts && opts.stripEmissiveMap);
+  if(m.emissive && m.emissive.getHex()!==0 && (!m.emissiveMap || forceStrip)){
     m.userData._emissiveWas = m.emissive.getHex();
     m.emissive.setHex(0x000000);
+    // emissive is multiplied by emissiveMap, so black alone is enough to kill
+    // the glow — dropping the map too just saves a needless texture fetch.
+    if(forceStrip && m.emissiveMap){ m.userData._emissiveMapWas = m.emissiveMap; m.emissiveMap = null; }
   }
   m.needsUpdate=true;
   return m;
@@ -3055,7 +3475,21 @@ gltfLoader.load('models/Protag_animations_basic.glb', gltf=>{
       if(v.y<minY)minY=v.y; if(v.y>maxY)maxY=v.y; } });
   const natH=Math.max(0.01,maxY-minY), sc=CHAR_H/natH;   // scaled to the global CHAR_H
   inner.scale.setScalar(sc); inner.position.y=-minY*sc; inner.rotation.y=Math.PI;
-  inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false; o.material.transparent=true; } });
+  // simplifyPropMaterial, same as every other GLB in the game. Without it the
+  // protagonist was the ONE model that kept its shipped emissive=#ffffff, so
+  // the player character was 100% self-lit: measured at luminance 45 with every
+  // light in the scene locked to zero AND scene.environment removed, while the
+  // ground beside it sat at 0. At midnight that read as 8x brighter than the
+  // ground (0.58x at noon) — a lit sticker on a black field. It also masked
+  // itself: the blocky fallback rig is lit correctly, so the bug only appeared
+  // once the GLB finished loading asynchronously.
+  // This also enrols the character in the day/night IBL fade, since
+  // applyEnvIntensity walks _propMats.
+  inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false;
+    const opt={stripEmissiveMap:true};   // this GLB's emissive texture is a second albedo
+    o.material = Array.isArray(o.material) ? o.material.map(m=>simplifyPropMaterial(m,opt))
+                                           : simplifyPropMaterial(o.material,opt);
+    for(const m of [].concat(o.material)) m.transparent=true; } });
   const obj=new THREE.Group(); obj.add(inner); scene.add(obj); obj.visible=false;
   inner.updateMatrixWorld(true);
   const mixer=new THREE.AnimationMixer(inner);
@@ -3347,6 +3781,67 @@ function applyActiveTuning(){
 // Console handles for dev/debug: game state + armor refresh
 window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, enemies, guards,
   blocked:(x,y,r)=>boxBlocked(x,y,r),
+  // Crafting is table-driven from shared/recipes.json (the server reads the same
+  // file). Exposed so a test can prove the table actually loaded and that the
+  // client agrees with the server about what a recipe costs.
+  recipes:()=>RECIPE_DATA, shopData:()=>SHOP_DATA,
+  // Placed props are instanced and only rebuilt when marked dirty, so a test that
+  // pushes into placedObjects directly must say so or nothing appears.
+  // ⚠ Rebuilds SYNCHRONOUSLY rather than just setting the flag. The dirty
+  // dispatch is an else-if chain with placed objects LAST, so under the headless
+  // rig's ~2fps it can go many seconds without a turn — a test would screenshot
+  // an empty field and blame the prop.
+  markPlacedDirty(){ placedObjectsDirty=false; rebuildPlacedObjects(); return true; },
+  // What intensity did each placed light actually get? "the fire gives no light"
+  // needs the number the game assigned, not a look at the screen.
+  lightProbe(){
+    return { nightFactor: +(_lastNightFactor||0).toFixed(2),
+      // ⚠ World y is position.Z. three.js y is the HEIGHT, and reporting it as
+      // `y` made every "is there a light at this object" test compare a world
+      // coordinate against a height and conclude the light did not exist.
+      lights: placementLights.filter(l=>l.intensity>0)
+        .map(l=>({int:+l.intensity.toFixed(2), dist:l.distance,
+                  x:Math.round(l.position.x), y:Math.round(l.position.z), h:Math.round(l.position.y)})),
+      sources: placedObjects.filter(o=>PLACEABLE_LIGHTS.has(o.type)).map(o=>({t:o.type, lit:isLit(o)})) };
+  },
+  propMeshes:()=>Object.fromEntries(Object.entries(propMeshes).map(([k,m])=>[k,{count:m.count,tris:m.geometry.index?m.geometry.index.count/3:0}])),
+  // Where a panel ACTUALLY landed this frame, versus where the hotbar is. "the
+  // tooltip covers the toolbar and I can't hit Next" is a geometry claim, and
+  // the only honest way to check the fix is to read both rects after a real
+  // render — re-deriving the clamp arithmetic in the test would just restate it.
+  // Rects go stale: panelRects keeps the last frame each panel drew, so compare
+  // r.t against G.gameTime before trusting one.
+  panelRect:(name)=>panelRects[name]?{...panelRects[name]}:null,
+  hotbarRect:()=>hotbarRect(),
+  // The city's lanterns are civic scenery that has to survive three separate
+  // wholesale replacements of placedObjects. Each one gets a handle so a test
+  // can drive it rather than trust the reading.
+  lampPostCount:()=>lampPostMesh.count,
+  buildSave:()=>buildSave(),
+  removePlaced:(o)=>removePlacedObject(o),
+  applyServerPlaced:(list)=>applyServerPlacedObjects(list),
+  // Where did the instances actually land, and how big are they? "count is 1 but
+  // I see nothing" needs the matrix, not the count.
+  propProbe(){
+    const out={}, m4=new THREE.Matrix4(), p=new THREE.Vector3(), q=new THREE.Quaternion(), sc=new THREE.Vector3();
+    for(const [k,mesh] of Object.entries(propMeshes)){
+      const rows=[];
+      for(let i=0;i<mesh.count;i++){ mesh.getMatrixAt(i,m4); m4.decompose(p,q,sc);
+        rows.push({x:Math.round(p.x),y:Math.round(p.y),z:Math.round(p.z),s:+sc.x.toFixed(2)}); }
+      mesh.geometry.computeBoundingBox(); const bb=mesh.geometry.boundingBox;
+      out[k]={count:mesh.count, visible:mesh.visible, inScene:!!mesh.parent,
+              geoH:+(bb.max.y-bb.min.y).toFixed(1), geoW:+(bb.max.x-bb.min.x).toFixed(1), at:rows};
+    }
+    out.player={x:Math.round(player.x),y:Math.round(player.y)};
+    return out;
+  },
+  // Phase 2: apply a server document over local state (the flip). Exposed so a
+  // test can prove the client honours the server's word without a live socket.
+  applyDoc:(doc)=>applyAuthoritative(doc),
+  txResult:(m)=>reconcileTx(m),
+  txPending:()=>txPending,
+  craftBlocker:(id)=>recipeBlocker(id),
+  canCraft:(id)=>canCraft(id), craft:(id)=>doCraft(id),
   mineOnce(tx,ty){ const tt=map[ty][tx]; depleteNode(tx,ty,tt,tx*TILE+24,ty*TILE+24); return tt; },
   fallingTrees:()=>_treeActors.filter(a=>a.active).map(a=>({t:+a.t.toFixed(2), lean:+a.grp.quaternion.angleTo(new THREE.Quaternion()).toFixed(2), opacity:+a.cMat.opacity.toFixed(2)})),
   findTree(){ for(let ty=0;ty<map.length;ty++)for(let tx=0;tx<(map[ty]||[]).length;tx++)if(map[ty][tx]===T.TREE)return[tx,ty]; return null; },
@@ -3629,7 +4124,8 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     bossResolveNow(b);
     return JSON.stringify({ability:name, playerHpBefore:hpBefore, playerHpAfter:player.hp,
       damageTaken:hpBefore-player.hp, stunned:+player.stunTimer.toFixed(1),
-      webbed:+(player.webTimer||0).toFixed(1), poisoned:+(player.poisonTimer||0).toFixed(1)});
+      webbed:+(player.webTimer||0).toFixed(1), poisoned:+(player.poisonTimer||0).toFixed(1),
+      weakened:+(player.weakTimer||0).toFixed(1), mired:+(player.slowTimer||0).toFixed(1)});
   },
   // Which abilities can the picker actually choose at a given HP fraction?
   // Proves the phase gates without re-implementing them in the test.
@@ -3751,6 +4247,41 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     return JSON.stringify({ampC:WARP_AMP_C, ampF:WARP_AMP_F, cellC:WARP_CELL_C,
       cellF:WARP_CELL_F, hash:WARP_HASH, reachTiles:WARP_R, rebakeMs:+(performance.now()-t0).toFixed(0)});
   },
+  // Water palette, live. Matching painted reference art is iterative and a
+  // recompile per guess is hopeless — this is the same "tune it in place" idea
+  // as _dev.warp / _dev.macro. Takes sRGB hex, converts to linear internally.
+  //   _dev.water({shallow:'#48d8cf', deep:'#1d2a6b', lo:0.34, hi:0.92,
+  //               caustic:1, print:0.16, shore:1, shoreA:0.62, deepA:0.97})
+  // ⚠ lo/hi are stops on wideCov() — a real distance-from-bank recovered from
+  // 8 extra mask taps — NOT on raw coverage. Raw `cov` is a silhouette: 86% of
+  // its non-zero texels sit at exactly 1.0 (measured), so a ramp keyed off it
+  // paints a hairline at the bank and one flat colour everywhere else. The
+  // older warning here quoted the 0.52-0.75 range of `_wField`, which is a
+  // DIFFERENT signal — see the water section in HANDOFF.md.
+  water(o){ return JSON.stringify(water.setPalette(o)); },
+  // Save observability. The autosave is silent by design, so when a character
+  // fails to persist there is nothing to look at — which is exactly the hole
+  // that hid the cross-machine bug. saveNow() forces the real save path;
+  // saveState() reports why the timer has or hasn't fired.
+  saveNow(){ saveGame(true); return 'save sent (net '+net.status+')'; },
+  saveState(){ return JSON.stringify({ netStatus:net.status, autoSaveT:+_autoSaveT.toFixed(2),
+    firesAt:20, playerDead:!!player.dead, name:player.name }); },
+  // Carry-light fallback. _dev.nightLight({night:0.2, cave:0.4}) tunes the two
+  // cases independently; no args just reports. `ratio` is the thing being
+  // calibrated: character luminance over ground luminance in the same frame —
+  // 8.05x was the sticker-on-black bug, ~1.5-2x reads as moonlight.
+  nightLight(o){
+    o=o||{};
+    if(o.night!==undefined) NIGHT_FILL_I=o.night;
+    if(o.cave!==undefined)  CAVE_FILL_I=o.cave;
+    if(o.y!==undefined)     CARRY_Y=o.y;
+    if(o.nightCol!==undefined) NIGHT_FILL_COL=o.nightCol;
+    if(o.caveCol!==undefined)  CAVE_FILL_COL=o.caveCol;
+    return JSON.stringify({night:NIGHT_FILL_I, nightCol:'#'+NIGHT_FILL_COL.toString(16).padStart(6,'0'),
+      cave:CAVE_FILL_I, caveCol:'#'+CAVE_FILL_COL.toString(16).padStart(6,'0'),
+      carryY:CARRY_Y, liveIntensity:+playerLight.intensity.toFixed(3),
+      liveColor:'#'+playerLight.color.getHexString(), radiusTiles:+(playerLight.distance/TILE).toFixed(2)});
+  },
   // Walk-clip rate matching: _dev.gait(110) raises the speed that plays at 1.0x
   // (slower legs); _dev.gait() just reports. Live per-mob readout for eyeballing it.
   gait(ref){
@@ -3778,8 +4309,14 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     refreshEquipStats(); return 'equipped '+it.name; },
   socketFirst(slot,gem){ const it=player.equippedItems[slot]; if(!it)return 'nothing equipped';
     const idx=it.sockets.findIndex(s=>!s.gem); if(idx<0)return 'no open socket';
-    const ok=socketGem(it,idx,gem); refreshEquipStats(); return ok?('socketed '+gem):'socket failed'; },
-  markPlacedDirty(){placedObjectsDirty=true;}};
+    const ok=socketGem(it,idx,gem); refreshEquipStats(); return ok?('socketed '+gem):'socket failed'; }};
+// ⚠ There was a SECOND markPlacedDirty here — `{placedObjectsDirty=true;}` — in
+// the same object literal as the real one above. A duplicate key is legal, and
+// the last one wins silently, so every test that called _dev.markPlacedDirty()
+// was only setting a flag: the rebuild then waited on the dirty dispatch, an
+// else-if chain with placed objects LAST, which at the rig's ~2fps can go many
+// seconds without a turn. Tests read the instance counts before anything was
+// written and concluded the props did not exist.
 // Console hook for quick placement tuning without the panel, e.g.
 //   _tune('iron_helm', {pos:[0,6,1], rot:[0,0,0], scale:16})
 window._tune=(key,patch)=>{ const adj=adjustFor(key); if(!adj)return 'unknown key';
@@ -3808,6 +4345,17 @@ window.addEventListener('keydown',e=>{
 
 // One model instance per enemy pool slot (built lazily, rebuilt on type change)
 const slotModel = [];
+// Every walk-ish clip a model offers, in a stable order. An in-place walk is
+// excluded: it is an IDLE substitute (see below) and a mob that travels while
+// playing one looks like it is being dragged.
+function walkClips(clips){
+  return clips.filter(c => /walk|shamble|shuffle|limp/i.test(c.name) && !/inplace|in_place/i.test(c.name));
+}
+function pickWalk(clips, slot){
+  const w = walkClips(clips);
+  if(w.length) return w[slot % w.length];
+  return pickClip(clips, /(^|\|)walk/i) || pickClip(clips, /gallop|run/i);
+}
 function buildSlotModel(i, type){
   const old = slotModel[i];
   if (old) { scene.remove(old.obj); old.mixer.stopAllAction(); }
@@ -3823,13 +4371,52 @@ function buildSlotModel(i, type){
   const obj = new THREE.Group(); obj.add(inner); scene.add(obj);
   const mixer = new THREE.AnimationMixer(inner);
   const mk = c => c ? mixer.clipAction(c) : null;
+  // ── Clip selection ────────────────────────────────────────────
+  // ⚠ Ordered most-specific first, and the WALK entry must not be the old
+  // `gallop|run` first: a model carrying both a walk and a run (the zombie has
+  // Walking, Running, Elderly_Shaky_Walk and Limping_Walk_3_inplace) would then
+  // sprint everywhere, because `run` matched before `walk` ever got a look in.
+  // Run is now its own state and is chosen by SPEED at runtime, not by name.
+  //
+  // `idle` falls back to an in-place walk when a model has no idle at all —
+  // a shambling zombie standing perfectly still is worse than one swaying.
   const actions = {
-    idle:   mk(pickClip(asset.clips, /(^|\|)idle$/i) || pickClip(asset.clips, /(^|\|)idle(_2)?$/i) || pickClip(asset.clips, /idle/i)),
-    walk:   mk(pickClip(asset.clips, /gallop|run/i) || pickClip(asset.clips, /walk/i)),
-    attack: mk(pickClip(asset.clips, /attack|punch|bite/i)),
+    // ⚠ The in-place fallback must be a clip the WALK selector cannot also pick, or
+    // a model with only in-place walks ends up idling and walking with the same
+    // animation and never appears to move. walkClips() excludes in-place for
+    // exactly this reason; keep the two selectors disjoint.
+    idle:   mk(pickClip(asset.clips, /(^|\|)idle$/i) || pickClip(asset.clips, /(^|\|)idle(_2)?$/i)
+            || pickClip(asset.clips, /idle/i) || pickClip(asset.clips, /inplace|in_place/i)),
+    // ⚠ A model with SEVERAL walks gets a different one per pool slot, so two
+    // zombies on screen together do not shamble in lockstep. Identical gait
+    // across a group is the thing that reads as "these are copies" — the same
+    // failure the tree crowns had, and it is just as visible on a mob.
+    walk:   mk(pickWalk(asset.clips, i)),
+    run:    mk(pickClip(asset.clips, /(^|\|)running|(^|\|)run$|gallop|sprint/i)),
+    // ⚠ `slam|spell_cast|throw` are here for bosses whose only "attacks" ARE their
+    // ability clips. Liliana resolved attack to NOTHING without them, so she would
+    // have stood inert between telegraphs.
+    attack: mk(pickClip(asset.clips, /attack|punch|bite|scream|slam|spell_?cast|throw/i)),
+    hit:    mk(pickClip(asset.clips, /hit_?reaction|hit|flinch|damage/i)),
+    // ⚠ NOT anchored. `Fall_Dead_from_Abdominal_Injury` has "Dead" in the middle,
+    // and the anchored version matched nothing — so the boss would have died
+    // standing up, frozen in her walk.
+    death:  mk(pickClip(asset.clips, /dead|death|dying|fall_/i)),
   };
   if (actions.attack) { actions.attack.setLoop(THREE.LoopOnce); actions.attack.clampWhenFinished=false; }
-  const inst = { type, obj, mixer, actions, cur:null, atkUntil:0, lx:null, lz:null };
+  // Hit and death are one-shots, and DEATH MUST CLAMP — without it the corpse
+  // snaps back to a standing pose on the last frame, which is the single most
+  // obvious animation bug a player can see.
+  if (actions.hit)   { actions.hit.setLoop(THREE.LoopOnce);   actions.hit.clampWhenFinished=false; }
+  if (actions.death) { actions.death.setLoop(THREE.LoopOnce); actions.death.clampWhenFinished=true; }
+  // Named clips, for abilities that name their own animation (BOSS_ABILITIES.anim).
+  // Kept separate from `actions` because these are not STATES — they are one-offs
+  // fired by the fight, and putting them in the state machine would let the walk
+  // logic fade them out halfway through a telegraph.
+  const named = {};
+  for (const c of asset.clips) named[c.name] = mk(c);
+  for (const a of Object.values(named)) { a.setLoop(THREE.LoopOnce); a.clampWhenFinished = true; }
+  const inst = { type, obj, mixer, actions, named, cur:null, atkUntil:0, lx:null, lz:null, hitUntil:0, dead:false, castId:null };
   slotModel[i]=inst; return inst;
 }
 function setModelAnim(inst, name){
@@ -3873,10 +4460,78 @@ function animModel(inst, e, t, adt, animate){
     if(inst.cur && inst.cur !== 'attack' && inst.actions[inst.cur]) inst.actions[inst.cur].fadeOut(0.06);
     inst.cur = 'attack';
   }
-  if(t >= (e._atkUntil || 0)){
-    if(inst.actions.walk) inst.actions.walk.timeScale =
-      Math.max(0.35, Math.min(2.2, (e._spd ?? e.speed ?? 90) / GAIT_REF));
-    setModelAnim(inst, moving ? 'walk' : 'idle');
+  // ── Death ──
+  // Plays once and holds the last frame. Checked before everything else and
+  // latched on `inst.dead`, because a corpse must not be talked back into a walk
+  // by a stray movement delta from the body settling or the pool being reused.
+  if(e.state === 'dead' || e.hp <= 0){
+    if(!inst.dead && inst.actions.death){
+      inst.dead = true;
+      if(inst.cur && inst.actions[inst.cur]) inst.actions[inst.cur].fadeOut(0.12);
+      inst.actions.death.reset().fadeIn(0.12).play();
+      inst.cur = 'death';
+    }
+    inst.mixer.update(adt);
+    return;
+  }
+  inst.dead = false;
+
+  // ── Hit reaction ──
+  // A short one-shot on taking damage. Deliberately does NOT interrupt an attack
+  // — a mob that flinches out of every swing can never land one, which reads as
+  // the mob being broken rather than as good feedback.
+  const hp = e.hp ?? 0;
+  if(inst.lastHp != null && hp < inst.lastHp && inst.actions.hit &&
+     t > (e._atkUntil || 0) && t > inst.hitUntil){
+    inst.hitUntil = t + Math.min(inst.actions.hit.getClip().duration, 0.6);
+    if(inst.cur && inst.actions[inst.cur]) inst.actions[inst.cur].fadeOut(0.08);
+    inst.actions.hit.reset().fadeIn(0.08).play();
+    inst.cur = 'hit';
+  }
+  inst.lastHp = hp;
+
+  // ── Telegraph ──
+  // While a boss is winding up, its OWN clip plays, stretched so it ENDS exactly
+  // when the blow resolves. That alignment is the whole point: the ground decal
+  // says where, the animation says when, and a clip that finishes early or late
+  // teaches the player the wrong beat — worse than showing no animation at all.
+  if(e.cast && inst.named){
+    const clip = inst.named[e.cast.anim];
+    if(clip && inst.castId !== e.cast.id + '@' + e.cast.t0){
+      inst.castId = e.cast.id + '@' + (e.cast.t0 = e.cast.t0 || t);
+      if(inst.cur && inst.actions[inst.cur]) inst.actions[inst.cur].fadeOut(0.1);
+      clip.reset();
+      // Stretch (or compress) the clip onto the wind-up. A 7.7s throw on a 3.2s
+      // tell plays at 2.4x; a 2.2s cast on a 1.2s tell at 1.8x.
+      clip.timeScale = Math.max(0.25, clip.getClip().duration / Math.max(0.2, e.cast.dur));
+      clip.fadeIn(0.1).play();
+      inst.cur = null;                  // the state machine no longer owns the body
+    }
+    inst.mixer.update(adt);
+    return;
+  }
+  if(inst.castId){                      // cast ended (resolved or interrupted)
+    inst.castId = null;
+    for(const a of Object.values(inst.named)) a.fadeOut(0.15);
+  }
+
+  if(t >= (e._atkUntil || 0) && t >= inst.hitUntil){
+    // ── Walk vs run, chosen by ACTUAL ground speed ──
+    // A model with both clips should not pick one by name at load time. Above
+    // 70% of its top speed a mob is chasing, and the run clip reads as intent;
+    // below that it is wandering. The 0.12 hysteresis band stops a mob hovering
+    // at the threshold from flickering between the two every frame.
+    const spd = e._spd ?? 0, top = e.speed || 90;
+    const wantRun = inst.actions.run &&
+      (inst.cur === 'run' ? spd > top * 0.58 : spd > top * 0.70);
+    const gait = moving ? (wantRun ? 'run' : 'walk') : 'idle';
+    const act = inst.actions[gait];
+    // Rate-match the chosen gait to the ground so the feet stay planted.
+    if(act && gait !== 'idle'){
+      const ref = gait === 'run' ? GAIT_REF * 1.9 : GAIT_REF;
+      act.timeScale = Math.max(0.35, Math.min(2.2, (e._spd ?? top) / ref));
+    }
+    setModelAnim(inst, gait);
   }
   inst.mixer.update(adt);
 }
@@ -4006,7 +4661,13 @@ gltfLoader.load('models/Horse.glb', gltf=>{
   if(!(maxY-minY>0.05)){ const b=new THREE.Box3().setFromObject(inner); minY=b.min.y; maxY=b.max.y; }
   const natH=Math.max(0.01,maxY-minY), HORSE_H=120, sc=HORSE_H/natH;
   inner.scale.setScalar(sc); inner.position.y=-minY*sc; inner.rotation.y=Math.PI;
-  inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false; } });
+  // Same treatment as the protagonist — this loader had the same gap, and
+  // Horse.glb ships the same emissiveFactor [1,1,1] + full emissive texture,
+  // so it was self-lit at night too.
+  inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false;
+    const opt={stripEmissiveMap:true};
+    o.material = Array.isArray(o.material) ? o.material.map(m=>simplifyPropMaterial(m,opt))
+                                           : simplifyPropMaterial(o.material,opt); } });
   const obj=new THREE.Group(); obj.add(inner); obj.visible=false; scene.add(obj);
   const mixer=new THREE.AnimationMixer(inner);
   const clip=gltf.animations[0]; if(clip) mixer.clipAction(clip).play();
@@ -4353,14 +5014,20 @@ function worldToScreen(wx, wy, wh=20) {
 // Which tree is the pointer actually over? Raycasts the trunk+canopy meshes
 // so tapping the tall leafy top counts as hitting that tree, not the empty
 // ground its silhouette overlaps. Returns {tx,ty} or null.
-const _treeRayMeshes = [topMesh, trunkMesh];
+const _treeRayMeshes = [...topMeshes, ...trunkMeshes];
 function pickTreeTile(sx, sy) {
   _ndc.set((sx/innerWidth)*2-1, -(sy/innerHeight)*2+1);
   _ray.setFromCamera(_ndc, camera);
   const hits = _ray.intersectObjects(_treeRayMeshes, false);
   for (const h of hits) {
     if (h.instanceId==null) continue;
-    const packed = treeInstTile[h.instanceId];
+    // Resolve against the mesh that was actually hit — instance indices are
+    // per-variant now, so the old flat lookup would map a click to whichever
+    // tile shared that index in a different variant.
+    let vIdx = topMeshes.indexOf(h.object);
+    if(vIdx < 0) vIdx = trunkMeshes.indexOf(h.object);
+    if(vIdx < 0) continue;
+    const packed = treeInstTiles[vIdx][h.instanceId];
     if (packed==null) continue;
     const tx=packed%MAP_W, ty=(packed/MAP_W)|0;   // unpack int → tile
     if (map[ty] && map[ty][tx]===T.TREE) return {tx,ty};
@@ -4447,6 +5114,73 @@ function nearbyObject(type,tileRadius){
   const r2=(tileRadius*TILE)**2;
   return placedObjects.some(o=>o.type===type&&(o.x-player.x)**2+(o.y-player.y)**2<r2);
 }
+// Where a new character appears. Inside CITY (the PvP safe zone) and next to the
+// square rather than in a wall — findClearSpawn() nudges off any blocked tile.
+const CITY_SPAWN = { x: 310*TILE+TILE/2, y: 362*TILE+TILE/2 };
+
+// ── City street lanterns ──────────────────────────────────────────
+// ⚠ A new player arriving after dark could not see the city at all — the tutorial
+// spawn is here, the shops are here, and at night it was a black screen with a
+// HUD on it.
+//
+// Laid out along the streets between the landmarks people actually walk to —
+// spawn, bank, healer, blacksmith, mage — not scattered, so they light the ROUTES.
+const CITY_LANTERNS = [
+  [310,362],[310,356],[310,350],[310,368],          // main north-south street
+  [304,362],[316,362],[298,362],[322,362],          // east-west cross street
+  [310,344],[310,367],                              // healer / bank doors
+  [319,357],[301,367],                              // blacksmith / mage doors
+  [304,350],[316,350],[304,374],[316,374],          // corners of the square
+];
+// These are SCENERY, not player placements — they belong to the town the way the
+// buildings do. That distinction is what `civic:true` marks, and it has to be
+// honoured in four places or the fix silently undoes itself:
+//
+//   1. placedObjects is REPLACED WHOLESALE by three different paths — a new
+//      character (resetForNewCharacter), a save load (loadGame), and the
+//      server's authoritative broadcast (net.onPlacedObjects). Seeding once at
+//      boot therefore lasts only until the first of those runs, and online that
+//      is a couple of seconds. Every one of them re-seeds; this function is
+//      idempotent so calling it again is free.
+//   2. buildSave() strips them, so they never enter a save blob. Otherwise the
+//      first save would bake this list into every character's file forever, and
+//      moving a lantern later would leave the old one stranded in old saves.
+//   3. netObjectPlace is never called for them — the server knows nothing about
+//      them, so they cost no rows and cannot be griefed off the map.
+//   4. removePlacedObject refuses them, or the first player to walk through town
+//      would pocket sixteen free lanterns and turn the lights off behind them.
+//
+// Lanterns are the right fixture rather than campfires: they have no `burn`
+// block so they never expire, they are the brightest placeable, and they read as
+// civic rather than as something a player dropped. `civic` also puts each one on
+// a STREET LAMP POST (see lampPostMesh) and lifts its light to the head, so they
+// throw light down the road instead of glowing at ankle height.
+function seedCityLanterns(){
+  for(const [tx,ty] of CITY_LANTERNS){
+    const p = clearLampSpot(tx, ty);
+    if(!p) continue;                    // walled in on every side: no lamp here
+    if(placedObjects.some(o=>Math.hypot(o.x-p.x,o.y-p.y)<TILE*0.5)) continue;
+    // ⚠ The id is derived from the ORIGINAL tile, not the nudged position, so a
+    // lamp keeps one identity even if the city layout shifts it a tile over.
+    placedObjects.push({ type:'lantern', x:p.x, y:p.y, id:'citylamp_'+tx+'_'+ty, civic:true });
+  }
+  placedObjectsDirty=true;
+}
+// A lamp buried in a building is worse than no lamp: it is invisible, it lights
+// the inside of a wall, and it still spends one of the sixteen placement-light
+// slots. The hand-written tile list above was authored against the street plan,
+// so a building edit is exactly the kind of change that would quietly bury one.
+// Nudge to the nearest open tile within two, and give up rather than guess.
+function clearLampSpot(tx, ty){
+  for(let radius=0; radius<=2; radius++)
+    for(let dy=-radius; dy<=radius; dy++)
+      for(let dx=-radius; dx<=radius; dx++){
+        if(Math.max(Math.abs(dx),Math.abs(dy))!==radius) continue;
+        const x=(tx+dx)*TILE+TILE/2, y=(ty+dy)*TILE+TILE/2;
+        if(!boxBlocked(x, y, 10)) return {x, y};
+      }
+  return null;
+}
 function findClearSpawn(){
   const stx=Math.floor(player.x/TILE),sty=Math.floor(player.y/TILE);
   for(let radius=0;radius<Math.max(MAP_W,MAP_H);radius++)
@@ -4504,6 +5238,9 @@ const RECIPES=[
   {id:'hearth',   top:'8 stone + 4 wood → hearth',    adv:true,sub:()=>nearbyObject('workbench',3)?'have: '+inv.stone+'s  '+inv.wood+'w':'need: workbench nearby'},
   {id:'anvil',    top:'5 iron ingots → anvil',        adv:true,sub:()=>nearbyObject('workbench',3)&&nearbyObject('forge',3)?'have: '+(inv.iron_ingot||0)+' ingots':'need: workbench & forge'},
   {id:'lantern',  top:'2 iron ingots + 1 hide → lantern',adv:true,sub:()=>nearbyObject('workbench',3)?'have: '+(inv.iron_ingot||0)+'i  '+inv.hide+'h':'need: workbench'},
+  {id:'barrel',   top:'2 planks → barrel (decor)',   adv:false,sub:()=>'have: '+inv.planks+' planks'},
+  {id:'crate',    top:'3 planks → crate pile (decor)',adv:false,sub:()=>'have: '+inv.planks+' planks'},
+  {id:'gravestone',top:'4 stone → gravestone (decor)',adv:false,sub:()=>'have: '+inv.stone+' stone'},
 ];
 const PANEL_H=HEADER_H+PANEL_PAD+Math.ceil(RECIPES.length/2)*(BTN_H+BTN_GAP)-BTN_GAP+PANEL_PAD;
 // ── Draggable panels ──────────────────────────────────────────────
@@ -4561,88 +5298,97 @@ function recipeRects(){
     };
   });
 }
-function canCraft(id){
-  const wb = nearbyObject('workbench', 3);
-  const fg = nearbyObject('forge', 3) || Math.hypot(BLACKSMITH.x-player.x, BLACKSMITH.y-player.y) < TILE*2.5;
-  if(id==='planks')    return inv.wood>=3;
-  if(id==='arrows')    return inv.wood>=1;
-  if(id==='wall')      return inv.planks>=1;
-  if(id==='pickaxe')   return inv.planks>=3&&!player.hasPickaxe;
-  if(id==='sword')     return inv.planks>=5&&!player.hasSword;
-  if(id==='bow')       return inv.planks>=4&&!player.hasBow;
-  if(id==='campfire')  return inv.wood>=2&&inv.stone>=2;
-  if(id==='workbench') return inv.planks>=5&&inv.stone>=3;
-  if(id==='larmor')    return inv.hide>=2&&hasUpgradeSlot(1);
-  if(id==='barmor')    return inv.hide>=2&&(inv.bone||0)>=2&&wb&&hasUpgradeSlot(2);
-  if(id==='bandage')   return inv.hide>=2;
-  if(id==='forge')     return inv.stone>=6&&inv.wood>=4;
-  if(id==='iron_ingot') return (inv.iron_ore||0)>=3&&fg;
-  if(id==='mithril_ingot') return (inv.mithril_ore||0)>=3&&fg;
-  if(id==='runic_ingot') return (inv.runic_ore||0)>=3&&fg;
-  if(id==='iron_pick') return (inv.iron_ingot||0)>=3&&inv.planks>=2&&wb;
-  if(id==='iron_sword') return (inv.iron_ingot||0)>=4&&inv.planks>=2&&(player.swordTier||1)<2&&wb;
-  if(id==='steel_sword') return (inv.steel_ingot||0)>=3&&player.hasSword&&(player.swordTier||1)<3&&(wb||fg);
-  if(id==='steel_bow') return (inv.steel_ingot||0)>=3&&player.hasBow&&(player.bowTier||1)<3&&(wb||fg);
-  if(id==='mithril_pick') return (inv.mithril_ingot||0)>=3&&(player.pickaxeTier||1)<4&&wb;
-  if(id==='mithril_sword') return (inv.mithril_ingot||0)>=3&&(player.swordTier||1)<4&&(wb||fg);
-  if(id==='mithril_bow') return (inv.mithril_ingot||0)>=3&&(player.bowTier||1)<4&&(wb||fg);
-  if(id==='runic_pick') return (inv.runic_ingot||0)>=3&&(player.pickaxeTier||1)<5&&wb;
-  if(id==='runic_sword') return (inv.runic_ingot||0)>=3&&(player.swordTier||1)<5&&(wb||fg);
-  if(id==='runic_bow') return (inv.runic_ingot||0)>=3&&(player.bowTier||1)<5&&(wb||fg);
-  if(id==='bronze_arm') return (inv.iron_ingot||0)>=3&&inv.hide>=2&&wb&&hasUpgradeSlot(3);
-  if(id==='steel_arm') return (inv.steel_ingot||0)>=2&&inv.hide>=2&&(inv.bone||0)>=2&&(wb||fg)&&hasUpgradeSlot(4);
-  if(id==='mithril_arm') return (inv.mithril_ingot||0)>=3&&inv.hide>=2&&(wb||fg)&&hasUpgradeSlot(5);
-  if(id==='runic_arm') return (inv.runic_ingot||0)>=3&&inv.hide>=2&&(wb||fg)&&hasUpgradeSlot(6);
-  if(id==='secure_chest') return inv.planks>=5&&(inv.iron_ingot||0)>=4&&wb;
-  if(id==='siege_ram') return inv.wood>=10&&(inv.iron_ingot||0)>=3&&wb;
-  if(id==='torch') return inv.wood>=1&&inv.hide>=1;
-  if(id==='hearth') return inv.stone>=8&&inv.wood>=4&&wb;
-  if(id==='anvil') return (inv.iron_ingot||0)>=5&&wb&&fg;
-  if(id==='lantern') return (inv.iron_ingot||0)>=2&&inv.hide>=1&&wb;
-  return false;
+// ── Crafting, driven by shared/recipes.json ───────────────────────
+// ⚠ This pair used to state every cost TWICE — canCraft as a >= gate, doCraft as
+// a subtraction — with nothing keeping them in step. Both now read the shared
+// table, which the server reads too, so a recipe cannot mean three different
+// things in three places. Only the EFFECTS (what a finished item does to the
+// player) stay in code here, because those are presentation and player state,
+// not economy.
+function craftStations(){
+  return {
+    workbench: nearbyObject('workbench', 3),
+    forge: nearbyObject('forge', 3) || Math.hypot(BLACKSMITH.x-player.x, BLACKSMITH.y-player.y) < TILE*2.5,
+  };
 }
+const TOOL_FLAG = { pickaxe:'hasPickaxe', sword:'hasSword', bow:'hasBow', axe:'hasAxe' };
+const TIER_FIELD = { pickaxe:'pickaxeTier', sword:'swordTier', bow:'bowTier' };
+function recipeBlocker(id){
+  const rec = RECIPE_DATA[id];
+  if(!rec) return 'unknown recipe';
+  const st = craftStations();
+  if(rec.near && rec.near.length){
+    const hits = rec.near.map(t => !!st[t]);
+    const ok = rec.nearAll ? hits.every(Boolean) : hits.some(Boolean);
+    if(!ok) return 'need ' + rec.near.join(rec.nearAll ? ' and ' : ' or ') + ' nearby';
+  }
+  if(rec.notOwned && player[TOOL_FLAG[rec.notOwned]]) return 'already owned';
+  if(rec.needTool && !player[TOOL_FLAG[rec.needTool]]) return 'need a ' + rec.needTool;
+  if(rec.maxTier) for(const k of Object.keys(rec.maxTier))
+    if((player[TIER_FIELD[k]]||1) >= rec.maxTier[k]) return 'already that tier';
+  if(rec.armorSlot && !hasUpgradeSlot(rec.armorSlot)) return 'full set';
+  // `requires` must be HELD; `cost` is held AND spent.
+  for(const src of [rec.cost, rec.requires]) for(const k of Object.keys(src||{}))
+    if((inv[k]||0) < src[k]) return 'need ' + src[k] + ' ' + k;
+  return null;
+}
+function canCraft(id){ return recipeBlocker(id) === null; }
 function doCraft(id){
-  if(!canCraft(id)) return; snd.craft();
+  if(!canCraft(id)) return;
+  const rec = RECIPE_DATA[id];
+  snd.craft();
   questEvent('craft', id);
-  if(id==='planks')   {inv.wood-=3;inv.planks+=1;addFloater(player.x,player.y-20,'+1 plank');}
-  if(id==='arrows')   {inv.wood-=1;inv.arrows+=3;addFloater(player.x,player.y-20,'+3 arrows');}
-  if(id==='wall')     {G.craftOpen=false;G.buildMode=true;G.buildItem='wall';}
-  if(id==='pickaxe')  {inv.planks-=3;player.hasPickaxe=true;player.pickaxeTier=1;addFloater(player.x,player.y-20,'pickaxe!');}
-  if(id==='sword')    {inv.planks-=5;player.hasSword=true;player.weapon='sword';addFloater(player.x,player.y-20,'sword!');}
-  if(id==='bow')      {inv.planks-=4;player.hasBow=true;if(!player.hasSword)player.weapon='bow';addFloater(player.x,player.y-20,'bow!');}
-  // Placeables go into the pack, not straight into build mode. Crafting a
-  // workbench and pressing ESC used to destroy the 5 planks + 3 stone outright:
-  // the cost was spent, build mode cancelled, and nothing was ever placed.
-  if(id==='campfire') {inv.wood-=2;inv.stone-=2;gainPlaceable('campfire');}
-  if(id==='workbench'){inv.planks-=5;inv.stone-=3;gainPlaceable('workbench');}
-  if(id==='larmor')   {inv.hide-=2;equipArmorPiece(1);}
-  if(id==='barmor')   {inv.hide-=2;inv.bone-=2;equipArmorPiece(2);}
-  if(id==='bandage')  {inv.hide-=2;inv.bandages+=1;addFloater(player.x,player.y-20,'+1 bandage');}
-  if(id==='forge')     {inv.stone-=6;inv.wood-=4;gainPlaceable('forge');}
-  if(id==='iron_ingot'){inv.iron_ore-=3;inv.iron_ingot=(inv.iron_ingot||0)+1;addFloater(player.x,player.y-20,'+1 iron ingot');}
-  if(id==='mithril_ingot'){inv.mithril_ore-=3;inv.mithril_ingot=(inv.mithril_ingot||0)+1;addFloater(player.x,player.y-20,'+1 mithril ingot');}
-  if(id==='runic_ingot'){inv.runic_ore-=3;inv.runic_ingot=(inv.runic_ingot||0)+1;addFloater(player.x,player.y-20,'+1 runic ingot');}
-  if(id==='iron_pick') {inv.iron_ingot-=3;inv.planks-=2;player.pickaxeTier=2;player.hasPickaxe=true;addFloater(player.x,player.y-20,'Iron Pickaxe!');}
-  if(id==='iron_sword'){inv.iron_ingot-=4;inv.planks-=2;player.swordTier=2;player.hasSword=true;player.weapon='sword';addFloater(player.x,player.y-20,'Iron Sword!');}
-  if(id==='steel_sword'){inv.steel_ingot-=3;player.swordTier=3;player.hasSword=true;player.weapon='sword';addFloater(player.x,player.y-20,'Steel Sword!');}
-  if(id==='steel_bow') {inv.steel_ingot-=3;player.bowTier=3;player.hasBow=true;player.weapon='bow';addFloater(player.x,player.y-20,'Steel Bow!');}
-  if(id==='mithril_pick') {inv.mithril_ingot-=3;player.pickaxeTier=4;player.hasPickaxe=true;addFloater(player.x,player.y-20,'Mithril Pickaxe!');}
-  if(id==='mithril_sword'){inv.mithril_ingot-=3;player.swordTier=4;player.hasSword=true;player.weapon='sword';addFloater(player.x,player.y-20,'Mithril Sword!');}
-  if(id==='mithril_bow') {inv.mithril_ingot-=3;player.bowTier=4;player.hasBow=true;player.weapon='bow';addFloater(player.x,player.y-20,'Mithril Bow!');}
-  if(id==='runic_pick') {inv.runic_ingot-=3;player.pickaxeTier=5;player.hasPickaxe=true;addFloater(player.x,player.y-20,'Runic Pickaxe!');}
-  if(id==='runic_sword'){inv.runic_ingot-=3;player.swordTier=5;player.hasSword=true;player.weapon='sword';addFloater(player.x,player.y-20,'Runic Sword!');}
-  if(id==='runic_bow') {inv.runic_ingot-=3;player.bowTier=5;player.hasBow=true;player.weapon='bow';addFloater(player.x,player.y-20,'Runic Bow!');}
-  if(id==='bronze_arm'){inv.iron_ingot-=3;inv.hide-=2;equipArmorPiece(3);}
-  if(id==='steel_arm') {inv.steel_ingot-=2;inv.hide-=2;inv.bone-=2;equipArmorPiece(4);}
-  if(id==='mithril_arm'){inv.mithril_ingot-=3;inv.hide-=2;equipArmorPiece(5);}
-  if(id==='runic_arm') {inv.runic_ingot-=3;inv.hide-=2;equipArmorPiece(6);}
-  if(id==='secure_chest') {inv.planks-=5;inv.iron_ingot-=4;gainPlaceable('secure_chest');}
-  if(id==='siege_ram') {inv.wood-=10;inv.iron_ingot-=3;inv.siege_ram=(inv.siege_ram||0)+1;addFloater(player.x,player.y-20,'Siege Ram crafted!');}
-  if(id==='torch') {inv.wood-=1;inv.hide-=1;gainPlaceable('torch',3);}
-  if(id==='hearth') {inv.stone-=8;inv.wood-=4;gainPlaceable('hearth');}
-  if(id==='anvil') {inv.iron_ingot-=5;gainPlaceable('anvil');}
-  if(id==='lantern') {inv.iron_ingot-=2;inv.hide-=1;gainPlaceable('lantern');}
+
+  // Costs and gains, straight from the table.
+  for(const k of Object.keys(rec.cost||{})) inv[k] = (inv[k]||0) - rec.cost[k];
+  for(const k of Object.keys(rec.gain||{})) inv[k] = (inv[k]||0) + rec.gain[k];
+
+  // Effects. Ordered so the floater below can describe whatever happened.
+  let msg = null;
+  if(rec.build){ G.craftOpen=false; G.buildMode=true; G.buildItem=rec.build; }
+  if(rec.placeable) gainPlaceable(rec.placeable, rec.placeCount||1);   // floats its own message
+  if(rec.tool) player[TOOL_FLAG[rec.tool]] = true;
+  if(rec.tier) for(const k of Object.keys(rec.tier)){
+    player[TIER_FIELD[k]] = rec.tier[k];
+    // Upgrading a weapon puts it in hand, as it always has. The plain bow is the
+    // one exception: it must not snatch the hand off a sword you already own.
+    if(k==='sword') player.weapon='sword';
+    if(k==='bow' && (id!=='bow' || !player.hasSword)) player.weapon='bow';
+  }
+  if(id==='sword') player.weapon='sword';
+  if(id==='bow' && !player.hasSword) player.weapon='bow';
+  if(rec.armor) equipArmorPiece(rec.armor);                             // floats its own message
+  else if(!rec.placeable && !rec.build){
+    const gained = Object.keys(rec.gain||{});
+    if(gained.length) msg = '+' + rec.gain[gained[0]] + ' ' + gained[0].replace(/_/g,' ');
+    else if(rec.tool || rec.tier) msg = CRAFT_LABEL[id] || (id.replace(/_/g,' ') + '!');
+    if(msg) addFloater(player.x, player.y-20, msg);
+  }
+
+  // Tell the server what we did. It re-validates against its own copy of this
+  // same table and answers with authoritative deltas — see netTx().
+  //
+  // ⚠ The predicted delta is sent WITH the intent, not left for later. Phase 2
+  // rolls a rejected transaction back from exactly this data, and a craft with
+  // no prediction attached would roll back silently to nothing — the most common
+  // transaction in the game quietly exempt from reconciliation. It costs nothing
+  // to build here and it is impossible to reconstruct after the fact, because by
+  // the time the rejection lands the inventory has moved on.
+  const predicted = { items: {} };
+  for(const k of Object.keys(rec.cost||{})) predicted.items[k] = -(rec.cost[k]);
+  for(const k of Object.keys(rec.gain||{})) predicted.items[k] = (predicted.items[k]||0) + rec.gain[k];
+  if(rec.placeable) predicted.items[rec.placeable] = (predicted.items[rec.placeable]||0) + (rec.placeCount||1);
+  netTx('craft', { id }, predicted);
 }
+// Display names for the tool/tier crafts, which have no inventory gain to name.
+const CRAFT_LABEL = {
+  pickaxe:'pickaxe!', sword:'sword!', bow:'bow!',
+  iron_pick:'Iron Pickaxe!', iron_sword:'Iron Sword!',
+  steel_sword:'Steel Sword!', steel_bow:'Steel Bow!',
+  mithril_pick:'Mithril Pickaxe!', mithril_sword:'Mithril Sword!', mithril_bow:'Mithril Bow!',
+  runic_pick:'Runic Pickaxe!', runic_sword:'Runic Sword!', runic_bow:'Runic Bow!',
+};
+
 // Craft a placeable into the pack. Selecting it on the hotbar puts it in hand;
 // right-click then places it.
 function gainPlaceable(type, n=1){
@@ -4664,8 +5410,10 @@ function depleteNode(tx,ty,tt,cx,cy){
   // Ore still yields per swing; trees give nothing until the whole thing falls.
   if(tt===T.STONE){
     inv.stone+=dmgAmt; for(let i=0;i<dmgAmt;i++)questEvent('stone'); addFloater(cx,cy-12,'+'+dmgAmt+' stone');
+    netTx('gather',{tx,ty},{items:{stone:dmgAmt}});
   } else if(tt===T.ORE_IRON){
     inv.iron_ore=(inv.iron_ore||0)+dmgAmt; addFloater(cx,cy-12,'+'+dmgAmt+' iron ore');
+    netTx('gather',{tx,ty},{items:{iron_ore:dmgAmt}});
   }
   resourceHp[ty][tx]-=dmgAmt;
   const felled = resourceHp[ty][tx]<=0;
@@ -4673,6 +5421,10 @@ function depleteNode(tx,ty,tt,cx,cy){
     if(!felled){ addFloater(cx,cy-12,'🪓'); }         // chips fly; the log comes when it falls
     else {
       inv.wood+=TREE_WOOD; for(let w=0;w<TREE_WOOD;w++) questEvent('wood');
+      // ⚠ Only on the FELLING blow. A tree pays nothing per swing and its whole
+      // load when it goes over, so sending a gather intent per chop would ask the
+      // server for four times the wood.
+      netTx('gather',{tx,ty},{items:{wood:TREE_WOOD}});
       addFloater(cx,cy-18,'🌲 TIMBER!  +'+TREE_WOOD+' wood');
       spawnFallingTree(tx,ty);
     }
@@ -4711,7 +5463,11 @@ function meleeDmg(){
   const gear = 1 + eqStat('allDmg')/100;
   const tLv = tacticsLv();
   const weaponmaster = tLv >= 10 ? 1.25 : 1.0;
-  return Math.round((TACTICS_DMG[tLv-1]+eqWeaponDmg())*TIER_MULT[swordTier()]*strMult*gear*weaponmaster*(1+artifactBonus('swordDmg')+artifactBonus('allDmg')));
+  // ⚠ WEAKENED is applied at the very end, to the final number, so it cannot be
+  // out-scaled by gear or skill. A debuff that a geared player does not notice is
+  // not a debuff.
+  const weak = player.weakTimer > 0 ? 0.55 : 1;
+  return Math.round((TACTICS_DMG[tLv-1]+eqWeaponDmg())*TIER_MULT[swordTier()]*strMult*gear*weaponmaster*(1+artifactBonus('swordDmg')+artifactBonus('allDmg'))*weak);
 }
 function arrowDmg(){
   const raceData = RACES[player.race] || RACES.Human;
@@ -5077,9 +5833,17 @@ function placementBlocker(type, tx, ty, hit){
   if(house&&!canBuildInHouse(house)) return 'owner or friends only!';
   if(_isFullCover(t)){
     if(!def.surfaces.includes('wall')) return 'cannot mount that on a wall';
-  } else if(def.surfaces.includes('house')){
-    if(!house||t!==T.PATH) return 'must place inside a house';
-  } else if(!PLACE_GROUND.has(t)) return 'cannot place there';
+  } else {
+    // 'ground' and 'house' are not exclusive — the chest allows both, so it can
+    // stand anywhere AND be locked down indoors. Checked as two independent
+    // permissions rather than an if/else chain, which is what made 'house' mean
+    // "house ONLY" before.
+    const okGround = def.surfaces.includes('ground') && PLACE_GROUND.has(t);
+    const okHouse  = def.surfaces.includes('house')  && house && t===T.PATH;
+    if(!okGround && !okHouse)
+      return def.surfaces.includes('house') && !def.surfaces.includes('ground')
+        ? 'must place inside a house' : 'cannot place there';
+  }
   const m=placementSpot(type,tx,ty,hit);
   if(Math.hypot(m.x-player.x,m.y-player.y)>HARVEST_RANGE) return 'too far away';
   // One object per spot. Without this you could stack an unbounded pile on a
@@ -5103,6 +5867,7 @@ function placePlaceable(type, tx, ty, quiet, hit){
   if(m.face){ o.face=m.face; o.mountY=m.mountY; }        // wall mount
   if(type==='secure_chest'){ o.owner=playerName(); o.items={}; o.hp=150; o.maxHp=150; }
   placedObjects.push(o); placedObjectsDirty=true;
+  _grassDirty=true;        // the new object's tile must stop growing grass through it
   netObjectPlace(o);
   addFloater(m.x,m.y-12,def.emoji+' '+def.label+(m.face?' mounted':' placed'));
   snd.craft();
@@ -5207,8 +5972,63 @@ function placeItem(wx,wy){
 // (The server whitelists what it stores; see bravo-room.js object_place.)
 function netObjectPlace(o) {
   if (net.status === 'online' && net.room) {
-    net.room.send('object_place', { type:o.type, x:o.x, y:o.y, face:o.face||null, litAt:o.litAt||0 });
+    net.room.send('object_place', { type:o.type, x:o.x, y:o.y, face:o.face||null, litAt:o.litAt||0,
+                                    locked:!!o.locked });
   }
+}
+// Push a change made to an object that is ALREADY placed (currently the chest
+// lock). object_place is idempotent by position — the server drops anything
+// within 6 units of the incoming point before pushing — so re-sending is the
+// update path and no new message type is needed.
+// ⚠ Chest CONTENTS deliberately do not go through here: the server stores no
+// item data, so `items` lives in the local save only. Two players sharing one
+// chest online would each see their own contents. Making that authoritative
+// needs the server to arbitrate transfers, which is a bigger change.
+function syncPlacedObject(o){ netObjectPlace(o); }
+// Adopt the server's list of shared placed items (torches, lanterns, forges…).
+//
+// ⚠ At module scope on purpose, NOT inside the net-wiring function. Handlers
+// defined in there only exist when the client is online, which makes them
+// untestable offline — the same trap that let a broken rollback path ship once
+// already, because the test called a null handler and reported success.
+function applyServerPlacedObjects(list){
+  if(!Array.isArray(list)) return false;
+  // Snapshot BEFORE clearing: chest contents are client-side only, so they
+  // have to be carried across the rebuild. Looking them up after the clear
+  // would silently empty every chest on each server broadcast.
+  const prevList = placedObjects.slice();
+  placedObjects.length=0;
+  for(const o of list){
+    const p={id:o.id,type:o.type,x:o.x,y:o.y,owner:o.owner};
+    // Only `face` crosses the wire; mountY is derivable from the registry, so
+    // the server never has to know about it. Rebuilding the object field by
+    // field is why this needs saying — a plain copy would have dropped it.
+    if(o.face && FACE_DIR[o.face]){
+      p.face=o.face;
+      p.mountY=(PLACEABLES[o.type]&&PLACEABLES[o.type].wallY)||WALL_H*0.6;
+    }
+    // litAt is what makes burnout agree across clients — it's an absolute
+    // world-clock stamp, so everyone derives the same remaining fuel.
+    if(o.litAt>0) p.litAt=o.litAt;
+    // Chest lock state. Contents are NOT synced (see syncPlacedObject), so
+    // carry over whatever this client already had for that chest rather than
+    // wiping it every time the server re-broadcasts the list.
+    if(o.locked) p.locked=true;
+    if(o.type==='secure_chest'){
+      const prev=prevList.find(q=>q.type==='secure_chest'&&Math.hypot(q.x-o.x,q.y-o.y)<6);
+      p.items=(prev&&prev.items)||{};
+      p.hp=(prev&&prev.hp)||150; p.maxHp=(prev&&prev.maxHp)||150;
+    }
+    placedObjects.push(p);
+  }
+  // ⚠ This broadcast REPLACES the whole list, and it arrives within seconds of
+  // joining — so without this line the city lanterns lit the town only until the
+  // socket connected, which is to say never, online. They are deliberately not
+  // server-side state: the server would then persist them, sync them, and let
+  // players remove sixteen rows that are really just scenery.
+  seedCityLanterns();
+  placedObjectsDirty=true;
+  return true;
 }
 function netObjectRemove(x, y) {
   if (net.status === 'online' && net.room) {
@@ -5216,10 +6036,19 @@ function netObjectRemove(x, y) {
   }
 }
 function removePlacedObject(obj, returnItem = true) {
+  // Town fixtures are not loot. Without this the first player through the gate
+  // pockets sixteen free lanterns and leaves the city dark for everyone behind
+  // them — and since civic objects are never synced, the server would not even
+  // know to put them back.
+  if (obj && obj.civic) {
+    addFloater(obj.x, obj.y - 12, 'the town keeps its lanterns');
+    return;
+  }
   const idx = placedObjects.indexOf(obj);
   if (idx !== -1) {
     placedObjects.splice(idx, 1);
     placedObjectsDirty = true;
+    _grassDirty = true;      // grass grows back where the object stood
   }
   netObjectRemove(obj.x, obj.y);
   if (returnItem) {
@@ -5324,7 +6153,7 @@ function useBandage(){
     addFloater(player.x,player.y-44,'☠ Poison cleansed!');
   }
   if(hLv>=8){
-    player.stunTimer=0; player.webTimer=0;
+    player.stunTimer=0; player.webTimer=0; player.weakTimer=0; player.slowTimer=0;
   }
 }
 function doHiding(){
@@ -5865,8 +6694,8 @@ function doSellAll(it){
 
 // ── Bank ──────────────────────────────────────────────────────────
 function bankPanelXY(){return panelAt('bank', Math.round(G.canvas.width/2-BANK_W/2), Math.round(G.canvas.height/2-BANK_H/2), BANK_W, BANK_H);}
-function bankDeposit(amt){const a=amt==='all'?inv.gold:Math.min(amt,inv.gold);if(a<=0){addFloater(BANKER.x,BANKER.y-30,'no gold on hand!');return;}inv.gold-=a;bank.gold+=a;addFloater(player.x,player.y-24,'deposited '+a+'g');}
-function bankWithdraw(amt){const a=amt==='all'?bank.gold:Math.min(amt,bank.gold);if(a<=0){addFloater(BANKER.x,BANKER.y-30,'vault is empty!');return;}bank.gold-=a;inv.gold+=a;addFloater(player.x,player.y-24,'withdrew '+a+'g');}
+function bankDeposit(amt){const a=amt==='all'?inv.gold:Math.min(amt,inv.gold);if(a<=0){addFloater(BANKER.x,BANKER.y-30,'no gold on hand!');return;}inv.gold-=a;bank.gold+=a;addFloater(player.x,player.y-24,'deposited '+a+'g');netTx('bank',{dir:'deposit',amount:a},{gold:-a});}
+function bankWithdraw(amt){const a=amt==='all'?bank.gold:Math.min(amt,bank.gold);if(a<=0){addFloater(BANKER.x,BANKER.y-30,'vault is empty!');return;}bank.gold-=a;inv.gold+=a;addFloater(player.x,player.y-24,'withdrew '+a+'g');netTx('bank',{dir:'withdraw',amount:a},{gold:a});}
 function handleBankClick(e){
   const{px,py}=bankPanelXY();
   const dA=[10,50,'all'];
@@ -6060,6 +6889,7 @@ function questPoll(){
 const FLOOR_BOSSES={
   gravebinder:{ base:'troll_l', name:'The Gravebinder', hp:2.4, dmg:1.5, tint:0x9effc0 },
   molloch:    { base:'piper',   name:'Ratking Molloch', hp:3.0, dmg:1.8, tint:0xffcc66 },
+  liliana:    { base:'zombie',  name:'Liliana, the Zombie Queen', hp:4.0, dmg:1.7 },
 };
 function spawnFloorBoss(floorN){
   const spec=DUNGEON_BOSS_SPAWNS.find(b=>b.floor===floorN); if(!spec) return;
@@ -7001,7 +7831,17 @@ function renderTutorialPanel(){
   const ctx=G.ctx, W=400, rowH=17;
   const page=TUT_PAGES[tutPage];
   const H=46+34+page.rows.length*rowH+46;
-  const {px,py}=panelAt('tutorial', Math.round(G.canvas.width/2-W/2), Math.round(G.canvas.height/2-H/2), W, H);
+  // ⚠ Centring alone put the FIRST page — the longest — over the hotbar, so its
+  // `next ▶` button sat on top of the toolbar and was near-impossible to click:
+  // the click landed on a hotbar slot instead. Centre it, then lift it so its
+  // bottom edge clears the hotbar with a margin. If the page is too tall to fit
+  // above the bar at all, pin it to the top rather than let it overlap — a panel
+  // clipped at the top still has usable buttons at the bottom, which is the way
+  // round that matters.
+  const _hb = hotbarRect();
+  const _maxY = Math.max(8, _hb.y - H - 12);
+  const _wantY = Math.round(G.canvas.height/2 - H/2);
+  const {px,py}=panelAt('tutorial', Math.round(G.canvas.width/2-W/2), Math.min(_wantY, _maxY), W, H);
   tutHit=[];
   ctx.fillStyle='rgba(14,16,10,.96)';ctx.fillRect(px,py,W,H);
   ctx.strokeStyle='#8fb85a';ctx.lineWidth=1.5;ctx.strokeRect(px,py,W,H);
@@ -7513,9 +8353,92 @@ function recomputeDerivedStats(){
   player.speed = 190 + (dex - 10) * 4 + (player.race === 'Centaur' ? 25 : 0) + (eq.speed||0);
 }
 
+// ⚠ MODULE SCOPE, not inside the net wiring. It lived there first, which meant
+// it only existed once a connection had been made — impossible to test offline
+// and needlessly tied to socket setup for a function that is pure over its
+// argument. Nothing here touches the network.
+// ── PHASE 2: the server's word on the economy ──
+// Mirrors character.AUTHORITATIVE on the server: items, wallet, tools, tiers,
+// armor, standing. Everything else in the document is ignored here on purpose —
+// the client is still the author of progression until Phase 3 models it, and
+// overwriting xp or skills from a document that cannot yet track them would
+// roll a player back to whatever their last save happened to say.
+//
+// ⚠ Order matters: this runs AFTER loadGame(), so it overwrites the save's
+// version of these fields rather than being overwritten by it.
+// ⚠ MODULE SCOPE, for the same reason as applyAuthoritative above: this used
+// to live inside the net wiring, so it only existed once a socket was open.
+// That made the one code path that REMOVES ITEMS FROM A PLAYER'S PACK
+// impossible to test without a live server — and a test written against it
+// anyway passed vacuously, because the handler it called was null.
+// ── Transaction results (PHASE 1) ──
+// The client already applied the change optimistically, which is what keeps
+// crafting and pickups instant. This is reconciliation, not application.
+//
+// ⚠ PHASE 1 ONLY: the legacy `save` is still a blanket override, so the server
+// is not yet the last word and a rejection here must NOT rip items out of a
+// player's pack — a false rejection (a stale position, a race with a placed
+// workbench) would be indistinguishable from theft. Until Phase 2 flips
+// authority, a rejection is recorded and surfaced quietly, and its job is to
+// make the divergence log quiet by revealing what the server cannot yet model.
+// Phase 2 turns `_txRollback` on; the rollback data is already carried so that
+// switch does not need new plumbing.
+function reconcileTx(m){
+  const pend = txPending.get(m.seq); txPending.delete(m.seq);
+  if(m.ok) return;
+  const what = (pend && pend.kind) || m.kind || 'action';
+  console.warn(`[tx] server refused ${what}: ${m.reason}`);
+  G.txRefusals = (G.txRefusals||0) + 1;
+  if(_txRollback && pend && pend.predicted){
+    for(const k of Object.keys(pend.predicted.items||{})) inv[k]=(inv[k]||0)-pend.predicted.items[k];
+    if(pend.predicted.gold) inv.gold-=pend.predicted.gold;
+    addFloater(player.x,player.y-30,'✖ '+m.reason);
+  }
+}
+// ⚠ PHASE 2: ON. The server now owns items, wallet, tools, tiers and armor, so
+// a rejection on one of those is authoritative and the predicted change must be
+// undone — otherwise the client shows an item the server does not believe in
+// until the next join silently takes it away, which is far more confusing than
+// an immediate "✖ not enough wood".
+//
+// It is only safe BECAUSE the flip landed in the same change: while `save` was
+// still a blanket override the server was not the last word, and acting on a
+// rejection would have turned every modelling gap into a visible item loss.
+const _txRollback = true;
+function applyAuthoritative(doc){
+  if(!doc || typeof doc !== 'object') return false;
+  try{
+    if(doc.items){
+      // Replace, don't merge. A merge would let a tampered local save keep any
+      // item the server has since removed — which is most of the point.
+      for(const k of Object.keys(inv)) if(k!=='gold') inv[k]=0;
+      for(const [k,v] of Object.entries(doc.items)) inv[k]=v|0;
+    }
+    if(doc.wallet){ inv.gold=doc.wallet.gold|0; bank.gold=doc.wallet.bank|0; }
+    if(doc.tools){
+      player.hasAxe=!!doc.tools.axe; player.hasSword=!!doc.tools.sword;
+      player.hasBow=!!doc.tools.bow; player.hasPickaxe=!!doc.tools.pickaxe;
+      player.hasHouseTool=!!doc.tools.houseTool;
+    }
+    if(doc.tiers){
+      player.swordTier=doc.tiers.sword||1; player.bowTier=doc.tiers.bow||1;
+      player.pickaxeTier=doc.tiers.pickaxe||1;
+    }
+    if(doc.armor) player.armor={head:doc.armor.head|0,chest:doc.armor.chest|0,
+                                legs:doc.armor.legs|0,boots:doc.armor.boots|0};
+    // A weapon the server says you no longer own must leave your hand, or the
+    // hotbar shows a sword you cannot swing.
+    if(player.weapon==='sword'&&!player.hasSword) player.weapon=player.hasAxe?'axe':'fists';
+    if(player.weapon==='bow'&&!player.hasBow)     player.weapon=player.hasAxe?'axe':'fists';
+    return true;
+  }catch(e){ console.warn('[phase2] could not apply the server document', e); return false; }
+}
+
 function buildSave(){
   return {px:player.x,py:player.y,hp:player.hp,inv:{...inv},hasAxe:player.hasAxe,hasSword:player.hasSword,hasBow:player.hasBow,hasPickaxe:player.hasPickaxe,hasArmor:player.hasArmor,weapon:player.weapon,swordTier:player.swordTier||1,bowTier:player.bowTier||1,pickaxeTier:player.pickaxeTier||1,autoDefend:G.autoDefend!==false,aggroMode:!!G.aggroMode,armor:{...player.armor},bank:{gold:bank.gold},skillXp:{tactics:skills.tactics.xp,archery:skills.archery.xp,hiding:skills.hiding.xp,healing:skills.healing.xp,wrestling:skills.wrestling.xp},quests:{idx:questState.idx,prog:questState.prog},hasHouseTool:player.hasHouseTool,placedHouses:net.status==='online'?undefined:G.placedHouses,gambits,gambitsOn:!!G.gambitsOn,
-    placedObjects:placedObjects.map(o=>({...o})),
+    // Civic scenery is town furniture, not this character's stuff — baking it
+    // into the blob would freeze today's lantern layout into every save file.
+    placedObjects:placedObjects.filter(o=>!o.civic).map(o=>({...o})),
     hasHorse:!!player.hasHorse,onHorse:!!player.onHorse,horseDown:!!player.horseDown,horseX:player.horseX||0,horseY:player.horseY||0,
     artifactInv:player.artifactInv.map(it=>({...it})),equippedArtifacts:{...player.equippedArtifacts},dollGender:player.dollGender,
     name:player.name,gender:player.gender,race:player.race,stats:{...(player.stats||{str:10,dex:10,int:10,vit:10})},
@@ -7536,6 +8459,15 @@ function saveGame(quiet){
     AccountManager.saveCurrentSlot(s, { name: player.name, gender: player.gender, race: player.race, stats: player.stats });
   }catch(e){}
   netSave(s);   // online: server is the source of truth (anti-tamper, no lost loot)
+  // ⚠ PHASE 2: preferences go up SEPARATELY. `save` is on its way out — the
+  // server already ignores the fields it owns inside it — so anything that is
+  // genuinely the player's own setting needs its own route out of here, or it
+  // would disappear with the blob when `save` is finally retired.
+  netPrefs({ autoDefend: G.autoDefend!==false, aggroMode: !!G.aggroMode,
+             gambits, gambitsOn: !!G.gambitsOn,
+             hotbar: hotbar.map(x=>x?{...x}:null),
+             macros: macros.map(m=>({name:m.name,steps:[...m.steps]})),
+             panelOfs });
   if(!quiet) addFloater(player.x,player.y-34, net.status==='online'?'💾 saved to server':'💾 saved!');
 }
 // auto-save to the server periodically so progress never rolls back
@@ -7584,6 +8516,16 @@ function resetForNewCharacter(){
   G.antiqStock=null; G.antiqStockAt=0; G.bounty=null; G.bountyAt=0;
   G.placedHouses=[];
   placedObjects.length=0; placedObjectsDirty=true;
+  seedCityLanterns();      // civic scenery is not the character's, so it survives the wipe
+  // ⚠ START IN THE CITY. New characters used to appear at the world default
+  // (tile 240,300), open grassland well outside the walls — so a first-time
+  // player read the tutorial while wolves and bandits walked up on them, and
+  // died before finishing it. The city is the PvP safe zone and the guards live
+  // there, so it is the only place a tutorial can be read in peace. This sits
+  // here rather than in the creator's callback so that EVERY path which makes a
+  // fresh hero gets it, including the offline demo.
+  player.x=CITY_SPAWN.x; player.y=CITY_SPAWN.y;
+  findClearSpawn();        // nudge off a wall if the square tile is occupied
   recomputeArtifactBonus();
   refreshEquipStats();
   updateArmorVisuals();
@@ -7622,7 +8564,11 @@ function loadGame(blob){
     if(inv.relics===undefined)inv.relics=0;
     if(Array.isArray(s.placedObjects)){
       placedObjects.length=0;
-      s.placedObjects.forEach(o=>placedObjects.push(o));
+      // Old saves (made before the lanterns existed) carry none; saves made
+      // since have them stripped by buildSave. Either way the town's own
+      // fixtures come from seedCityLanterns, never from the blob.
+      s.placedObjects.forEach(o=>{ if(!o.civic) placedObjects.push(o); });
+      seedCityLanterns();
       placedObjectsDirty=true;
     }
     player.artifactInv=Array.isArray(s.artifactInv)?s.artifactInv.map(it=>({...it})):[];
@@ -7826,6 +8772,19 @@ window.addEventListener('keydown',e=>{
       const nearbyChest = placedObjects.find(o => o.type==='secure_chest' && Math.hypot(o.x-player.x, o.y-player.y)<TILE*2.5);
       if(nearbyChest){
         openSecureChest(nearbyChest);
+        return;
+      }
+      // A workbench had no interaction at all — it was only ever a proximity
+      // check that unlocked `adv` recipes in the C panel, so walking up to one
+      // and pressing E did nothing and it read as scenery. E now opens the
+      // crafting panel at the bench, which is where you already are.
+      const nearbyBench = placedObjects.find(o => (o.type==='workbench'||o.type==='forge'||o.type==='anvil')
+        && Math.hypot(o.x-player.x, o.y-player.y)<TILE*2.5);
+      if(nearbyBench){
+        closeShopPanels();
+        G.craftOpen = true;
+        snd.pickup();
+        addFloater(nearbyBench.x, nearbyBench.y-16, (PLACEABLES[nearbyBench.type]||{}).label||'workbench');
         return;
       }
       const _doorIdx = getNearbyHouseDoorIndex();
@@ -8276,6 +9235,14 @@ G.canvas.addEventListener('wheel',e=>{
       return;
     }
   }
+  // chest open: wheel over its panel scrolls the item list
+  if(G.chestOpen){
+    const {px,py}=chestXY(), H=chestPanelH();
+    if(e.clientX>=px&&e.clientX<=px+CHEST_W&&e.clientY>=py&&e.clientY<=py+H){
+      G.chestScroll=Math.max(0,Math.min(chestMaxScroll(),(G.chestScroll|0)+(e.deltaY>0?1:-1)));
+      return;
+    }
+  }
   // backpack open: wheel over the bag scrolls its grid rows
   if(G.backpackOpen){
     const g=packGridRect();
@@ -8468,7 +9435,7 @@ function smithOwned(it){
   if(it.kind==='apiece') return !hasUpgradeSlot(it.mat);   // full set at this material
   return false;
 }
-function doSmithBuy(it){if(!canSmithBuy(it))return;snd.gold();inv.gold-=it.price;if(it.kind==='res'){inv[it.key]+=it.amt;addFloater(player.x,player.y-20,'+'+it.amt+' '+it.label);}if(it.kind==='tool'){player[it.pkey]=true;if(it.wpn)player.weapon=it.wpn;addFloater(player.x,player.y-20,it.label+'!');}if(it.kind==='tier'){player[it.tkey]=it.tier;addFloater(player.x,player.y-20,it.label+' — equipped!');}if(it.kind==='apiece')equipArmorPiece(it.mat);}
+function doSmithBuy(it){if(!canSmithBuy(it))return;snd.gold();inv.gold-=it.price;netTx('buy',{shop:'smith',id:it.id},{gold:-it.price});if(it.kind==='res'){inv[it.key]+=it.amt;addFloater(player.x,player.y-20,'+'+it.amt+' '+it.label);}if(it.kind==='tool'){player[it.pkey]=true;if(it.wpn)player.weapon=it.wpn;addFloater(player.x,player.y-20,it.label+'!');}if(it.kind==='tier'){player[it.tkey]=it.tier;addFloater(player.x,player.y-20,it.label+' — equipped!');}if(it.kind==='apiece')equipArmorPiece(it.mat);}
 function handleSmithClick(e){for(const r of smithRects()){if(e.clientX>=r.btnX&&e.clientX<=r.btnX+r.btnW&&e.clientY>=r.y+(r.h-r.btnH)/2&&e.clientY<=r.y+(r.h+r.btnH)/2){doSmithBuy(r.item);return true;}}return false;}
 function renderSmithPanel(){
   const ctx=G.ctx,{px,py}=smithPanelXY();
@@ -8483,7 +9450,7 @@ const MAGE_ITEMS=[{id:'potion',label:'Heal Potion',sub:'Restores 50 HP  [P to us
 const MAGE_W=300,MAGE_ROW_H=52,MAGE_HEADER=48,MAGE_PAD=14,MAGE_H=MAGE_HEADER+MAGE_PAD+MAGE_ITEMS.length*MAGE_ROW_H+MAGE_PAD;
 function magePanelXY(){return panelAt('mage', Math.round(G.canvas.width/2-MAGE_W/2), Math.round(G.canvas.height/2-MAGE_H/2), MAGE_W, MAGE_H);}
 function mageRects(){const{px,py}=magePanelXY(),top=py+MAGE_HEADER+MAGE_PAD;return MAGE_ITEMS.map((it,i)=>({y:top+i*MAGE_ROW_H,x:px+MAGE_PAD,w:MAGE_W-MAGE_PAD*2,h:MAGE_ROW_H-4,btnX:px+MAGE_W-MAGE_PAD-80,btnW:78,btnH:MAGE_ROW_H-18,item:it}));}
-function handleMageClick(e){for(const r of mageRects()){const it=r.item;if(e.clientX>=r.btnX&&e.clientX<=r.btnX+r.btnW&&e.clientY>=r.y+(r.h-r.btnH)/2&&e.clientY<=r.y+(r.h+r.btnH)/2){if(it.id==='potion'){if(inv.gold<it.price){addFloater(player.x,player.y-20,'need '+it.price+'g!');return true;}if(inv.potions>=it.maxStack){addFloater(player.x,player.y-20,'already full!');return true;}inv.gold-=it.price;inv.potions++;snd.gold();addFloater(player.x,player.y-20,'potion bought!');}return true;}}return false;}
+function handleMageClick(e){for(const r of mageRects()){const it=r.item;if(e.clientX>=r.btnX&&e.clientX<=r.btnX+r.btnW&&e.clientY>=r.y+(r.h-r.btnH)/2&&e.clientY<=r.y+(r.h+r.btnH)/2){if(it.id==='potion'){if(inv.gold<it.price){addFloater(player.x,player.y-20,'need '+it.price+'g!');return true;}if(inv.potions>=it.maxStack){addFloater(player.x,player.y-20,'already full!');return true;}inv.gold-=it.price;inv.potions++;snd.gold();netTx('buy',{shop:'mage',id:it.id},{gold:-it.price,items:{potions:1}});addFloater(player.x,player.y-20,'potion bought!');}return true;}}return false;}
 function renderMagePanel(){
   const ctx=G.ctx,{px,py}=magePanelXY();
   ctx.fillStyle='rgba(6,4,18,.97)';ctx.fillRect(px,py,MAGE_W,MAGE_H);ctx.strokeStyle='#9966cc';ctx.lineWidth=2;ctx.strokeRect(px,py,MAGE_W,MAGE_H);
@@ -9540,17 +10507,41 @@ function drawUiDragGhost(){
 }
 
 const CHEST_W=310;
+// Total item units a chest holds. The pack is uncapped, so this is not a
+// "bigger number than the pack" — it is deliberately large enough that bulk
+// storage never nags in normal play, while still being a real bound so a chest
+// reads as a container rather than a void. Shown in the title as used/cap.
+const CHEST_CAP = 5000;
+const CHEST_HEADH = 62;                       // title + capacity line
+const CHEST_FOOTH = 34;                       // lock button strip
+// BAG_ITEMS is ~29 rows; at BAG_ROWH that is taller than a 800px viewport, so a
+// panel sized to the full list runs off the bottom of the screen and takes the
+// lock strip with it — the button was there and unclickable. The list scrolls
+// instead (same wheel pattern as the pack grid), and the strip is pinned to the
+// bottom of the clamped panel so it is always reachable.
+function chestRowsVisible(){
+  const avail = G.canvas.height - 48 - CHEST_HEADH - CHEST_FOOTH;
+  return Math.max(4, Math.min(BAG_ITEMS.length, Math.floor(avail/BAG_ROWH)));
+}
+function chestPanelH(){ return CHEST_HEADH + chestRowsVisible()*BAG_ROWH + CHEST_FOOTH; }
+function chestMaxScroll(){ return Math.max(0, BAG_ITEMS.length - chestRowsVisible()); }
 function chestXY(){
-  const H=52+BAG_ITEMS.length*BAG_ROWH+18;
+  const H=chestPanelH();
   const defaultX = Math.round(G.canvas.width/2 - CHEST_W/2);
   const x = defaultX - 160;
   return panelAt('secure_chest_panel', x, Math.round(G.canvas.height/2 - H/2), CHEST_W, H);
 }
+function chestLockRect(){
+  const {px,py}=chestXY();
+  return {x:px+BAG_PAD, y:py+chestPanelH()-27, w:CHEST_W-BAG_PAD*2, h:20};
+}
 function chestRects(){
-  const {px,py}=chestXY(); const rects=[]; let y=py+44;
-  for(const it of BAG_ITEMS){
+  const {px,py}=chestXY(); const rects=[]; let y=py+CHEST_HEADH-8;
+  const n=chestRowsVisible(), s=Math.max(0,Math.min(chestMaxScroll(),G.chestScroll|0));
+  for(let i=s;i<Math.min(BAG_ITEMS.length,s+n);i++){
+    const it=BAG_ITEMS[i];
     rects.push({
-      k: it.k,
+      k: it.k, it,
       dp1: {x: px + CHEST_W - 130, y, w: 22, h: 20},
       dpA: {x: px + CHEST_W - 104, y, w: 32, h: 20},
       wd1: {x: px + CHEST_W - 64, y, w: 22, h: 20},
@@ -9561,16 +10552,26 @@ function chestRects(){
   return rects;
 }
 function renderChest(){
-  const ctx=G.ctx; const {px,py}=chestXY(); const H=52+BAG_ITEMS.length*BAG_ROWH+18;
+  const ctx=G.ctx; const {px,py}=chestXY();
+  const H=CHEST_HEADH+BAG_ITEMS.length*BAG_ROWH+CHEST_FOOTH;
   const chest = G.activeChest;
   if (!chest) { G.chestOpen = false; return; }
   ctx.fillStyle='rgba(12,14,24,.97)';ctx.fillRect(px,py,CHEST_W,H);
-  ctx.strokeStyle='#a890d0';ctx.lineWidth=2;ctx.strokeRect(px,py,CHEST_W,H);
+  ctx.strokeStyle=chest.locked?'#f0c040':'#a890d0';ctx.lineWidth=2;ctx.strokeRect(px,py,CHEST_W,H);
   ctx.fillStyle='#b8e8b0';ctx.font='bold 14px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';
-  ctx.fillText('🔒 SECURE CHEST (HP: '+chest.hp+'/'+chest.maxHp+')',px+CHEST_W/2,py+22);ctx.textAlign='left';
+  ctx.fillText((chest.locked?'🔒':'🧰')+' SECURE CHEST',px+CHEST_W/2,py+22);
+  // Capacity bar — the one number that tells you whether to stop hauling.
+  const used=chestUsed(chest), frac=Math.min(1,used/CHEST_CAP);
+  const bw=CHEST_W-BAG_PAD*2, bx=px+BAG_PAD, by=py+30;
+  ctx.fillStyle='rgba(40,34,26,.8)';ctx.fillRect(bx,by,bw,8);
+  ctx.fillStyle=frac>0.95?'#d05050':frac>0.8?'#d0a040':'#70b860';ctx.fillRect(bx,by,bw*frac,8);
+  ctx.strokeStyle='rgba(120,100,70,.5)';ctx.lineWidth=1;ctx.strokeRect(bx,by,bw,8);
+  ctx.fillStyle='#9a8f78';ctx.font='10px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillText(used+' / '+CHEST_CAP+'   ·   HP '+chest.hp+'/'+chest.maxHp,px+CHEST_W/2,py+50);
+  ctx.textAlign='left';
   const rects=chestRects();
-  for(let i=0;i<BAG_ITEMS.length;i++){
-    const it=BAG_ITEMS[i],r=rects[i],y=r.dp1.y;
+  for(let i=0;i<rects.length;i++){
+    const r=rects[i],it=r.it,y=r.dp1.y;
     ctx.fillStyle='#e8dcc0';ctx.font='12px ui-monospace,Menlo,Consolas,monospace';
     if(it.thumb&&drawLootThumb(it.thumb,px+BAG_PAD,y-2,20,20)) ctx.fillText(it.lab,px+BAG_PAD+24,y+15);
     else ctx.fillText(it.ic+' '+it.lab,px+BAG_PAD,y+15);
@@ -9584,37 +10585,83 @@ function renderChest(){
     };
     const hasInv = (inv[it.k] || 0) > 0;
     const hasChest = chestCount > 0;
-    btn(r.dp1, '+1', hasInv);
-    btn(r.dpA, '+All', hasInv);
+    const room = chestUsed(chest) < CHEST_CAP;
+    btn(r.dp1, '+1', hasInv && room);
+    btn(r.dpA, '+All', hasInv && room);
     btn(r.wd1, '-1', hasChest);
     btn(r.wdA, '-All', hasChest);
   }
+  // Scroll indicator — without it a clamped list looks like the whole list.
+  const maxS=chestMaxScroll();
+  if(maxS>0){
+    const s=Math.max(0,Math.min(maxS,G.chestScroll|0));
+    const trackY=py+CHEST_HEADH-8, trackH=chestRowsVisible()*BAG_ROWH;
+    const thumbH=Math.max(18, trackH*chestRowsVisible()/BAG_ITEMS.length);
+    ctx.fillStyle='rgba(40,34,26,.7)';ctx.fillRect(px+CHEST_W-6,trackY,4,trackH);
+    ctx.fillStyle='#8a7c5c';
+    ctx.fillRect(px+CHEST_W-6, trackY+(trackH-thumbH)*(s/maxS), 4, thumbH);
+  }
+  // Lock strip. Only live inside a house you own — elsewhere it explains itself
+  // rather than sitting there greyed out with no reason given.
+  const lr=chestLockRect(), lh=chestLockHouse(chest);
+  ctx.fillStyle=lh?(chest.locked?'rgba(90,72,20,.9)':'rgba(40,34,26,.8)'):'rgba(30,26,22,.6)';
+  ctx.fillRect(lr.x,lr.y,lr.w,lr.h);
+  ctx.strokeStyle=lh?(chest.locked?'#f0c040':'rgba(120,100,70,.5)'):'rgba(80,70,55,.35)';
+  ctx.lineWidth=1;ctx.strokeRect(lr.x,lr.y,lr.w,lr.h);
+  ctx.fillStyle=lh?(chest.locked?'#ffe9a0':'#c8bda0'):'#6b6355';
+  ctx.font='11px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';
+  ctx.fillText(lh ? (chest.locked ? '🔒 LOCKED — click to unlock'
+                                  : '🔓 UNLOCKED — click to lock down')
+                  : 'lock needs a house you own',
+               lr.x+lr.w/2, lr.y+14);
+  ctx.textAlign='left';
 }
 function handleChestClick(e){
   const chest = G.activeChest;
   if (!chest) return false;
+  const hitR=b=>e.clientX>=b.x&&e.clientX<=b.x+b.w&&e.clientY>=b.y&&e.clientY<=b.y+b.h;
+  const lr=chestLockRect();
+  if(hitR(lr)){
+    const lh=chestLockHouse(chest);
+    if(!lh){ addFloater(chest.x,chest.y-16,'only lockable in your own house'); snd.hurt(); }
+    else{
+      chest.locked=!chest.locked;
+      if(!chest.owner) chest.owner=playerName();
+      snd.pickup();
+      addFloater(chest.x,chest.y-16, chest.locked?'🔒 locked down':'🔓 unlocked');
+      syncPlacedObject(chest);          // `locked` has to reach the other clients
+      saveGame(true);
+    }
+    return true;
+  }
   const rects = chestRects();
-  for(let i=0;i<BAG_ITEMS.length;i++){
-    const r=rects[i],k=BAG_ITEMS[i].k;
+  for(let i=0;i<rects.length;i++){
+    const r=rects[i],k=r.k;
     const hit=b=>e.clientX>=b.x&&e.clientX<=b.x+b.w&&e.clientY>=b.y&&e.clientY<=b.y+b.h;
     if (hit(r.dp1)) {
       const have = inv[k] || 0;
-      if (have > 0) {
+      const room = CHEST_CAP - chestUsed(chest);
+      if (have > 0 && room > 0) {
         inv[k] = have - 1;
         chest.items[k] = (chest.items[k] || 0) + 1;
         if (k === 'gold') snd.gold(); else snd.pickup();
         saveGame(true);
-      }
+      } else if (have > 0) { addFloater(chest.x, chest.y-16, 'chest is full'); snd.hurt(); }
       return true;
     }
     if (hit(r.dpA)) {
       const have = inv[k] || 0;
-      if (have > 0) {
-        inv[k] = 0;
-        chest.items[k] = (chest.items[k] || 0) + have;
+      const room = CHEST_CAP - chestUsed(chest);
+      // Partial deposit rather than refusing the lot — being told "full" while
+      // there is room for 40 of your 50 planks would be worse than moving 40.
+      const n = Math.min(have, Math.max(0, room));
+      if (n > 0) {
+        inv[k] = have - n;
+        chest.items[k] = (chest.items[k] || 0) + n;
         if (k === 'gold') snd.gold(); else snd.pickup();
+        if (n < have) addFloater(chest.x, chest.y-16, 'chest full — moved '+n);
         saveGame(true);
-      }
+      } else if (have > 0) { addFloater(chest.x, chest.y-16, 'chest is full'); snd.hurt(); }
       return true;
     }
     if (hit(r.wd1)) {
@@ -9640,11 +10687,34 @@ function handleChestClick(e){
   }
   return true;
 }
+// A chest can only be LOCKED while it stands inside a house you own — that is
+// the whole point of the feature: out in the open anyone can reach it, indoors
+// it is yours. Returns the house so callers can show why the button is off.
+function chestLockHouse(chest){
+  const h = getHouseContaining(Math.floor(chest.x/TILE), Math.floor(chest.y/TILE));
+  if(!h) return null;
+  const me = playerName();
+  return (h.owner === me || !h.owner) ? h : null;
+}
+function chestUsed(chest){
+  let n = 0; for(const k in (chest.items||{})) n += chest.items[k]||0; return n;
+}
 function openSecureChest(chest) {
   const tx = Math.floor(chest.x/TILE), ty = Math.floor(chest.y/TILE);
   const h = getHouseContaining(tx, ty);
   const myName = playerName();
-  const hasAccess = net.status !== 'online' || !chest.owner || chest.owner === myName || (h && (h.owner === myName || (h.friends||[]).includes(myName)));
+  // An explicit lock only means anything indoors — a locked chest that ends up
+  // outside a house (house removed, chest picked up and re-placed) must not
+  // stay sealed forever, so the house test is part of the condition, not just
+  // of the toggle that sets it.
+  const owned = !chest.owner || chest.owner === myName;
+  const friend = h && (h.owner === myName || (h.friends||[]).includes(myName));
+  if (chest.locked && h && !owned && !friend) {
+    addFloater(chest.x, chest.y-16, '🔒 locked — ' + (chest.owner || 'secure') + "'s chest");
+    snd.hurt();
+    return;
+  }
+  const hasAccess = net.status !== 'online' || owned || friend;
   if (!hasAccess) {
     addFloater(chest.x, chest.y-16, '🔒 locked — ' + (chest.owner || 'secure') + "'s chest");
     snd.hurt();
@@ -9652,6 +10722,7 @@ function openSecureChest(chest) {
   }
   closeShopPanels();
   G.chestOpen = true;
+  G.chestScroll = 0;              // always open at the top of the list
   G.activeChest = chest;
   G.backpackOpen = true;
   snd.pickup();
@@ -9855,12 +10926,15 @@ function update(dt){
     if(rmb.down&&!G.craftOpen&&!G.buildMode&&mouse.hasPos){const rdx=worldMouseX-player.x,rdy=worldMouseY-player.y,rDist=Math.hypot(rdx,rdy);if(rDist>4){const td=rDist/TILE;const rm=td<1.5?0.5:td<3?1.0:1.4;dx+=rdx/rDist;dy+=rdy/rDist;speedMult=rm;}}
     if(player.stunTimer>0){player.stunTimer=Math.max(0,player.stunTimer-dt);return;}
     if(player.webTimer>0)player.webTimer=Math.max(0,player.webTimer-dt);
+    if(player.weakTimer>0)player.weakTimer=Math.max(0,player.weakTimer-dt);
+    if(player.slowTimer>0)player.slowTimer=Math.max(0,player.slowTimer-dt);
     if(player.charmTimer>0){player.charmTimer=Math.max(0,player.charmTimer-dt);if(player.charmTimer<=0)player.charmed=false;}
     if(player.poisonTimer>0){player.poisonTimer=Math.max(0,player.poisonTimer-dt);player.poisonTick+=dt;if(player.poisonTick>=1){player.poisonTick-=1;damagePlayer(player.poisonDmg);addFloater(player.x,player.y-18,'☠ '+player.poisonDmg);}}
     if(player.charmed){dx=-dx;dy=-dy;}
     const _curTileH=map[Math.floor(player.y/TILE)]?.[Math.floor(player.x/TILE)];
     if(player.onHorse&&(_curTileH===T.CAVE_FLOOR||_curTileH===T.CAVE_ENTRANCE||_curTileH===T.CAVE_WALL)){player.onHorse=false;addFloater(player.x,player.y-30,'dismounted (cave)');}
     if(player.onHorse)speedMult*=2.2;if(player.isRat)speedMult*=0.55;
+    if(player.slowTimer>0)speedMult*=0.55;   // MIRED — see BOSS_ABILITIES
     if(G.housePlacementMode)speedMult*=1.8;
     const ml=Math.hypot(dx,dy);if(ml>1){dx/=ml;dy/=ml;}
     if(skills.hiding.active){
@@ -10169,11 +11243,15 @@ function syncEntities(t){
     const edx=e.x-player.x, edz=e.y-player.y, ed2=edx*edx+edz*edz;
     if(ed2>RD2){ grp.visible=false; if(inst)inst.obj.visible=false; continue; }   // render-distance cull
     const eNear = ed2<AD2;                                                        // animation-LOD gate
-    // Prefer the animated GLTF model once its file has loaded
-    const mm=MOB_MODELS[e.type];
+    // Prefer the animated GLTF model once its file has loaded.
+    // ⚠ A floor boss keyed in MOB_MODELS uses its OWN model, not the base enemy
+    // type it borrows stats and AI from. Liliana is built on `zombie`, and
+    // without this she would fight you wearing a common zombie's body.
+    const _mk=(e.floorBoss && MOB_MODELS[e.floorBoss]) ? e.floorBoss : e.type;
+    const mm=MOB_MODELS[_mk];
     if(mm&&loadedModels[mm.file]){
       grp.visible=false;
-      const im=(inst&&inst.type===e.type)?inst:buildSlotModel(si,e.type);
+      const im=(inst&&inst.type===_mk)?inst:buildSlotModel(si,_mk);
       animModel(im,e,t,adt,eNear);
       continue;
     }
@@ -10458,6 +11536,16 @@ function render3D(t){
       if (slot && slot.saveBlob) {
         loadGame(slot.saveBlob);
       }
+      // Move the world connection onto the character just picked. The socket is
+      // opened at boot, before any character exists, so without this you play
+      // as the previously-active one and save over ITS blob. For a slot seeded
+      // from the server (no local blob) this re-join is also what fetches the
+      // real save — net.onSave applies it when the server answers.
+      if (slot && slot.name) {
+        player.name = slot.name;
+        try { localStorage.setItem('bravoName', slot.name); } catch (_) {}
+        netRejoinAsActiveCharacter();
+      }
       G.charSelectOpen = false;
       addFloater(player.x, player.y - 40, `✨ Playing as ${player.name} (${player.race})`);
     }, (slotIdx) => {
@@ -10477,12 +11565,17 @@ function render3D(t){
       // Starting kit for a brand new character. Deliberately no sword/bow/
       // pickaxe — the tutorial chain has you craft each of those, and handing
       // them over up front skips the quests and makes a "new" hero feel used.
-      findClearSpawn();
+      // (The city spawn is set by resetForNewCharacter above, so every path that
+      // makes a fresh hero gets it, not just this one.)
       inv.wood = 0; inv.stone = 0; inv.planks = 0; inv.arrows = 10; inv.gold = 20; inv.bandages = 2;
       player.hasAxe = true; player.hasSword = false; player.hasBow = false; player.hasPickaxe = false;
       player.weapon = 'axe';
       recomputeDerivedStats();
 
+      // Claim the new character on the server BEFORE the first save, so the
+      // save lands on this character's row rather than the previous one's.
+      try { localStorage.setItem('bravoName', player.name); } catch (_) {}
+      netRejoinAsActiveCharacter();
       saveGame(true);
       G.charCreatorOpen = false;
       G.charSelectOpen = false;
@@ -11148,26 +12241,7 @@ if(MP_ENABLED){
     }
   };
   net.onHouses=list=>applyServerHouses(list);       // shared houses
-  net.onPlacedObjects=list=>{                       // shared persistent placed items (torches, lanterns, forges, etc.)
-    if(Array.isArray(list)){
-      placedObjects.length=0;
-      for(const o of list){
-        const p={id:o.id,type:o.type,x:o.x,y:o.y,owner:o.owner};
-        // Only `face` crosses the wire; mountY is derivable from the registry, so
-        // the server never has to know about it. Rebuilding the object field by
-        // field is why this needs saying — a plain copy would have dropped it.
-        if(o.face && FACE_DIR[o.face]){
-          p.face=o.face;
-          p.mountY=(PLACEABLES[o.type]&&PLACEABLES[o.type].wallY)||WALL_H*0.6;
-        }
-        // litAt is what makes burnout agree across clients — it's an absolute
-        // world-clock stamp, so everyone derives the same remaining fuel.
-        if(o.litAt>0) p.litAt=o.litAt;
-        placedObjects.push(p);
-      }
-      placedObjectsDirty=true;
-    }
-  };
+  net.onPlacedObjects=list=>applyServerPlacedObjects(list);
   // server save = source of truth: on join, adopt the server's copy of our
   // gold/inventory/skills/position (anti-tamper, and no lost loot on reconnect)
   // Adopt the server's clock so everyone shares one sky (sent on join, then
@@ -11175,13 +12249,36 @@ if(MP_ENABLED){
   net.onWorldTime=m=>{ if(m&&m.t) setServerWorldTime(m.t); };
   net.onSave=blob=>{
     if(!blob) return;
-    loadGame(blob);
+    // ⚠ The server stores the save as a JSON STRING (storage.saveBlob writes
+    // JSON.stringify into a TEXT column) and sends that string back verbatim.
+    // loadGame() takes a parsed OBJECT — handed a string it walks properties
+    // that don't exist and quietly loads nothing. Measured: the server logged
+    // "save sent on request: Gideon", the client was online as Gideon, and the
+    // character still came up with default 20 gold. Silent, because loadGame
+    // swallows its own errors. Accept either shape.
+    let s = blob;
+    if(typeof s === 'string'){
+      try { s = JSON.parse(s); }
+      catch(e){ console.warn('[net] server save was unparseable', e); return; }
+    }
+    loadGame(s);
+    // ⚠ PHASE 2: the DOCUMENT wins for everything the server can validate.
+    // The save blob is still what restores progression (xp, skills, quests) —
+    // nothing on the server can author those yet — but the economy comes from
+    // the document, so a tampered local save cannot bring gold or items with it.
+    applyAuthoritative(net.character);
+    recomputeDerivedStats();
     addFloater(player.x,player.y-40,'☁ progress restored from server');
   };
+  // The document can arrive after the save (they are separate requests), so apply
+  // it again whenever it lands. Idempotent by construction.
+  net.onCharacter=doc=>{ if(applyAuthoritative(doc)) recomputeDerivedStats(); };
   // shared ground drops
   net.onDropAdd=m=>{ if(drops.some(d=>d.srvId===m.id))return; drops.push({srvId:m.id,type:m.type,count:m.count,x:m.x,y:m.y}); };
   net.onDropGone=m=>{ const i=drops.findIndex(d=>d.srvId===m.id); if(i>=0)drops.splice(i,1); };
   net.onDropGot=m=>{ invAdd(m.type,m.count); addFloater(player.x,player.y-24,'+'+m.count+' '+m.type); snd.pickup(); };
+  net.onTxResult = reconcileTx;
+
   // trading
   net.onTradeInvite=m=>{ G.tradeInvite={from:m.from,name:m.name,t:performance.now()}; addFloater(player.x,player.y-40,'🤝 '+m.name+' wants to trade (see prompt)'); };
   net.onTradeStart=m=>{ openTrade(m.with,m.name); };
@@ -11202,7 +12299,23 @@ function loop(t=0){
 // ── Boot ───────────────────────────────────────────────────────────
 G.gameTime = worldNow();   // start on the shared clock, not at 00:00
 findClearSpawn();
+seedCityLanterns();        // the city is lit before anyone arrives after dark
 const acc = AccountManager.getAccount();
+// ── Account gate ──────────────────────────────────────────────────
+// Log in BEFORE the character list is shown. The account owns the characters,
+// so a fresh machine must be able to see the ones it already has rather than
+// an empty slot screen that invites you to re-create a character you own —
+// which used to overwrite the server's copy of it.
+const accountMode = await ensureAccount();
+if(accountMode === 'online'){
+  // Seed local slots from the server's list. Selecting one joins under that
+  // name, and the server answers the join with that character's save blob
+  // (see net.onSave), which is what actually carries your items across
+  // machines — the slot here is just the picker entry.
+  try{
+    for(const name of (netAuth.characters||[])) AccountManager.ensureSlotForName(name);
+  }catch(e){ console.warn('[account] could not seed character slots', e); }
+}
 const activeSlot = AccountManager.getActiveSlot();
 if(activeSlot && activeSlot.saveBlob) {
   loadGame(activeSlot.saveBlob);

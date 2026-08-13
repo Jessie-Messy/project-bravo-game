@@ -105,6 +105,579 @@ export function makeConiferCanopy(THREE, { height = 100, radius = 34, tiers = 4,
   return merged;
 }
 
+// Coherent hull warp for a foliage clump.
+//
+// ⚠ The first version jittered every vertex independently by ±15%. That frosts
+// the lobe with high-frequency spikes: from the game's ~57° camera the whole
+// forest reads as cauliflower, and — worse — it destroys the smooth rounded cap
+// that the baked lighting below needs in order to separate one clump from the
+// next. A few LOW-frequency sinusoids in direction space dent the lobe in three
+// or four big places instead, which is what a clump of foliage actually does,
+// and it leaves the cap intact.
+function warpLobe(geo, rand, amount){
+  const pos = geo.attributes.position;
+  const fA = 2 + Math.floor(rand() * 2);      // lobes around the equator
+  const fB = 2 + Math.floor(rand() * 3);      // lobes pole-to-pole
+  const pA = rand() * Math.PI * 2, pB = rand() * Math.PI * 2;
+  for(let i = 0; i < pos.count; i++){
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const len = Math.hypot(x, y, z) || 1e-6;
+    const th = Math.atan2(z, x);
+    const ph = Math.acos(Math.max(-1, Math.min(1, y / len)));
+    const w = 1 + amount * (Math.sin(th * fA + pA) * 0.6 + Math.sin(ph * fB + pB) * 0.4);
+    pos.setXYZ(i, x * w, y * w, z * w);
+  }
+  pos.needsUpdate = true;
+}
+
+// Compress a clump's underside. Foliage grows toward the light, so a clump
+// presents a full rounded cap upward and a flatter, cut-off belly downward —
+// squashing y<0 is the cheapest way to say that, and it also stops the lower
+// half of every clump poking out of the crown's silhouette from below.
+function squashBelly(geo, k){
+  const pos = geo.attributes.position;
+  for(let i = 0; i < pos.count; i++){
+    const y = pos.getY(i);
+    if(y < 0) pos.setY(i, y * k);
+  }
+  pos.needsUpdate = true;
+}
+
+/**
+ * BROADLEAF canopy — clustered lobes, not stacked skirts.
+ *
+ * A conifer reads as a silhouette of gaps between drooping tiers. A broadleaf
+ * reads as MASS: several overlapping rounded clumps that together make one
+ * irregular blob, with the lobes deep enough that the lit tops and shaded
+ * undersides separate. That separation is what gives a painted-looking tree its
+ * volume, and a single sphere never has it however you shade it.
+ *
+ * Lobes are low-poly icosahedra: at this camera distance the facets read as
+ * brush planes rather than as a low-poly artifact, and they cost a fraction of
+ * a smooth sphere. Detail 1 (80 tris) for the clumps that carry the silhouette,
+ * detail 0 (20 tris) for the small ones that only break the outline — which is
+ * why this crown holds ~12 clumps for the same triangle count the old 7 cost.
+ *
+ * Same two constraints as the conifer, both load-bearing:
+ *   • merged to ONE BufferGeometry — topMesh is a single InstancedMesh
+ *   • centred on the origin, spanning -height/2 .. +height/2, or the wind
+ *     shader's `(transformed.y + TOPH*0.5) / TOPH` bends from the wrong place
+ */
+export function makeBroadleafCanopy(THREE, { height = 100, radius = 34, lobes = 10, seed = 5150,
+                                             lean = 0, spreadBias = 1, topHeavy = 0.5,
+                                             droop = 0.35, hue = 0, value = 0 } = {}){
+  const rand = rng(seed);
+
+  // ── Pass 1: lay out clump centres ───────────────────────────────
+  // Centres are computed before any geometry exists so the whole crown can be
+  // fitted to the height box afterwards (see pass 2). Building the lobes first
+  // and moving them later would mean re-walking every vertex.
+  const spec = [];
+  const RX = radius * spreadBias;
+  // RY has to make the clump ring nearly as tall as the height box on its own.
+  // ⚠ Measured trap: at RY = 0.24·height the natural crown filled barely half the
+  // box, the fit below hit its 1.70 clamp, and the clumps ended up stretched far
+  // apart vertically — a holey crown that still didn't reach the top of the box.
+  const RY = height * (0.42 + topHeavy * 0.20);
+  const nOuter = Math.max(4, lobes - 1);
+  // ⚠ MEASURED: the previous split (nMajor = 40% of the shell, majors at 0.50·r
+  // and minors at 0.26·r, both sitting at place≈0.62) rendered the whole wood as
+  // BROCCOLI — from the game's overhead 3/4 camera every crown was a dozen
+  // similar bumps, each with its own lit cap, and no tree had a silhouette. The
+  // sizes were within ~2× of each other, which is not a hierarchy: a hierarchy
+  // needs the accents to be too small to compete with the masses.
+  //
+  // What replaces it is a different STRUCTURE, not different numbers:
+  //   • a few big majors sunk INTO the core so they fuse into one mass, and
+  //   • small accents pushed right out to the rim, where all they do is nibble
+  //     the outline.
+  // From above that reads as one lobed dome with a ragged edge — a painted tree
+  // — instead of a shell of separate balls.
+  //
+  // ⚠ The COUNT is SOLVED, not chosen. A connected chain of masses can only span
+  // so much: each weld step below covers 0.80·(r₁+r₂) ≈ 1.41·r̄ once the 0.88 y
+  // squash is counted, plus about 1.14·radius of end caps. The crown must span
+  // wantHi-wantLo = 1.10·height. Set the count below what that needs and the
+  // crown CANNOT be continuous at any placement — which is exactly how leaf balls
+  // ended up hanging in the sky.
+  //
+  // This has to be a formula rather than a constant because the shape table
+  // varies height and radius independently: the "upright column" variant is
+  // 1.10× tall and 0.74× wide, so it needs six masses where the broad oak needs
+  // three. A flat cap of 4 (an attempt to fight a broccoli look) left it
+  // physically unable to hold together — and it measured fine at the probe's
+  // dimensions while failing at the game's, which is why the check below runs at
+  // the real TOPH and TILE values.
+  //
+  // Broccoli was never caused by the count anyway — it was caused by every lobe
+  // being the same SIZE. Six big overlapping masses read as one lobed blob;
+  // twelve middling ones read as gravel.
+  const rBar   = 0.58 * radius;                       // mean major radius, empirical
+  const needed = Math.ceil((1.10 * height - 1.14 * radius) / Math.max(1e-3, 1.41 * rBar));
+  const nMajor = Math.max(4, Math.min(8, Math.max(Math.round(nOuter * 0.55), needed)));
+
+  // The core: one broad mass low in the crown that everything else sits on.
+  spec.push({ x: 0, y: -height * 0.10, z: 0,
+              r: radius * (0.64 + (1 - topHeavy) * 0.12), det: 1, flat: 0.86 });
+
+  // ── The masses ──────────────────────────────────────────────────
+  // Golden-angle spiral over the dome. The old placement put every lobe on one
+  // ring (`ang = i/(n-1) * 2π`), which from a 57° camera reads as a torus of
+  // bumps with a bald patch on top; a spiral spreads the masses over the whole
+  // upper surface, so the crown has mass against the sky AND mass at the skirt.
+  //
+  // ⚠ Built BOTTOM-UP (u runs 1→0), and that ordering is what keeps the crown
+  // tall. The weld below attaches each mass to the nearest one already placed,
+  // so build order is chain order. Top-down put the highest mass first with only
+  // the low-sitting core to attach to, and the weld dragged it down to the core —
+  // the tall narrow variants lost 37 units off the top and came out as shrubs.
+  // Bottom-up, each mass attaches to the one just beneath it and the chain climbs.
+  const masses = [spec[0]];
+  for(let i = 0; i < nMajor; i++){
+    const u  = 1 - (i + 0.5) / nMajor;
+    const cy = 1 - u * (1.25 + droop * 0.55);        // ~-0.6 skirt .. +1 crown
+    const sy = Math.sqrt(Math.max(0, 1 - cy * cy));
+    const th = i * 2.399963 + rand() * 0.55;         // golden angle, jittered
+
+    // Majors are nearly 4× the accents, not 2×. That gap is the whole point: at
+    // 2× the eye counts twelve bumps, at 4× it reads three masses with texture
+    // on them.
+    const r = radius * 0.56 * (1 + (1 - cy) * 0.18) * (0.86 + rand() * 0.28);
+    // ⚠ Majors sit CLOSE IN — they must fuse with the core into one mass. A
+    // major parked out at 0.62 stands off as its own ball, which is what made
+    // the crown a shell of separate spheres.
+    const place = 0.42 + rand() * 0.12;
+    // ⚠ HORIZONTAL placement and VERTICAL placement are not the same number, and
+    // sharing one was a measured mistake: pulling the majors in also pulled them
+    // DOWN, which left the low-sitting core owning the crown's whole visible top
+    // surface. The core is deep on the height ramp, so the wood came back a stop
+    // darker and muddier than the version it replaced — a lighting regression
+    // caused entirely by a geometry change. Majors keep their height while they
+    // move in, so they still bulge above the core and catch the top light.
+    const placeY = 0.74 + rand() * 0.14;
+    const out = place * (cy < 0 ? 1 + droop * 0.34 : 1);
+    const m = {
+      x: Math.cos(th) * sy * RX * out,
+      y: cy * RY * placeY * (0.92 + rand() * 0.16),
+      z: Math.sin(th) * sy * RX * out,
+      // Skirt clumps keep their bellies. Squashing the underside is right for
+      // the clumps you see from above, but doing it to the skirt as well cut the
+      // whole crown off flat and made the tree a mushroom cap on a pole — very
+      // obvious from any low camera angle.
+      r, det: 1, flat: cy < 0 ? 0.95 : 0.74,
+    };
+    spec.push(m); masses.push(m);
+  }
+
+  // ⚠ ORDERING, and it is load-bearing: masses are laid out, then FITTED to the
+  // height box, then welded together, and only then do the accents get placed
+  // onto the final mass positions. The fit rescales y, so anything anchored to a
+  // mass before the fit gets pulled off it by (kY-1)·offset; and the weld has to
+  // run after the fit for the same reason. Placing accents last is what makes
+  // "an accent is always attached" true rather than usually true.
+
+  // Fit the crown to the height box. Parameter combinations that fill only two
+  // thirds of it made the tree look stunted (game3d still positions the canopy
+  // as if it were TOPH tall), and combinations that overflow push clumps past
+  // the bounds the wind shader assumes. Rescaling the CENTRES rather than the
+  // lobes keeps every clump round; the spread factor is clamped so an extreme
+  // shape stretches its gaps a little rather than turning into a string.
+  // The half-extents below must match what pass 2 actually builds: y is scaled
+  // 0.88, the belly is squashed by s.flat, and warpLobe can push the hull out by
+  // its amplitude (≈1.12). Estimating the bottom at a flat 0.62·r is what let the
+  // deep-bellied core lobe hang 6 units below the box.
+  //
+  // ⚠ Solve the stretch on the CENTRES ALONE, discounting the two extreme lobes'
+  // radii. The obvious version — kY = wantSpan / (yHi - yLo) — is wrong, because
+  // scaling the centres by kY does not scale the lobe radii with them, so the
+  // crown always came out (kY-1)·radii SHORT.
+  //
+  // ⚠ And solve it ITERATIVELY. A single pass picks the extreme lobes from the
+  // UNSCALED layout and then moves everything, which changes which lobe is
+  // extreme — a lobe with a lower centre but a bigger radius overtakes the one
+  // the solve was pinned to, and the crown misses its box in whichever direction
+  // that swap went. That is not a tuning error, it is the single-pass solve being
+  // wrong whenever the layout changes, and it bit twice (once short at the top,
+  // then 13% long once the accents moved out to the rim). Re-picking the extremes
+  // under the current fit and re-solving converges in two or three passes and
+  // stays correct for any future layout.
+  const belowOf = s => s.r * 0.88 * s.flat * 1.12;
+  const aboveOf = s => s.r * 0.88 * 1.12;
+  // ⚠ The crown deliberately hangs BELOW its own box. At -0.52 the skirt stopped
+  // level with the top of the trunk, which from a low camera is a cap on a pole:
+  // 40% of every tree was bare bole. A broadleaf's foliage starts around a third
+  // of the way up, so the skirt drops past the box and swallows the fork.
+  // Nothing breaks — the wind shader's hFrac clamps to 0 down there, and a
+  // skirt clump that doesn't sway is correct anyway.
+  const wantLo = -height * 0.64, wantHi = height * 0.46;
+  let kY = 1, offY = 0;
+  for(let it = 0; it < 8; it++){
+    let loI = spec[0], hiI = spec[0], loV = Infinity, hiV = -Infinity;
+    for(const s of spec){
+      const y = s.y * kY + offY;
+      if(y - belowOf(s) < loV){ loV = y - belowOf(s); loI = s; }
+      if(y + aboveOf(s) > hiV){ hiV = y + aboveOf(s); hiI = s; }
+    }
+    // Already inside a tenth of a unit at both ends — re-solving can only chatter.
+    if(Math.abs(loV - wantLo) < 0.1 && Math.abs(hiV - wantHi) < 0.1) break;
+    const dy = hiI.y - loI.y;
+    if(Math.abs(dy) < 1e-3) break;            // one lobe owns both extremes
+    const span = (wantHi - aboveOf(hiI)) - (wantLo + belowOf(loI));
+    kY   = Math.max(0.70, Math.min(2.20, span / dy));
+    offY = wantLo + belowOf(loI) - kY * loI.y;
+  }
+  for(const s of spec) s.y = s.y * kY + offY;
+
+  // ── Weld the masses into one connected blob ─────────────────────
+  // ⚠ THIS is what was putting leaf balls in the sky, and every overhead shot
+  // missed it — from above a detached lobe still lands on the crown's footprint,
+  // so only the low camera ever showed it. It was never the accents: the MAJORS
+  // were separating from the core. The numbers are not close. The canopy box is
+  // TOPH ≈ 146 units tall while the crown radius is only ~41, so the masses have
+  // to bridge ~160 units of height with radii of ~23–26; the top major sat ~73
+  // units from the core against ~49 units of combined radius, and simply hung
+  // there. No choice of RY or `place` fixes that for every shape in the table —
+  // a tall narrow variant will always be able to pull its masses apart.
+  //
+  // So contact is enforced rather than hoped for. Each mass in turn is pulled
+  // along the line toward whichever ALREADY-WELDED mass is nearest until the two
+  // overlap by a fifth of their combined radius. Direction is preserved, so the
+  // dome layout above still decides where the masses sit; only the distance is
+  // corrected, and only when it is too far.
+  for(let i = 1; i < masses.length; i++){
+    const s = masses[i];
+    let hostS = masses[0], hostD = Infinity;
+    for(let j = 0; j < i; j++){
+      const h = masses[j];
+      const d = Math.hypot(s.x - h.x, (s.y - h.y) * 0.88, s.z - h.z);
+      if(d < hostD){ hostD = d; hostS = h; }
+    }
+    const want = (hostS.r + s.r) * 0.80;
+    if(hostD > want && hostD > 1e-3){
+      const t = want / hostD;                  // slide toward the host, keep direction
+      s.x = hostS.x + (s.x - hostS.x) * t;
+      s.y = hostS.y + (s.y - hostS.y) * t;
+      s.z = hostS.z + (s.z - hostS.z) * t;
+    }
+  }
+
+  // ── The accents ─────────────────────────────────────────────────
+  // ⚠ Each accent is anchored ON a mass, at 0.85 of that mass's radius from its
+  // centre. Contact is guaranteed by construction — the accent's centre sits
+  // inside 0.85r + 0.45r of the host, well under the r + accent-r it needs to
+  // intersect. The previous version placed them out at 0.86–1.02 of the crown
+  // radius by the same spiral as the masses, which detached them whenever no
+  // mass happened to lie in that direction.
+  const nAcc = Math.max(0, nOuter - nMajor);
+  for(let i = 0; i < nAcc; i++){
+    // Round-robin over the hosts (core included) so accents do not pile onto one
+    // side of the crown.
+    const host = masses[(i + 1) % masses.length];
+    // Point the accent AWAY from the trunk axis — that is the direction where it
+    // breaks the silhouette rather than disappearing inside the crown.
+    const hlen = Math.hypot(host.x, host.z);
+    const bth  = hlen > 1e-3 ? Math.atan2(host.z, host.x) : rand() * Math.PI * 2;
+    const th   = bth + (rand() - 0.5) * 1.7;
+    // Elevation biased upward: foliage accents ride the lit shoulder of a mass,
+    // and one hanging off the underside would only be seen as a wart.
+    const el   = -0.25 + rand() * 1.15;
+    const d    = host.r * 0.85;
+    spec.push({
+      x: host.x + Math.cos(th) * Math.cos(el) * d,
+      y: host.y + Math.sin(el) * d,
+      z: host.z + Math.sin(th) * Math.cos(el) * d,
+      r: host.r * 0.30 * (0.80 + rand() * 0.50), det: 0, flat: 0.80,
+    });
+  }
+
+  // ── Pass 2: build and place the lobes ───────────────────────────
+  const parts = [], meta = [];
+  let vOff = 0;
+  for(const s of spec){
+    const g = new THREE.IcosahedronGeometry(s.r, s.det);
+    warpLobe(g, rand, s.det ? 0.16 : 0.24);
+    g.scale(1, 0.88, 1);                       // crowns are wider than they are tall
+    squashBelly(g, s.flat);
+    g.rotateY(rand() * Math.PI * 2);           // decorrelate warp directions
+    // Lean grows with height, so the crown drifts rather than shearing off the
+    // trunk. Real trees rarely sit plumb over their own base.
+    const leanK = lean * (s.y + height * 0.5) / height * radius;
+    const x = s.x + leanK, z = s.z + leanK * 0.4;
+    g.translate(x, s.y, z);
+    // ⚠ mergeGeometries concatenates in array order, so these vertex ranges line
+    // up with the merged buffer. If that ever stops holding, the lighting bake
+    // below silently shades every clump with its neighbour's centre.
+    const n = g.attributes.position.count;
+    meta.push({ x, y: s.y, z, r: s.r, tint: 0.95 + rand() * 0.10, start: vOff, end: vOff + n });
+    vOff += n;
+    parts.push(g);
+  }
+
+  const merged = mergeGeometries(parts, false);
+  for(const g of parts) g.dispose();
+  if(!merged) throw new Error('makeBroadleafCanopy: mergeGeometries failed');
+  merged.computeVertexNormals();
+
+  // ── Bake the light into vertex colours ──────────────────────────
+  // Sunlight alone cannot do this. The clump undersides face down and away from
+  // every light, so lit only by the scene they render as one flat dark mass with
+  // no read of the clumps inside it. Painting it into the geometry costs nothing
+  // per frame and survives instancing, which a per-object tint could not.
+  //
+  // THREE terms, and it's the second and third that turn a blob into clumps:
+  //   1. crown height   — pale at the top of the tree, deep at the skirt
+  //   2. clump-local up — every clump gets its OWN lit cap and shaded belly, so
+  //      the eye reads a dozen rounded masses instead of one gradient. A single
+  //      global ramp (what this used to be) cannot do that at any contrast.
+  //   3. occlusion      — a vertex buried inside a neighbouring clump goes dark,
+  //      which is what carves the crevices BETWEEN clumps. Without it the
+  //      clumps touch at full brightness and merge back into one surface.
+  const pos = merged.attributes.position;
+  const col = new Float32Array(pos.count * 3);
+  for(const m of meta){
+    for(let v = m.start; v < m.end; v++){
+      const px = pos.getX(v), py = pos.getY(v), pz = pos.getZ(v);
+
+      const gH = Math.max(0, Math.min(1, (py + height * 0.5) / height));
+      const lUp = Math.max(0, Math.min(1, (py - m.y) / (m.r * 0.86) * 0.5 + 0.5));
+
+      let occ = 0;
+      for(const o of meta){
+        if(o === m) continue;
+        const d = Math.hypot(px - o.x, py - o.y, pz - o.z);
+        if(d < o.r) occ += 1 - d / o.r;
+      }
+      occ = Math.min(0.9, occ * 0.70);
+
+      // ⚠ Occlusion is a CREASE, not a dimmer. At 0.30 with the clumps now
+      // overlapping properly, nearly every vertex had a neighbour inside it and
+      // the whole wood sank a stop — dark and flat, worse than the blob it
+      // replaced. 0.22 still carves the gaps between clumps and leaves the mass
+      // in the sunlit range where the leaf texture reads.
+      //
+      // ⚠ The BALANCE between these two terms is what decides whether the crown
+      // reads as a tree or as broccoli, and it mattered more than the geometry.
+      // At (0.82 + lUp·0.28) every clump — including every tiny rim accent —
+      // carried its own lit cap, so the crown was a field of highlights and the
+      // one thing the eye needs, "this whole mass is lit from above", was the
+      // weakest signal in it. The clump-local term is now a soft rounding cue
+      // (1.13×) under a dominant crown-height ramp (2.1×): the tree is lit top
+      // to bottom, and the lobes only modulate that. This is also literally what
+      // was asked for — lighter on top, darker underneath.
+      const k = (0.46 + Math.pow(gH, 0.80) * 0.98) * (0.94 + lUp * 0.13)
+              * (1 - occ * 0.22) * m.tint * (1 + value);
+
+      // Warm in the light, cool in the shade. A flat grey ramp reads as dirt on
+      // the leaves rather than as light on them, and `hue` shifts a whole
+      // variant toward lime or toward blue-green so a wood is not one colour.
+      // ⚠ The hue swing was ±0.06 and invisible in-game: the leaf MAP is a
+      // saturated green and it multiplies this, so a subtle tint is swallowed.
+      // ±0.11 is what it takes to read as two species standing side by side.
+      const warm = Math.max(0, Math.min(1, (k - 0.45) / 0.75));
+      col[v*3]   = k * (0.93 + warm * 0.13 + hue * 0.11);
+      col[v*3+1] = k * (1.00 + hue * 0.03);
+      col[v*3+2] = k * (0.99 - warm * 0.20 - hue * 0.13);
+    }
+  }
+  merged.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  merged.computeBoundingSphere();
+  return merged;
+}
+
+// TEN recipes, not five. The table is deliberately longer than the caller's
+// `count` so that raising TREE_VARIANTS in game3d.js buys genuinely new trees
+// instead of re-cutting the same five; `pickShape` spreads the selection evenly
+// across the table so count=5 takes 5 MAXIMALLY different entries rather than
+// the first five (which would hand out two narrow crowns and no wide one).
+const BROADLEAF_SHAPES = [
+  // hMul/rMul are per-shape, not an `i % 3` pattern: the proportions have to
+  // match the shape or a "broad spreading oak" comes out as tall as the column.
+  { lobes:12, spreadBias:1.12, topHeavy:0.24, lean: 0.00, droop:0.55, hue: 0.22, value:  0.04, hMul:0.92, rMul:1.10 }, // broad low oak
+  { lobes: 8, spreadBias:0.70, topHeavy:0.82, lean: 0.05, droop:0.15, hue:-0.35, value: -0.04, hMul:1.06, rMul:0.80 }, // tall and narrow
+  { lobes:11, spreadBias:1.02, topHeavy:0.48, lean:-0.16, droop:0.40, hue: 0.00, value:  0.00, hMul:1.00, rMul:0.98 }, // full, leaning
+  { lobes: 6, spreadBias:0.94, topHeavy:0.60, lean: 0.16, droop:0.30, hue: 0.45, value:  0.09, hMul:0.98, rMul:0.90 }, // sparse and open
+  { lobes:13, spreadBias:1.06, topHeavy:0.40, lean:-0.05, droop:0.35, hue:-0.18, value: -0.07, hMul:0.96, rMul:1.02 }, // dense round
+  { lobes:10, spreadBias:1.20, topHeavy:0.18, lean: 0.08, droop:0.62, hue: 0.10, value:  0.05, hMul:0.86, rMul:1.14 }, // wide flat-topped
+  { lobes: 7, spreadBias:0.62, topHeavy:0.92, lean:-0.06, droop:0.10, hue:-0.50, value: -0.05, hMul:1.10, rMul:0.74 }, // upright column
+  { lobes:10, spreadBias:1.00, topHeavy:0.55, lean: 0.28, droop:0.45, hue: 0.30, value: -0.02, hMul:1.02, rMul:0.94 }, // windblown, lopsided
+  { lobes: 9, spreadBias:0.86, topHeavy:0.52, lean: 0.00, droop:0.22, hue:-0.28, value:  0.07, hMul:0.94, rMul:0.88 }, // compact ball
+  { lobes:12, spreadBias:1.08, topHeavy:0.32, lean:-0.22, droop:0.58, hue: 0.16, value: -0.04, hMul:0.90, rMul:1.08 }, // big old spreader
+];
+const pickShape = (i, count) => Math.round(i * BROADLEAF_SHAPES.length / Math.max(1, count))
+                                % BROADLEAF_SHAPES.length;
+
+/**
+ * A set of genuinely different crowns.
+ *
+ * ⚠ An InstancedMesh draws ONE geometry, so every tree sharing `topMesh` is
+ * literally the same crown — jitter, spin and scale cannot hide that, and a
+ * wood of one repeated silhouette is the thing that reads as artificial. Real
+ * trees of a species look alike, not identical. Each variant here gets its own
+ * InstancedMesh (a handful of draw calls for the whole forest), and trees pick
+ * one by tile hash.
+ *
+ * Two things multiply what `count` variants buy, and both are why the shapes
+ * below are deliberately ASYMMETRIC: game3d spins every tree about Y by a tile
+ * hash, and scales girth and height independently. A lopsided crown therefore
+ * presents a different outline depending which way the hash spun it; a
+ * rotationally symmetric one looks the same from every angle and wastes the
+ * spin entirely.
+ */
+export function makeBroadleafCanopySet(THREE, { height = 100, radius = 34, count = 5, seed = 5150 } = {}){
+  const out = [];
+  for(let i = 0; i < count; i++){
+    const { hMul, rMul, ...sh } = BROADLEAF_SHAPES[pickShape(i, count)];
+    out.push(makeBroadleafCanopy(THREE, {
+      height: height * hMul,
+      radius: radius * rMul,
+      seed: seed + i * 7919, ...sh,
+    }));
+  }
+  return out;
+}
+
+/**
+ * Matching trunk variants — different taper, flare, limb counts and BEND.
+ *
+ * Indexed with the same `pickShape`, so variant n's trunk belongs to variant n's
+ * crown: the column crown gets a slim tall bole, the spreading oak gets a thick
+ * one that forks low, and the trunk leans the same way the crown does. Trunk and
+ * canopy are separate InstancedMeshes but share the tile's Y-spin, so a matched
+ * lean stays matched.
+ */
+export function makeBroadleafTrunkSet(THREE, { height = 72, top = 7, bottom = 13, count = 5, seed = 777 } = {}){
+  const out = [];
+  for(let i = 0; i < count; i++){
+    const si = pickShape(i, count);
+    const sh = BROADLEAF_SHAPES[si];
+    const slim = sh.spreadBias;                       // narrow crown → narrow bole
+    out.push(makeBroadleafTrunk(THREE, {
+      height: height * sh.hMul,
+      // A hard taper: the bole above the fork is a LEADER, not a continuation of
+      // the bole. Carrying full girth to the top is what made these read as
+      // telegraph poles with a bush on top.
+      top:    top    * (0.40 + slim * 0.26),
+      bottom: bottom * (0.78 + slim * 0.36),
+      limbs:  2 + (si % 3),
+      // Fork low. The crown skirt now hangs to about a third of tree height, so
+      // a fork above that is invisible; these sit just under it.
+      forkAt: -0.10 + (si % 4) * 0.07,
+      bend:   sh.lean * 1.5,                          // bole drifts the way the crown does
+      seed:   seed + i * 104729,
+    }));
+  }
+  return out;
+}
+
+/**
+ * Trunk that FORKS. A broadleaf's trunk splits into a few leaning limbs that
+ * disappear into the crown; a bare cylinder under a round canopy reads as a
+ * lollipop. The limbs only have to exist where the crown does not quite cover
+ * them — mostly the lower half — so they are cheap cylinders, leaned and
+ * merged in with the shaft.
+ */
+export function makeBroadleafTrunk(THREE, { height = 72, top = 7, bottom = 13, limbs = 3, seed = 777,
+                                            forkAt = 0.16, bend = 0, roots = 4 } = {}){
+  const rand = rng(seed);
+  const parts = [];
+
+  // The bole is no longer a perfectly straight post. Three height segments and a
+  // smooth drift give it a slight sweep — cheap (2 extra rings = 32 tris) and
+  // it's the difference between a tree and a telegraph pole at close range.
+  // The drift is weighted by height^1.6 so the BASE stays put: it has to stay
+  // centred on the tile or the trunk walks out of the square that blocks
+  // movement, and it has to meet the ground square or the flare shows daylight.
+  const shaft = new THREE.CylinderGeometry(top, bottom, height, 8, 3, true);
+  // ⚠ Roughen BEFORE bending. roughenCone scales x/z about the axis, so run on a
+  // bent shaft it would scale the bend offset too and drag the rings sideways.
+  roughenCone(shaft, rand, 0.07);      // out-of-round bole; bark is not a lathe turning
+  {
+    const pos = shaft.attributes.position;
+    const bx = bend * height * 0.30, bz = bend * height * 0.12;
+    for(let i = 0; i < pos.count; i++){
+      const f = Math.pow(Math.max(0, (pos.getY(i) + height * 0.5) / height), 1.6);
+      pos.setX(i, pos.getX(i) + bx * f);
+      pos.setZ(i, pos.getZ(i) + bz * f);
+    }
+    pos.needsUpdate = true;
+  }
+  parts.push(shaft);
+
+  const flareH = height * 0.18;
+  const flare = new THREE.CylinderGeometry(bottom, bottom * 1.6, flareH, 8, 1, true);
+  flare.translate(0, -height * 0.5 + flareH * 0.5, 0);
+  roughenCone(flare, rand, 0.10);
+  parts.push(flare);
+
+  // Root spurs. The flare alone still meets the grass on a clean circle; a few
+  // short cones leaning out of the base break that line where the eye is closest
+  // to it. 5 tris each — the cheapest detail in the file.
+  for(let i = 0; i < roots; i++){
+    const rl = bottom * (1.5 + rand() * 1.1);
+    const g = new THREE.ConeGeometry(bottom * 0.34, rl, 5, 1, true);
+    g.translate(0, rl * 0.5, 0);
+    g.rotateZ(1.15 + rand() * 0.30);                 // nearly flat to the ground
+    g.rotateY((i / roots) * Math.PI * 2 + rand() * 0.8);
+    g.translate(0, -height * 0.5 + rl * 0.10, 0);
+    parts.push(g);
+  }
+
+  // Limbs FORK. A single straight limb per direction is still a stick; a real
+  // broadleaf splits, and the second segment sweeps back toward vertical, which
+  // is what gives the vase shape you see under the crown. Two segments plus the
+  // occasional twig, all merged into the same geometry.
+  //
+  // `forkAt` is where the crotch sits as a fraction of trunk height above the
+  // middle — a low fork reads as an old spreading tree, a high one as a young
+  // straight one, and that difference is visible from the game camera because
+  // the crown does not cover the trunk below its skirt.
+  const attach0 = height * forkAt;
+  for(let i = 0; i < limbs; i++){
+    const ang  = (i / limbs) * Math.PI * 2 + rand() * 0.7;
+    const y0   = attach0 + rand() * height * 0.10;
+    const len1 = height * (0.34 + rand() * 0.14);
+    const lean1 = 0.46 + rand() * 0.28;              // radians from vertical
+    // ⚠ Limb radius comes off `bottom`, not `top`. The bole's top is now a thin
+    // leader (see makeBroadleafTrunkSet), and limbs sized from it came out as
+    // twigs that vanished at any distance — the fork simply didn't read.
+    const r1 = bottom * 0.40, r2 = bottom * 0.24;
+
+    const g1 = new THREE.CylinderGeometry(r2, r1, len1, 6, 1, true);
+    g1.translate(0, len1 * 0.5, 0);                  // pivot at the limb's base
+    g1.rotateZ(lean1); g1.rotateY(ang);
+    g1.translate(0, y0, 0);
+    parts.push(g1);
+
+    // Where segment 1 ended, in the same frame — computed rather than eyeballed,
+    // because a fork with a visible gap at the joint is worse than no fork.
+    // ⚠ Sign matters: rotateZ(+θ) swings +y toward −x, and rotateY(+φ) then maps
+    // (x,0) to (x·cosφ, −x·sinφ). Get either backwards and the second segment
+    // sprouts from thin air on the OPPOSITE side of the trunk.
+    const ex = -Math.sin(lean1) * len1;
+    const jx = Math.cos(ang) * ex, jz = -Math.sin(ang) * ex;
+    const jy = y0 + Math.cos(lean1) * len1;
+
+    const nSub = 1 + (rand() < 0.55 ? 1 : 0);        // one limb, sometimes two
+    for(let s = 0; s < nSub; s++){
+      const len2 = len1 * (0.62 + rand() * 0.30);
+      const lean2 = lean1 * (s === 0 ? 0.42 : 1.25) + (rand() - 0.5) * 0.25;  // sweeps back up
+      const ang2  = ang + (s === 0 ? (rand() - 0.5) * 0.5 : 0.7 + rand() * 0.7);
+      const g2 = new THREE.CylinderGeometry(r2 * 0.55, r2, len2, 5, 1, true);
+      g2.translate(0, len2 * 0.5, 0);
+      g2.rotateZ(lean2); g2.rotateY(ang2);
+      g2.translate(jx, jy, jz);
+      parts.push(g2);
+    }
+  }
+
+  const merged = mergeGeometries(parts, false);
+  for(const g of parts) g.dispose();
+  if(!merged) throw new Error('makeBroadleafTrunk: mergeGeometries failed');
+  merged.computeVertexNormals();
+  merged.computeBoundingSphere();
+  return merged;
+}
+
 /**
  * Trunk with a root flare. The old cylinder met the ground at a hard edge,
  * which is very visible now that grass is dense enough to sit against it.

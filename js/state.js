@@ -19,6 +19,12 @@ export const player = {
   bandageTimer: 0,
   stunTimer: 0, webTimer: 0,
   poisonTimer: 0, poisonDmg: 0, poisonTick: 0,
+  // Temporary debuffs. Deliberately plain timers like the ones above rather than
+  // a generic status-effect system: three lines of tick each, they save/load with
+  // the character for free, and a bespoke framework for five effects would be
+  // more code than the effects.
+  weakTimer: 0,      // damage you DEAL is reduced — the punishing one
+  slowTimer: 0,      // movement speed reduced
   charmed: false, charmTimer: 0,
   hasHorse: false, onHorse: false,
   isRat: false, ratTimer: 0,
@@ -49,7 +55,7 @@ export const floaters     = [];
 export const hitFlash     = {};
 
 // ── Inventory / skills ──────────────────────────────────────────────
-export const inv = { wood:0, stone:0, planks:0, arrows:10, hide:0, gold:20, bandages:0, potions:0, skull:0, relics:0, iron_ore:0, iron_ingot:0, steel_ingot:0, mithril_ore:0, mithril_ingot:0, runic_ore:0, runic_ingot:0, siege_ram:0, torch:0, lantern:0, ruby:0, sapphire:0, emerald:0, diamond:0 };
+export const inv = { wood:0, stone:0, planks:0, arrows:10, hide:0, gold:20, bandages:0, potions:0, skull:0, relics:0, iron_ore:0, iron_ingot:0, steel_ingot:0, mithril_ore:0, mithril_ingot:0, runic_ore:0, runic_ingot:0, siege_ram:0, torch:0, lantern:0, barrel:0, crate:0, gravestone:0, ruby:0, sapphire:0, emerald:0, diamond:0 };
 
 export const skills = {
   tactics:   { xp:0 },

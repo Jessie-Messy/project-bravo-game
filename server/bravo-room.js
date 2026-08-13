@@ -6,11 +6,18 @@
 const { Room } = require('colyseus');
 const { Schema, MapSchema, defineTypes } = require('@colyseus/schema');
 const storage = require('./storage.js');
+const accounts = require('./accounts.js');
+const character = require('./character.js');
+const tx = require('./tx.js');
+const oplog = require('./oplog.js');
 const { MobSim, world } = require('./mobs.js');
 
 // Must match the client's constants.js
 const TILE = 48, MAP_W = 480, MAP_H = 554;
 const CITY = { x1: 280, y1: 332, x2: 340, y2: 392 };   // Lunar = safe zone
+// Must match js/state.js. The forge recipes accept the town blacksmith in place
+// of a placed forge, so the server needs to know where it stands to validate them.
+const BLACKSMITH = { x: 319 * TILE + 24, y: 357 * TILE + 24 };
 
 // ── Anti-cheat / combat tuning ──
 const MAX_SPEED   = 700;    // u/s — base 190, horse 2.2x, sprint 1.4x ≈ 585 max legit
@@ -26,6 +33,31 @@ function inCity(x, y) {
   const tx = x / TILE, ty = y / TILE;
   return tx >= CITY.x1 && tx <= CITY.x2 && ty >= CITY.y1 && ty <= CITY.y2;
 }
+
+// ── Resource layer (for the `gather` transaction) ──
+// 2 bits per tile, packed by build-world-data.mjs. The walkability bitmap cannot
+// stand in for this: it only says "blocked", and a tree, a boulder, a wall and
+// deep water are all equally blocked — so without this the server could not tell
+// a real chop from a claim against a city wall.
+const RES_NAME = [null, 'tree', 'stone', 'iron'];
+let resBits = null;
+if (world && world.resB64) {
+  try { resBits = Buffer.from(world.resB64, 'base64'); }
+  catch (e) { console.warn('[bravo] resource layer unreadable:', e.message); }
+}
+if (!resBits) console.warn('[bravo] world-data has no resource layer — gather transactions will be refused.' +
+                           ' Regenerate with: node server/build-world-data.mjs');
+function resourceAt(tx_, ty_) {
+  if (!resBits) return null;
+  if (!(tx_ >= 0 && ty_ >= 0 && tx_ < MAP_W && ty_ < MAP_H)) return null;
+  const i = ty_ * MAP_W + tx_;
+  return RES_NAME[(resBits[i >> 2] >> ((i & 3) * 2)) & 3] || null;
+}
+
+// Harvest reach, matching the client's HARVEST_RANGE, plus a tile of slack for
+// the 10Hz position staleness the server sees. Too tight and legitimate chops
+// get rejected on a laggy connection, which reads as the game being broken.
+const GATHER_RANGE = TILE * 1.6 + TILE;
 
 class PlayerState extends Schema {}
 defineTypes(PlayerState, {
@@ -182,6 +214,145 @@ class BravoRoom extends Room {
       this.broadcast('pvp_hit', { from: client.sessionId, to: '' + m.t, w: m.w, dmg: cfg.dmg });
     });
 
+    // Explicit save fetch. onJoin also pushes the blob, but that send happens
+    // while the client is still inside joinOrCreate() and has not yet attached
+    // its onMessage handlers — the message lands with nobody listening and is
+    // dropped. Measured: the server stored the right save and logged the join,
+    // and the joining client still showed a default character. The client asks
+    // for it once its handlers are up, which removes the race entirely.
+    this.onMessage('request_save', (client) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p) return;
+      const blob = storage.loadBlob(p.name);
+      if (blob) { client.send('save', blob); console.log(`[bravo] save sent on request: ${p.name}`); }
+      else console.log(`[bravo] no stored save for ${p.name} (new character)`);
+    });
+
+    // The document, on request. Same reason request_save exists: a send from
+    // onJoin lands before the client has attached its handlers and is dropped.
+    this.onMessage('request_character', (client) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p) return;
+      try {
+        const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', () => storage.loadBlob(p.name));
+        client.send('character_state', doc);
+      } catch (e) {
+        console.warn(`[character] request failed for ${p.name}: ${e.message}`);
+      }
+    });
+
+    // ── Transactions (PHASE 1 of docs/SERVER_AUTHORITY.md) ──
+    // The client states an INTENT; the server decides the outcome and answers
+    // with deltas. Runs ALONGSIDE the legacy `save`, which is still a blanket
+    // override — so this is not yet the last word, it is the server proving it
+    // can author every one of these correctly before Phase 2 flips authority.
+    //
+    // ⚠ Every reply carries the client's `seq` back. Without it a client cannot
+    // tell which of several in-flight intents a rejection belongs to, and would
+    // roll back the wrong predicted action — which looks exactly like an item
+    // vanishing at random.
+    this.onMessage('tx', (client, m) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p || typeof m !== 'object' || m === null) return;
+      const seq = (m.seq | 0);
+      const kind = ('' + m.kind).slice(0, 24);
+      // ⚠ EVERY refusal path logs. The first version wrote the oplog line only
+      // after tx.apply, so the two refusals that come from the room itself —
+      // the rate limit and the dead check — were invisible. The rate limit is
+      // precisely the one the report tells you to investigate (a legitimate
+      // player should never hit it), so it was the worst possible line to miss.
+      const reject = (reason, extra) => {
+        oplog.write('tx', Object.assign({ name: p.name, kind, ok: false, reason,
+                                          intent: (m && m.intent) || {},
+                                          x: Math.round(p.x), y: Math.round(p.y) }, extra || {}));
+        client.send('tx_result', { seq, kind, ok: false, reason });
+      };
+
+      if (p.dead) return reject('you are dead');
+
+      const mt = this.meta.get(client.sessionId);
+      // Blanket rate limit. Not a balance knob — it is the backstop for every
+      // validation gap, present and future: whatever a modified client finds to
+      // ask for, it cannot ask faster than this.
+      const now = Date.now();
+      if (mt) {
+        if (!mt.txWindow || now - mt.txWindow > 1000) { mt.txWindow = now; mt.txCount = 0; }
+        if (++mt.txCount > 25) return reject('slow down');
+      }
+
+      let doc;
+      try {
+        doc = character.ensure(p.name, (client.auth && client.auth.username) || '', () => storage.loadBlob(p.name));
+      } catch (e) { return reject('character unavailable'); }
+
+      // Proximity, answered from state the SERVER owns: it tracks every placed
+      // object and the player's own position, so none of this is a client claim.
+      const nearObj = (type, tiles) => this.placedObjects.some(o =>
+        o.type === type && Math.hypot(o.x - p.x, o.y - p.y) <= TILE * tiles);
+      const ctx = {
+        nearby: (what) => {
+          if (what === 'workbench') return nearObj('workbench', 3);
+          // The town blacksmith counts as a forge, matching the client's rule.
+          if (what === 'forge') return nearObj('forge', 3) ||
+            Math.hypot(BLACKSMITH.x - p.x, BLACKSMITH.y - p.y) < TILE * 2.5;
+          if (what === 'smith') return Math.hypot(BLACKSMITH.x - p.x, BLACKSMITH.y - p.y) < TILE * 3;
+          return false;
+        },
+        resourceAt,
+        inRange: (tx_, ty_) =>
+          Math.hypot((tx_ + 0.5) * TILE - p.x, (ty_ + 0.5) * TILE - p.y) <= GATHER_RANGE,
+      };
+
+      // ⚠ `pickup` is NOT accepted here. It is driven by `drop_take` above,
+      // because the drop table is already server-owned there — the server picks
+      // the winner and decides the stack, and the client only ever names an id.
+      // Exposing it on this message too would mean a client could post a type
+      // and a count of its own choosing, which is a free item printer.
+      if (kind === 'pickup') return reject('use drop_take');
+
+      const r = tx.apply(doc, kind, m.intent || {}, ctx);
+      if (!r.ok) {
+        // A rejection is normal (you cannot afford it), so this is not an error
+        // log — but it IS the signal that the client and server disagree about
+        // what is possible, so it stays visible while Phase 1 beds in.
+        //
+        // ⚠ A rejection the CLIENT thought would succeed is the interesting
+        // case, and it cannot be told apart from an ordinary one at the console.
+        // The oplog keeps the intent alongside the reason so it can be replayed.
+        console.log(`[tx] ${p.name} ${kind} REJECTED: ${r.reason}`);
+        return reject(r.reason);          // reject() does the logging, see above
+
+      }
+      character.touch(p.name);
+      // Accepted transactions are logged too, not just failures. Without them the
+      // log answers "what was refused" but not "where did this item come from",
+      // and duplication bugs are only ever visible in the accepted stream.
+      oplog.write('tx', { name: p.name, kind, ok: true, intent: m.intent || {},
+                          deltas: r.deltas, x: Math.round(p.x), y: Math.round(p.y) });
+      client.send('tx_result', { seq, kind, ok: true, deltas: r.deltas });
+    });
+
+    // ── PHASE 2: preferences, separated from the character ──
+    // Camera, hotbar layout, gambits, UI toggles. Deliberately a DIFFERENT
+    // message from `save` so that nothing about a character can arrive here by
+    // accident — the plan's step 8 calls for exactly this split, and a rename
+    // alone would have left one endpoint accepting both.
+    //
+    // ⚠ Stored on the document but never validated and never authoritative in
+    // any direction: these are the player's own settings, and the server has no
+    // opinion about them beyond a size cap.
+    this.onMessage('prefs', (client, m) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p || typeof m !== 'object' || m === null) return;
+      try {
+        const str = JSON.stringify(m);
+        if (str.length > 32000) { console.warn(`[prefs] REJECTED ${p.name}: ${str.length} bytes`); return; }
+        const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', () => storage.loadBlob(p.name));
+        doc.prefs = JSON.parse(str);
+        character.touch(p.name);
+      } catch (e) { console.warn('[prefs] failed:', e.message); }
+    });
+
     // full-save sync: the client streams its whole save blob; we persist it
     // and mirror x/y/hp/kills/deaths onto the schema so they survive here too
     this.onMessage('save', (client, blob) => {
@@ -189,8 +360,67 @@ class BravoRoom extends Room {
       if (!p || typeof blob !== 'object' || blob === null) return;
       try {
         const str = JSON.stringify(blob);
-        if (str.length > 200000) return;
+        // ⚠ This used to `return` silently on an oversized blob, and
+        // storage.saveBlob has the same guard. A player's progress could be
+        // dropped on every single save with no error anywhere — the character
+        // simply never persisted, which is indistinguishable from "the feature
+        // does not work". Log both outcomes so the path is observable.
+        if (str.length > 200000) {
+          console.warn(`[bravo] SAVE REJECTED for ${p.name}: ${str.length} bytes exceeds 200000`);
+          client.send('save_result', { ok: false, error: 'save too large', bytes: str.length });
+          return;
+        }
         storage.saveBlob(p.name, str);
+        console.log(`[bravo] save ok: ${p.name} (${str.length} bytes)`);
+        client.send('save_result', { ok: true, bytes: str.length });
+        // PHASE 0 divergence log. Every field listed here is a mutation the
+        // client performed that the server did not model -- which is exactly
+        // the list Phase 1's transaction API has to cover. Phase 1 should not
+        // start on a field while it is still noisy here.
+        try {
+          const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', null);
+          const d = character.diff(doc, blob);
+          if (d.length) {
+            console.log(`[character] DIVERGENCE ${p.name}: ${d.slice(0, 12).join(' | ')}`
+              + (d.length > 12 ? ` (+${d.length - 12} more)` : ''));
+            // ⚠ THE PHASE 2 GATE. Every line here names a mutation the client
+            // makes that the server does not model; shipping Phase 2 while these
+            // are still appearing is exactly the rework the plan exists to avoid.
+            // Logged in full (not the truncated console form) so the tail can be
+            // counted and grouped after a play session.
+            oplog.write('divergence', { name: p.name, count: d.length, fields: d.slice(0, 40) });
+          } else {
+            oplog.write('save', { name: p.name, bytes: str.length, clean: true });
+          }
+          // ⚠⚠ THIS OVERWRITES EVERYTHING THE TRANSACTIONS JUST DID, and that is
+          // correct for Phase 1 — but it is the single most misleading line in
+          // the server, so read it twice before drawing conclusions:
+          //
+          //   • `save` is still a blanket override. The client remains the source
+          //     of truth, so the shadow document is re-derived from its blob on
+          //     every save. A transaction's effect on the DOCUMENT survives only
+          //     until the next autosave.
+          //   • So do NOT verify a transaction by reading the document back after
+          //     play — you will be reading the client's numbers either way. The
+          //     oplog's accepted-delta stream is the real record of what the
+          //     server decided; the document is not evidence yet.
+          //   • This is what Phase 2 deletes. Until then the transactions exist to
+          //     prove the server CAN author these correctly, and to make the
+          //     divergence log above quiet.
+          //
+          // Through replace(), not save(): the transaction path holds the LIVE
+          // document instance, and writing a fresh object straight to disk would
+          // leave that instance stale — the next transaction would then commit
+          // against the pre-adopt values and resurrect them.
+          // ⚠ PHASE 2: adoptFromBlob no longer takes the whole blob. The fields
+          // in character.AUTHORITATIVE (items, wallet, tools, tiers, armor,
+          // standing) keep the SERVER's values and the client's are discarded.
+          // Everything else still comes from the save, because nothing on the
+          // server can author it yet — see the note on AUTHORITATIVE.
+          character.replace(p.name, character.adoptFromBlob(doc, blob));
+        } catch (e) {
+          console.warn(`[character] shadow update failed for ${p.name}: ${e.message}`);
+        }
         if (typeof blob.px === 'number' && isFinite(blob.px)) p.x = Math.max(0, Math.min(MAP_W * TILE, blob.px));
         if (typeof blob.py === 'number' && isFinite(blob.py)) p.y = Math.max(0, Math.min(MAP_H * TILE, blob.py));
         if (typeof blob.hp === 'number' && isFinite(blob.hp)) p.hp = Math.max(0, Math.min(9999, blob.hp | 0));
@@ -301,9 +531,17 @@ class BravoRoom extends Room {
       // litAt is an absolute world-clock stamp; burnout is derived from it, so
       // every client agrees without the server ticking anything.
       const litAt = isFinite(+m.litAt) && +m.litAt > 0 ? +m.litAt : 0;
+      // Chest lock. A boolean is all that crosses — chest CONTENTS are never
+      // stored here, so there is nothing item-shaped for a client to inject.
+      const locked = m.locked === true;
+      // Re-sending an object at the same spot is also the UPDATE path (that is
+      // how toggling a chest lock propagates), so preserve the previous owner
+      // instead of reassigning it to whoever last touched it.
+      const prev = this.placedObjects.find(o => Math.hypot(o.x - x, o.y - y) <= 6);
       this.placedObjects = this.placedObjects.filter(o => Math.hypot(o.x - x, o.y - y) > 6);
-      this.placedObjects.push({ id, type, x: Math.round(x), y: Math.round(y), owner: p.name,
-        ...(face ? { face } : {}), ...(litAt ? { litAt } : {}) });
+      this.placedObjects.push({ id, type, x: Math.round(x), y: Math.round(y),
+        owner: (prev && prev.owner) || p.name,
+        ...(face ? { face } : {}), ...(litAt ? { litAt } : {}), ...(locked ? { locked } : {}) });
       this.savePlacedObjects(); this.broadcastPlacedObjects();
       console.log(`[bravo] object placed by ${p.name}: ${type} at ${Math.round(x)},${Math.round(y)}`);
     });
@@ -367,6 +605,19 @@ class BravoRoom extends Room {
       this.drops.delete('' + m.id);
       this.broadcast('drop_gone', { id: '' + m.id });
       client.send('drop_got', { type: d.type, count: d.count });   // only the taker gains it
+      // PHASE 1: credit the document too. This path is left as the client's
+      // pickup route rather than moving it onto the `tx` message, because the
+      // drop table was ALREADY server-owned — the server decides who gets it and
+      // what it is worth, and the client only ever names an id. Routing it
+      // through a second message would have been two code paths for one rule.
+      try {
+        const doc = character.ensure(p.name, (client.auth && client.auth.username) || '', () => storage.loadBlob(p.name));
+        const r = tx.apply(doc, 'pickup', { type: d.type, count: d.count }, {});
+        if (r.ok) character.touch(p.name);
+        else console.log(`[tx] ${p.name} pickup REJECTED: ${r.reason}`);
+        oplog.write('tx', { name: p.name, kind: 'pickup', ok: r.ok, reason: r.reason,
+                            intent: { type: d.type, count: d.count }, deltas: r.deltas });
+      } catch (e) { console.warn('[tx] pickup credit failed:', e.message); }
     });
     this.clock.setInterval(() => {
       const now = Date.now();
@@ -442,20 +693,34 @@ class BravoRoom extends Room {
     console.log(`[bravo] world room created (storage: ${storage.backend})`);
   }
 
-  // Name claiming: the first join with a name stores the client's secret
-  // token; later joins must present the same token or they're rejected.
-  // Stops anyone from logging in as another playtester and inheriting
-  // their position/stats.
+  // Character identity is an ACCOUNT now, not a browser-local token.
+  //
+  // The old scheme stored a random token in localStorage and treated it as the
+  // identity. That token could not leave the machine that generated it, so a
+  // player logging in from a second computer presented a new token, failed the
+  // match against their own claimed name, and was refused — the exact thing
+  // accounts are here to fix. See accounts.js.
+  //
+  // The client logs in over HTTP first (POST /auth/login) and passes the
+  // resulting session here. Legacy tokened names are migrated on first
+  // account login below, so existing characters are not stranded.
   onAuth(client, options) {
     const name = BravoRoom.cleanName(options && options.name);
-    const token = (options && typeof options.token === 'string') ? options.token.slice(0, 64) : '';
-    const saved = storage.getToken(name);
-    if (saved && saved !== token) {
-      console.warn(`[bravo] REJECTED join as protected name "${name}"`);
-      throw new Error('name-protected');
+    const session = (options && typeof options.session === 'string') ? options.session : '';
+    const user = accounts.sessionUser(session);
+    if (!user) {
+      console.warn(`[bravo] REJECTED join as "${name}" — no valid session`);
+      throw new Error('not-logged-in');
     }
-    if (!saved && token) storage.setToken(name, token);
-    return true;
+    // Claim on first use; refuse if the name belongs to a different account.
+    if (!accounts.claimCharacter(name, user)) {
+      console.warn(`[bravo] REJECTED "${user}" joining as "${name}" — owned by another account`);
+      throw new Error('character-owned');
+    }
+    // The character's legacy browser token is now meaningless — the account
+    // owns it. Clearing it stops the old check from ever rejecting the owner.
+    if (storage.getToken(name)) storage.setToken(name, '');
+    return { username: user, character: name };
   }
 
   static cleanName(raw) {
@@ -476,6 +741,17 @@ class BravoRoom extends Room {
     this.state.players.set(client.sessionId, p);
     const blob = storage.loadBlob(name);   // server-side save (source of truth online)
     if (blob) client.send('save', blob);
+    // PHASE 0 (docs/SERVER_AUTHORITY.md): build the server-side character
+    // document, importing from the legacy blob the first time we see this
+    // character. Nothing is authoritative yet -- the client still writes its own
+    // save and still wins. This is a shadow copy whose only job right now is to
+    // exist and to be compared against, so Phase 1 is built on a complete
+    // picture rather than on guesses about what the client mutates.
+    try {
+      character.ensure(name, (client.auth && client.auth.username) || '', blob);
+    } catch (e) {
+      console.warn(`[character] ensure failed for ${name}: ${e.message}`);
+    }
     // Authoritative world clock, so every client shares one sky. Clients used
     // to start their own day at 00:00 on page load, meaning two players stood
     // side by side in different lighting.
@@ -489,12 +765,20 @@ class BravoRoom extends Room {
       pvpTaken: 0, lastCountedHit: 0, strikes: 0, devTp: 0,
     });
     console.log(`[bravo] + ${name} (${client.sessionId}) — ${this.state.players.size} online`);
+    oplog.write('join', { name, account: (client.auth && client.auth.username) || null,
+                          online: this.state.players.size });
   }
 
   onLeave(client) {
     const p = this.state.players.get(client.sessionId);
     if (p) {
       storage.save(p.name, p);
+      // ⚠ Document writes are batched on a timer, so a leaver can be holding up
+      // to that window of unwritten play. Closing flushes it — without this the
+      // batching quietly eats the last couple of seconds of every session, which
+      // is the exact failure the batching decision was warned about.
+      try { character.close(p.name); } catch (e) { console.warn('[character] close failed:', e.message); }
+      oplog.write('leave', { name: p.name, x: Math.round(p.x), y: Math.round(p.y), hp: p.hp });
       console.log(`[bravo] - ${p.name} (${client.sessionId})`);
     }
     const tid = this.tradeOf && this.tradeOf.get(client.sessionId);
@@ -541,7 +825,13 @@ class BravoRoom extends Room {
       this.clients.find(c => c.sessionId === sid)?.send('trade_end', {});
   }
 
-  onDispose() { this.persistAll(); }
+  onDispose() {
+    this.persistAll();
+    // Same reason as onLeave: the batch window is a loss window, and a room
+    // going away must not take unflushed documents with it.
+    try { const n = character.flushAll(); if (n) console.log(`[character] flushed ${n} document(s) on dispose`); }
+    catch (e) { console.warn('[character] dispose flush failed:', e.message); }
+  }
 }
 
 module.exports = { BravoRoom };

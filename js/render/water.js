@@ -29,15 +29,37 @@
 //      does, coverage must still be a straight multiplier on the final alpha.
 //      Bend the silhouette and the visual stops matching what you can swim in.
 //
-//   2. Coverage is ALSO free distance-from-bank. The WEDGE ramp is a
-//      normalised shore gradient that has already been paid for: 1.0 deep
-//      inside the river, falling through the ramp as it crosses the bank.
-//      That is exactly the signal a depth prepass would go and fetch, so the
-//      depth colour ramp and the foam band are both driven off it and there
-//      is no second pass and no depth texture read anywhere in here.
+//   2. Coverage is NOT free distance-from-bank, however much it looks like it
+//      should be. That claim used to sit here and it is what every failed
+//      version of this shader was built on — see the measurement below. The
+//      depth ramp is driven off wideCov() instead. Still no second pass and no
+//      depth texture read anywhere in here.
 //
 // The mask stores the same value in R, G and B (alphaMap sampled GREEN, so
 // green is the channel with the guarantee behind it). We sample .g.
+//
+// ⚠⚠ MEASURED, and it overturns the note in HANDOFF.md that has caused two
+// regressions here. HANDOFF says "coverage only spans ~0.52-0.75, never near
+// 1.0". That is true of the *water field* (`_wField`, floored at WFIELD_KEEP)
+// and it is NOT the number this shader reads. paintWaterMask puts the field
+// through the WEDGE remap — `v = (cov - 0.5)/0.16 + 0.5`, clamped — before it
+// writes a texel, and that remap sends anything at or above field 0.58 to a
+// solid 255.
+//
+// Histogram of the mask over a 80x80-tile block containing the river at tile
+// 248,353: 11900 non-zero texels, of which 10202 (86%) sit in the top bucket at
+// exactly 1.0, the rest spread thinly and evenly across 0..0.95. A transect
+// across the channel reads 0, 0.05, 0.66, 0.84, then 1.0 for thirty-odd texels,
+// then 0.97, 0.69, 0.29, 0.06, 0.
+//
+// So coverage is effectively BINARY with a ~3-texel (three-quarters of a tile)
+// antialias fringe. It is a silhouette, not a shore-distance signal, and every
+// previous attempt to key a depth ramp off it could only ever paint a hairline
+// at the bank and one flat colour everywhere else — which is exactly what the
+// river looked like. `wideCov()` below builds the real distance-from-bank the
+// ramp needs, by blurring the mask over several tiles with a handful of extra
+// taps. Re-measure with the histogram above before touching any ramp; do not
+// trust either this comment or HANDOFF's on faith.
 
 const DEFAULTS = {
   waterLayers: 2,
@@ -46,9 +68,26 @@ const DEFAULTS = {
   waterFoam: true,
 };
 
-// Matches the old MeshBasicMaterial's opacity. The river is meant to read as
-// water you can see the riverbed through at the edges, not as glass.
-const BASE_OPACITY = 0.92;
+// Opacity is a RAMP now, not the old single 0.92 that matched the original
+// MeshBasicMaterial. The river is meant to read as water you can see the
+// riverbed through at the edges, and one flat value can only ever be a sheet of
+// coloured glass — see the alpha note at the bottom of the fragment shader.
+// ⚠ MEASURED, and it bounds how translucent this surface is allowed to be.
+// Hiding the water quad entirely (traverse for material.name === 'water', set
+// visible = false) shows what is underneath: paintTerrainRegion paints WATER
+// tiles as flat dark navy on the ground canvas, at tile resolution, so the bed
+// is a 45-degree STAIRCASE — the exact blockiness the mask-driven quad exists to
+// hide. The first attempt at "translucent enough to suggest a bed" used 0.62 at
+// the bank and the river came back looking like the bed shot with no water in
+// it at all: the staircase read straight through, and the navy paint is so
+// close to the deep stop that the surface itself became invisible.
+// So the shallows stay nearly opaque and the sense of a bed underneath is
+// carried by colour and caustics instead. If the ground painter is ever changed
+// to paint the riverbed with its nearest ground type (grass/sand, which
+// groundUnder already computes) rather than navy, drop SHORE_ALPHA back toward
+// 0.7 and the water will genuinely read as see-through.
+const SHORE_ALPHA = 0.88;   // bank: a little of the bed tints it, no more
+const DEEP_ALPHA  = 0.97;   // channel: opaque, so the indigo stays saturated
 
 const VERT = /* glsl */`
 varying vec2 vMapUv;
@@ -94,7 +133,6 @@ uniform vec3  uSunColor;
 uniform float uDayF;           // 0 night .. 1 day
 uniform vec3  uCamPos;
 uniform float uEnvOn;
-uniform float uOpacity;
 
 // Quality switches. Uniform floats rather than #defines on purpose: the tier
 // system can demote mid-session (the watchdog does exactly that after a bad
@@ -112,31 +150,35 @@ varying vec3 vWorld;
 // Deep is the print's own base navy (#0f2447) taken to linear; shallow is
 // warmer and lighter so the banks read as knee-deep rather than as the same
 // cold channel water pushed up against the grass.
-const vec3 DEEP_COL    = vec3( 0.0261, 0.0648, 0.0684 );
-const vec3 SHALLOW_COL = vec3( 0.0703, 0.2051, 0.2158 );
+// Repainted toward the illustrated reference: bright turquoise shallows falling
+// to a cool indigo in the channel, rather than navy-to-teal. Values are LINEAR
+// (sRGB #48d8cf and #1d2a6b), so they look darker here than the hex suggests.
+// The shallow end is deliberately far brighter than the deep end -- that spread
+// is what makes a river read as water over a visible bed instead of a flat
+// coloured ribbon.
+// DEEP is a mid indigo-blue, NOT a near-black navy. In the reference even the
+// channel centre stays luminous; darkening it just produces a black ribbon.
+// Palette and ramp are UNIFORMS, not constants: matching a painted reference is
+// iterative, and recompiling to try a colour means a full reload per guess.
+// Tune live with _dev.water({shallow, deep, lo, hi, caustic, print, shore,
+// shoreA, deepA}); defaults below. ⚠ lo/hi are stops on the BLURRED distance
+// field from wideCov(), which is a real 0..1 signal — NOT on raw coverage,
+// which is a silhouette. The warning in HANDOFF.md and in game3d.js's _dev.water
+// comment ("set hi below ~0.8 or the whole surface pins to deep") applies to the
+// old raw-coverage ramp and is wrong for these.
+uniform vec3  uDeepCol;
+uniform vec3  uShallowCol;
+uniform float uDepthLo;
+uniform float uDepthHi;
 
-// Coverage -> depth. The ramp only occupies the WEDGE band, so both stops sit
-// inside it; pushing the far stop to 1.0 flattened the whole river to "deep"
-// because most of the surface is pinned at coverage 255.
-// Same correction as the foam band below: the reachable coverage range on this
-// map's rivers is roughly 0.52-0.75, not 0.34-0.90, because the field is
-// blurred and then floored at WFIELD_KEEP. With the old stops a river never
-// got past the shallow half of the ramp and read uniformly pale.
-const float DEPTH_LO = 0.30;
-const float DEPTH_HI = 0.66;
-
-// Foam sits just INSIDE the bank. The painted contour is at coverage 0.5,
-// where the quad is already half transparent -- foam centred there mostly
-// faded out before you could see it, so the band is biased deeper.
-// These sit BELOW the 0.5 contour, not above it. The original 0.50-0.94 band
-// assumed coverage reaches ~1.0 in open water, which is true for a lake and
-// false for every river on this map: buildWaterField blurs with WFIELD_R=1 and
-// then floors real water tiles at WFIELD_KEEP=0.52, so a 2-3 tile river sits at
-// roughly 0.52-0.70 across its whole width. That put the entire river inside
-// the foam band and painted it white like pack ice.
-// Foam belongs on the shallow ramp seaward of the contour, i.e. below 0.52.
-const float FOAM_LO = 0.16;
-const float FOAM_HI = 0.54;
+// Extra painterly controls, all live-tunable through _dev.water({...}) for the
+// same reason the palette is: matching a painted reference is guess-and-look,
+// and a recompile per guess is hopeless.
+uniform float uCaustic;        // strength of the light streaks
+uniform float uPrintMix;       // how much of the wave print survives into albedo
+uniform float uShoreA;         // alpha at the bank (bed shows through)
+uniform float uDeepA;          // alpha in the channel
+uniform float uShore;          // strength of the soft shore wash (was "foam")
 
 float wHash( vec2 p ) {
   return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453123 );
@@ -165,6 +207,49 @@ vec2 rippleGrad( vec2 p, vec2 dir, float wavelen, float speed ) {
   return dir * cos( phase );
 }
 
+// Distance-from-bank, which the raw mask does NOT give us (see the mask
+// contract note at the top: coverage is binary with a three-quarter-tile
+// fringe). Blurring the mask over a few tiles turns that silhouette back into
+// the shore gradient the depth ramp needs: a texel is only "deep" when its
+// whole neighbourhood out to ~3 tiles is also water, so a narrow creek stays
+// turquoise for its full width while a broad channel earns its indigo centre.
+//
+// Two rings rather than one wide ring: the inner ring carries the first tile of
+// falloff (which is where the eye reads the bank) and the outer one keeps the
+// gradient going long enough to cross a river. Eight taps of a tiny, extremely
+// cache-friendly texture on a single quad — no second pass, no depth read.
+//
+// The tap offsets are in TILES, converted through uMapRepeat: the print's
+// repeat is (MAP_W*0.5, MAP_H*0.5) tiles-per-uv, so one tile is 0.5/uMapRepeat
+// in uv. Deriving it this way rather than hardcoding a uv step is what keeps
+// this correct on any map size — water.js is never told MAP_W or TILE.
+float wideCov( vec2 uv, float cov ) {
+  vec2 st = 0.5 / max( uMapRepeat, vec2( 1e-5 ) );
+  // Radii set the WIDTH of the shoal, and the first pass had them too tight:
+  // at 1.6/3.6 tiles the inner ring saturates a tile and a half in, so the
+  // turquoise came out as a bright rim hugging the bank with the mid tones
+  // squeezed into a few pixels. Pushed out, the gradient spans about five tiles
+  // — most of this river's width — and the teal middle is where the eye lands.
+  const float RI = 2.4;   // inner ring radius, tiles
+  const float RO = 5.2;   // outer ring radius, tiles
+
+  vec2 di = st * RI * 0.7071;
+  float inner = texture2D( uMaskMap, uv + vec2(  di.x,  di.y ) ).g
+              + texture2D( uMaskMap, uv + vec2( -di.x,  di.y ) ).g
+              + texture2D( uMaskMap, uv + vec2(  di.x, -di.y ) ).g
+              + texture2D( uMaskMap, uv + vec2( -di.x, -di.y ) ).g;
+
+  vec2 dou = st * RO;
+  float outer = texture2D( uMaskMap, uv + vec2( dou.x, 0.0 ) ).g
+              + texture2D( uMaskMap, uv + vec2( -dou.x, 0.0 ) ).g
+              + texture2D( uMaskMap, uv + vec2( 0.0, dou.y ) ).g
+              + texture2D( uMaskMap, uv + vec2( 0.0, -dou.y ) ).g;
+
+  // 0.28 + 4*0.09 + 4*0.09 == 1.0 exactly, so open water still reaches the top
+  // of the ramp and the DEEP colour stays reachable.
+  return cov * 0.28 + ( inner + outer ) * 0.09;
+}
+
 // Sky reflection when no PMREM env map is available -- early in load, or if
 // the caller hands us something that is not a CubeUV texture. Two-stop ramp
 // on the reflected ray's elevation, crossfaded to a night sky by uDayF.
@@ -188,21 +273,44 @@ void main() {
   vec3 texel = texture2D( uMap, vMapUv * uMapRepeat + uMapOffset ).rgb;
   float texL = dot( texel, vec3( 0.2126, 0.7152, 0.0722 ) );
 
-  float depth = smoothstep( DEPTH_LO, DEPTH_HI, cov );
-  vec3 depthCol = mix( SHALLOW_COL, DEEP_COL, depth );
+  vec2 p = vWorld.xz;
+
+  // -- Depth ------------------------------------------------------
+  // Off the blurred mask, not off cov — cov is a silhouette (see the top).
+  float dist = wideCov( vMapUv, cov );
+
+  // One octave of very low-frequency noise breaks the depth boundary before it
+  // is ramped. Without it the turquoise-to-indigo transition is a perfect
+  // offset curve parallel to the bank, which reads as an airbrushed gradient;
+  // a painter varies the channel edge, so the shoal wanders in and out by a
+  // tile or so. This is the single cheapest thing in the shader that makes it
+  // look hand-painted rather than generated.
+  // Two scales, not one: the broad octave moves the whole shoal in and out over
+  // tens of tiles, the tighter one gives the boundary a brush-edge wobble. With
+  // only the broad octave the transition is still a clean curve, just a wonkier
+  // one, and it keeps reading as an airbrush.
+  dist += ( wNoise( p * 0.0042 ) - 0.5 ) * 0.26
+        + ( wNoise( p * 0.0180 ) - 0.5 ) * 0.09;
+
+  float depth = smoothstep( uDepthLo, uDepthHi, dist );
+  vec3 depthCol = mix( uShallowCol, uDeepCol, depth );
 
   // Multiplying the print into the ramp was the first attempt and it crushed
   // the shallows to mud, because the print is mostly dark navy by area. Mixing
   // keeps the teal, and the cream wave caps get added back on top so they
   // still pop the way the artwork intends.
-  vec3 albedo = mix( depthCol, texel, 0.45 );
-  albedo += smoothstep( 0.55, 0.95, texL ) * 0.16;
+  // Weight dropped from a flat 0.45: at that level the print's big pale wave
+  // caps dominate the surface and read as fog banks lying on the river, which
+  // fights the depth ramp we just built. It now contributes texture, not
+  // colour — and it is pulled back further in the shallows, where the ramp is
+  // doing the work and the print only muddies the turquoise.
+  vec3 albedo = mix( depthCol, texel, uPrintMix * mix( 0.55, 1.0, depth ) );
+  albedo += smoothstep( 0.62, 0.98, texL ) * 0.09;
 
   // -- Ripple normal -----------------------------------------------
   // Two trains at different wavelengths, speeds and directions. One layer on
   // its own slides as a single sheet no matter how it is tuned; the second is
   // what makes the surface read as moving water. Low tier drops it (uLayer2).
-  vec2 p = vWorld.xz;
   vec2 grad  = rippleGrad( p, normalize( vec2( 0.86, 0.51 ) ), 340.0, 1.35 ) * 1.00;
   grad      += rippleGrad( p, normalize( vec2( -0.44, 0.90 ) ), 129.0, -2.05 ) * 0.55 * uLayer2;
 
@@ -256,41 +364,91 @@ void main() {
     col = mix( col, refl, fres * 0.72 );
   }
 
-  // -- Shoreline foam ----------------------------------------------
-  // Straight smoothstep on coverage gives a perfect outline of the bank --
-  // technically correct, visually a highlighter pen. Two things break it up:
-  // noise pushes the band in and out along the shore, and a slow travelling
-  // sine makes the whole thing surge, so it reads as lapping rather than as
-  // a static ring drawn around the river.
-  float foamAlpha = 0.0;
+  // -- Caustic light streaks ---------------------------------------
+  // The painterly cue the reference actually has: pale ribbons of light lying
+  // ALONG the current, not the isotropic sparkle a specular lobe gives.
+  //
+  // Anisotropy is the whole trick. The noise is sampled in a frame aligned to
+  // the flow, with the along-flow axis squashed ~5x relative to the across-flow
+  // one, so its features come out as long streaks instead of blobs. Sampling
+  // isotropic noise and thresholding it gives leopard spots — tried, and it
+  // reads as scum on the surface rather than light in the water.
+  //
+  // Threshold high and narrow: caustics are a small bright fraction of the
+  // area. A gentle threshold produces an all-over milky haze, which is the
+  // failure mode the old wave-print mix already had.
+  vec2 fdir = normalize( vec2( 0.86, 0.51 ) );
+  vec2 q = vec2( dot( p, fdir ) * 0.0031, dot( p, vec2( -fdir.y, fdir.x ) ) * 0.0110 );
+  float cn = wNoise( q * 6.0 + vec2( uTime * 0.085, uTime * 0.02 ) )
+           + wNoise( q * 13.0 - vec2( uTime * 0.130, 0.0 ) ) * 0.5;
+  // Sparser and shorter than the first attempt (5:1 anisotropy, threshold from
+  // 0.86): those streaks ran bank to bank and combed the whole river into
+  // parallel smears that read as motion blur. A patch mask on top clusters them
+  // into a few lit passages with quiet water between, which is how a painter
+  // spaces them — an even distribution is the tell that it is a noise field.
+  // ⚠ Named clump, not patch: 'patch' is a RESERVED WORD in GLSL ES and the
+  // fragment shader fails to compile with nothing but "Illegal use of reserved
+  // word" in the console. node --check is happy — the shader is a string.
+  float clump = smoothstep( 0.34, 0.72, wNoise( p * 0.0060 + vec2( uTime * 0.012, 0.0 ) ) );
+  float streak = smoothstep( 0.93, 1.30, cn ) * mix( 0.25, 1.0, clump );
+
+  // Keep the light OFF the outermost fringe. Caustics peak in the shallows, and
+  // the shallowest strip of all is the half-tile against the bank — leaving
+  // them at full strength there rebuilds the bright shore line by accident,
+  // which is the one thing the reference must not have.
+  streak *= smoothstep( 0.06, 0.32, dist );
+
+  // Caustics are light that reached the BED and bounced, so they belong in the
+  // shallows and have to die off toward the channel — carrying them into the
+  // deep water is what makes a stylised river read as a shiny plastic sheet.
+  // They also only exist while the sun does.
+  vec3 causticCol = mix( vec3( 0.55, 1.00, 0.92 ), uSunColor, 0.35 );
+  col += causticCol * streak * uCaustic * mix( 1.0, 0.28, depth ) * uDayF;
+
+  // -- Shore wash ---------------------------------------------------
+  // This replaces the foam band, and the change is a deliberate rejection of
+  // the old idea rather than a retune. Any band keyed off cov is confined to
+  // the three-texel antialias fringe (see the mask contract), so however it was
+  // tinted it drew a hairline along the bank — a highlighter pen, which is the
+  // one thing the reference explicitly does not have.
+  //
+  // What a painter puts there instead is a wide, soft lightening of the
+  // shallows: the same turquoise, paler and more luminous, fading out over a
+  // couple of tiles with no edge of its own. So it is keyed off the blurred
+  // distance field, not off cov, and it is a colour LIGHTENING with no white in
+  // it at all. The slow lap only breathes it in and out; it never draws a line.
+  float shoreAlpha = 0.0;
   if ( uFoam > 0.5 ) {
     float wob = wNoise( p * 0.0125 + vec2( uTime * 0.055, uTime * -0.037 ) )
               + wNoise( p * 0.0410 - vec2( uTime * 0.021, uTime *  0.048 ) ) * 0.5;
-    // Wobble scaled down with the band — +/-0.17 against a 0.38-wide band
-    // smeared foam right back across the interior it was just pulled out of.
-    float cc = cov + ( wob / 1.5 - 0.5 ) * 0.09
-             + sin( dot( p, vec2( 0.0210, -0.0173 ) ) + uTime * 1.10 ) * 0.018;
+    float lap = 0.72 + 0.28 * sin( uTime * 0.55 + dot( p, vec2( 0.0080, 0.0113 ) ) );
+    // Wide ramp, and it starts INSIDE the water rather than at the contour, so
+    // the brightest part of the wash sits a tile in and the very edge is left
+    // alone. Edge-brightest is precisely what reads as surf.
+    float wash = ( 1.0 - smoothstep( 0.16, 0.62, dist + ( wob / 1.5 - 0.5 ) * 0.10 ) )
+               * smoothstep( 0.0, 0.30, dist ) * lap;
 
-    float band = smoothstep( FOAM_LO, FOAM_LO + 0.16, cc )
-               * ( 1.0 - smoothstep( FOAM_HI - 0.22, FOAM_HI, cc ) );
-    float lap = 0.55 + 0.45 * sin( uTime * 0.90 + dot( p, vec2( 0.0080, 0.0113 ) ) );
-    float foam = band * mix( 0.60, 1.0, lap );
-
-    // Foam picks up the sun's tint so it goes amber at dusk with everything
-    // else, and never brighter than the ambient allows at night.
-    vec3 foamCol = mix( vec3( 0.78 ), uSunColor, 0.22 ) * mix( 0.22, 1.0, uDayF );
-    col = mix( col, foamCol, clamp( foam * 0.38, 0.0, 1.0 ) );
-
-    // Whitewater is denser than open water. Still multiplied by coverage
-    // below, so the silhouette is untouched.
-    foamAlpha = clamp( foam * 0.30, 0.0, 0.30 );
+    // 1.35x plus a lift made the bank glow like a neon strip once the depth
+    // ramp was already painting it turquoise — the wash was double-counting the
+    // shallows. It only needs to be a shade paler than what is under it.
+    vec3 washCol = mix( uShallowCol * 1.12 + vec3( 0.01, 0.03, 0.03 ), uSunColor, 0.12 )
+                 * mix( 0.22, 1.0, uDayF );
+    col = mix( col, washCol, clamp( wash * uShore, 0.0, 1.0 ) );
+    shoreAlpha = wash * 0.05;
   }
 
   // -- Alpha -------------------------------------------------------
   // Coverage multiplies in as the outermost factor. Every term above can only
   // scale what is already inside the painted bank, so the silhouette is
   // byte-for-byte the shape the old alphaMap produced.
-  float alpha = cov * clamp( uOpacity + foamAlpha + fres * 0.06, 0.0, 1.0 );
+  //
+  // Opacity now RAMPS WITH DEPTH instead of being one flat 0.92. That single
+  // change is what suggests a bed: the ground painter (buildGroundUnder) fills
+  // the riverbed with the nearest real ground type, so letting the shallows go
+  // translucent lets that bed tint the turquoise while the channel stays solid.
+  // A uniform 0.92 everywhere is why the river read as a coloured ribbon laid
+  // on top of the world rather than as water sitting in it.
+  float alpha = cov * clamp( mix( uShoreA, uDeepA, depth ) + shoreAlpha + fres * 0.06, 0.0, 1.0 );
 
   gl_FragColor = vec4( col, alpha );
 
@@ -372,12 +530,35 @@ export function createWaterMaterial( { THREE, renderer, waterTex, maskTex, setti
     uDayF:     { value: 1 },
     uCamPos:   { value: new THREE.Vector3() },
     uEnvOn:    { value: 0 },
-    uOpacity:  { value: BASE_OPACITY },
 
     uLayer2:  { value: ( s.waterLayers | 0 ) >= 2 ? 1 : 0 },
     uGlint:   { value: s.waterGlint ? 1 : 0 },
     uFresnel: { value: s.waterFresnel ? 1 : 0 },
     uFoam:    { value: s.waterFoam ? 1 : 0 },
+    // Linear-space defaults: sRGB #48d8cf shallow, a mid indigo deep. The ramp
+    // stops match the REAL coverage range a river occupies (~0.52-0.75), not
+    // 0..1 -- see the note in HANDOFF.md; assuming 0..1 pins the whole surface
+    // to the deep stop and makes the shallow colour unreachable.
+    uShallowCol: { value: new THREE.Vector3( 0.0900, 0.7200, 0.6400 ) },
+    // Nudged up and slightly toward violet: the reference channel is LUMINOUS
+    // indigo, and against a bright turquoise bank the old value read as a
+    // near-black trough rather than deep water.
+    uDeepCol:    { value: new THREE.Vector3( 0.0320, 0.0620, 0.3400 ) },
+    // Stops are on the BLURRED distance field (wideCov), which really is a
+    // 0..1 signal — unlike raw coverage, which is a silhouette. The ramp starts
+    // early so the banks hold turquoise for a tile or two, and ends just short
+    // of 1 so a wide channel actually reaches the indigo.
+    uDepthLo:    { value: 0.34 },
+    uDepthHi:    { value: 0.92 },
+
+    // Print weight is low and stays low: what remains of it at 0.16 is surface
+    // texture, and anything above ~0.25 brings back the big pale wave caps that
+    // read as fog banks lying on the water.
+    uCaustic:  { value: 0.14 },
+    uPrintMix: { value: 0.16 },
+    uShoreA:   { value: SHORE_ALPHA },
+    uDeepA:    { value: DEEP_ALPHA },
+    uShore:    { value: 0.16 },
   } );
 
   if ( waterTex && waterTex.repeat ) uniforms.uMapRepeat.value.copy( waterTex.repeat );
@@ -478,5 +659,31 @@ export function createWaterMaterial( { THREE, renderer, waterTex, maskTex, setti
     uniforms.uEnvMap.value = null;
   }
 
-  return { material, update, setSettings, dispose };
+  // Live palette control for matching reference art without a rebuild.
+  function setPalette(o){
+    o = o || {};
+    const U = material.uniforms;
+    const toLin = hex => {                    // sRGB hex -> linear vec3
+      const c = new THREE.Color(hex); c.convertSRGBToLinear();
+      return new THREE.Vector3(c.r, c.g, c.b);
+    };
+    if(o.shallow !== undefined) U.uShallowCol.value.copy(toLin(o.shallow));
+    if(o.deep    !== undefined) U.uDeepCol.value.copy(toLin(o.deep));
+    if(o.lo      !== undefined) U.uDepthLo.value = o.lo;
+    if(o.hi      !== undefined) U.uDepthHi.value = o.hi;
+    // The painterly knobs ride the same hook rather than getting a _dev entry
+    // of their own — game3d.js passes this object straight through, so
+    // extending it here needs no change outside this module.
+    if(o.caustic !== undefined) U.uCaustic.value  = o.caustic;
+    if(o.print   !== undefined) U.uPrintMix.value = o.print;
+    if(o.shoreA  !== undefined) U.uShoreA.value   = o.shoreA;
+    if(o.deepA   !== undefined) U.uDeepA.value    = o.deepA;
+    if(o.shore   !== undefined) U.uShore.value    = o.shore;
+    return { shallow:U.uShallowCol.value.toArray().map(n=>+n.toFixed(3)),
+             deep:U.uDeepCol.value.toArray().map(n=>+n.toFixed(3)),
+             lo:U.uDepthLo.value, hi:U.uDepthHi.value,
+             caustic:U.uCaustic.value, print:U.uPrintMix.value,
+             shoreA:U.uShoreA.value, deepA:U.uDeepA.value, shore:U.uShore.value };
+  }
+  return { material, update, setSettings, setPalette, dispose };
 }
