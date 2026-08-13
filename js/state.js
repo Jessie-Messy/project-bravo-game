@@ -19,6 +19,12 @@ export const player = {
   bandageTimer: 0,
   stunTimer: 0, webTimer: 0,
   poisonTimer: 0, poisonDmg: 0, poisonTick: 0,
+  // Temporary debuffs. Deliberately plain timers like the ones above rather than
+  // a generic status-effect system: three lines of tick each, they save/load with
+  // the character for free, and a bespoke framework for five effects would be
+  // more code than the effects.
+  weakTimer: 0,      // damage you DEAL is reduced — the punishing one
+  slowTimer: 0,      // movement speed reduced
   charmed: false, charmTimer: 0,
   hasHorse: false, onHorse: false,
   isRat: false, ratTimer: 0,

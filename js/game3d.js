@@ -2942,6 +2942,7 @@ const MOB_MODELS = {
   slime_mini:    {file:'slime.glb',     h:14, tint:0x88ff88},
   silver_serp:   {file:'snake.glb',     h:18, tint:0xdde2ea},
   zombie:        {file:'zombie.glb',    h:38},
+  liliana:       {file:'liliana.glb',   h:52},
 };
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
@@ -3893,7 +3894,8 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     bossResolveNow(b);
     return JSON.stringify({ability:name, playerHpBefore:hpBefore, playerHpAfter:player.hp,
       damageTaken:hpBefore-player.hp, stunned:+player.stunTimer.toFixed(1),
-      webbed:+(player.webTimer||0).toFixed(1), poisoned:+(player.poisonTimer||0).toFixed(1)});
+      webbed:+(player.webTimer||0).toFixed(1), poisoned:+(player.poisonTimer||0).toFixed(1),
+      weakened:+(player.weakTimer||0).toFixed(1), mired:+(player.slowTimer||0).toFixed(1)});
   },
   // Which abilities can the picker actually choose at a given HP fraction?
   // Proves the phase gates without re-implementing them in the test.
@@ -4143,6 +4145,10 @@ function buildSlotModel(i, type){
   // `idle` falls back to an in-place walk when a model has no idle at all —
   // a shambling zombie standing perfectly still is worse than one swaying.
   const actions = {
+    // ⚠ The in-place fallback must be a clip the WALK selector cannot also pick, or
+    // a model with only in-place walks ends up idling and walking with the same
+    // animation and never appears to move. walkClips() excludes in-place for
+    // exactly this reason; keep the two selectors disjoint.
     idle:   mk(pickClip(asset.clips, /(^|\|)idle$/i) || pickClip(asset.clips, /(^|\|)idle(_2)?$/i)
             || pickClip(asset.clips, /idle/i) || pickClip(asset.clips, /inplace|in_place/i)),
     // ⚠ A model with SEVERAL walks gets a different one per pool slot, so two
@@ -4151,9 +4157,15 @@ function buildSlotModel(i, type){
     // failure the tree crowns had, and it is just as visible on a mob.
     walk:   mk(pickWalk(asset.clips, i)),
     run:    mk(pickClip(asset.clips, /(^|\|)running|(^|\|)run$|gallop|sprint/i)),
-    attack: mk(pickClip(asset.clips, /attack|punch|bite|scream/i)),
+    // ⚠ `slam|spell_cast|throw` are here for bosses whose only "attacks" ARE their
+    // ability clips. Liliana resolved attack to NOTHING without them, so she would
+    // have stood inert between telegraphs.
+    attack: mk(pickClip(asset.clips, /attack|punch|bite|scream|slam|spell_?cast|throw/i)),
     hit:    mk(pickClip(asset.clips, /hit_?reaction|hit|flinch|damage/i)),
-    death:  mk(pickClip(asset.clips, /(^|\|)dead|death|dying/i)),
+    // ⚠ NOT anchored. `Fall_Dead_from_Abdominal_Injury` has "Dead" in the middle,
+    // and the anchored version matched nothing — so the boss would have died
+    // standing up, frozen in her walk.
+    death:  mk(pickClip(asset.clips, /dead|death|dying|fall_/i)),
   };
   if (actions.attack) { actions.attack.setLoop(THREE.LoopOnce); actions.attack.clampWhenFinished=false; }
   // Hit and death are one-shots, and DEATH MUST CLAMP — without it the corpse
@@ -4161,7 +4173,14 @@ function buildSlotModel(i, type){
   // obvious animation bug a player can see.
   if (actions.hit)   { actions.hit.setLoop(THREE.LoopOnce);   actions.hit.clampWhenFinished=false; }
   if (actions.death) { actions.death.setLoop(THREE.LoopOnce); actions.death.clampWhenFinished=true; }
-  const inst = { type, obj, mixer, actions, cur:null, atkUntil:0, lx:null, lz:null, hitUntil:0, dead:false };
+  // Named clips, for abilities that name their own animation (BOSS_ABILITIES.anim).
+  // Kept separate from `actions` because these are not STATES — they are one-offs
+  // fired by the fight, and putting them in the state machine would let the walk
+  // logic fade them out halfway through a telegraph.
+  const named = {};
+  for (const c of asset.clips) named[c.name] = mk(c);
+  for (const a of Object.values(named)) { a.setLoop(THREE.LoopOnce); a.clampWhenFinished = true; }
+  const inst = { type, obj, mixer, actions, named, cur:null, atkUntil:0, lx:null, lz:null, hitUntil:0, dead:false, castId:null };
   slotModel[i]=inst; return inst;
 }
 function setModelAnim(inst, name){
@@ -4234,6 +4253,31 @@ function animModel(inst, e, t, adt, animate){
     inst.cur = 'hit';
   }
   inst.lastHp = hp;
+
+  // ── Telegraph ──
+  // While a boss is winding up, its OWN clip plays, stretched so it ENDS exactly
+  // when the blow resolves. That alignment is the whole point: the ground decal
+  // says where, the animation says when, and a clip that finishes early or late
+  // teaches the player the wrong beat — worse than showing no animation at all.
+  if(e.cast && inst.named){
+    const clip = inst.named[e.cast.anim];
+    if(clip && inst.castId !== e.cast.id + '@' + e.cast.t0){
+      inst.castId = e.cast.id + '@' + (e.cast.t0 = e.cast.t0 || t);
+      if(inst.cur && inst.actions[inst.cur]) inst.actions[inst.cur].fadeOut(0.1);
+      clip.reset();
+      // Stretch (or compress) the clip onto the wind-up. A 7.7s throw on a 3.2s
+      // tell plays at 2.4x; a 2.2s cast on a 1.2s tell at 1.8x.
+      clip.timeScale = Math.max(0.25, clip.getClip().duration / Math.max(0.2, e.cast.dur));
+      clip.fadeIn(0.1).play();
+      inst.cur = null;                  // the state machine no longer owns the body
+    }
+    inst.mixer.update(adt);
+    return;
+  }
+  if(inst.castId){                      // cast ended (resolved or interrupted)
+    inst.castId = null;
+    for(const a of Object.values(inst.named)) a.fadeOut(0.15);
+  }
 
   if(t >= (e._atkUntil || 0) && t >= inst.hitUntil){
     // ── Walk vs run, chosen by ACTUAL ground speed ──
@@ -5113,7 +5157,11 @@ function meleeDmg(){
   const gear = 1 + eqStat('allDmg')/100;
   const tLv = tacticsLv();
   const weaponmaster = tLv >= 10 ? 1.25 : 1.0;
-  return Math.round((TACTICS_DMG[tLv-1]+eqWeaponDmg())*TIER_MULT[swordTier()]*strMult*gear*weaponmaster*(1+artifactBonus('swordDmg')+artifactBonus('allDmg')));
+  // ⚠ WEAKENED is applied at the very end, to the final number, so it cannot be
+  // out-scaled by gear or skill. A debuff that a geared player does not notice is
+  // not a debuff.
+  const weak = player.weakTimer > 0 ? 0.55 : 1;
+  return Math.round((TACTICS_DMG[tLv-1]+eqWeaponDmg())*TIER_MULT[swordTier()]*strMult*gear*weaponmaster*(1+artifactBonus('swordDmg')+artifactBonus('allDmg'))*weak);
 }
 function arrowDmg(){
   const raceData = RACES[player.race] || RACES.Human;
@@ -5746,7 +5794,7 @@ function useBandage(){
     addFloater(player.x,player.y-44,'☠ Poison cleansed!');
   }
   if(hLv>=8){
-    player.stunTimer=0; player.webTimer=0;
+    player.stunTimer=0; player.webTimer=0; player.weakTimer=0; player.slowTimer=0;
   }
 }
 function doHiding(){
@@ -6482,6 +6530,7 @@ function questPoll(){
 const FLOOR_BOSSES={
   gravebinder:{ base:'troll_l', name:'The Gravebinder', hp:2.4, dmg:1.5, tint:0x9effc0 },
   molloch:    { base:'piper',   name:'Ratking Molloch', hp:3.0, dmg:1.8, tint:0xffcc66 },
+  liliana:    { base:'zombie',  name:'Liliana, the Zombie Queen', hp:4.0, dmg:1.7 },
 };
 function spawnFloorBoss(floorN){
   const spec=DUNGEON_BOSS_SPAWNS.find(b=>b.floor===floorN); if(!spec) return;
@@ -10492,12 +10541,15 @@ function update(dt){
     if(rmb.down&&!G.craftOpen&&!G.buildMode&&mouse.hasPos){const rdx=worldMouseX-player.x,rdy=worldMouseY-player.y,rDist=Math.hypot(rdx,rdy);if(rDist>4){const td=rDist/TILE;const rm=td<1.5?0.5:td<3?1.0:1.4;dx+=rdx/rDist;dy+=rdy/rDist;speedMult=rm;}}
     if(player.stunTimer>0){player.stunTimer=Math.max(0,player.stunTimer-dt);return;}
     if(player.webTimer>0)player.webTimer=Math.max(0,player.webTimer-dt);
+    if(player.weakTimer>0)player.weakTimer=Math.max(0,player.weakTimer-dt);
+    if(player.slowTimer>0)player.slowTimer=Math.max(0,player.slowTimer-dt);
     if(player.charmTimer>0){player.charmTimer=Math.max(0,player.charmTimer-dt);if(player.charmTimer<=0)player.charmed=false;}
     if(player.poisonTimer>0){player.poisonTimer=Math.max(0,player.poisonTimer-dt);player.poisonTick+=dt;if(player.poisonTick>=1){player.poisonTick-=1;damagePlayer(player.poisonDmg);addFloater(player.x,player.y-18,'☠ '+player.poisonDmg);}}
     if(player.charmed){dx=-dx;dy=-dy;}
     const _curTileH=map[Math.floor(player.y/TILE)]?.[Math.floor(player.x/TILE)];
     if(player.onHorse&&(_curTileH===T.CAVE_FLOOR||_curTileH===T.CAVE_ENTRANCE||_curTileH===T.CAVE_WALL)){player.onHorse=false;addFloater(player.x,player.y-30,'dismounted (cave)');}
     if(player.onHorse)speedMult*=2.2;if(player.isRat)speedMult*=0.55;
+    if(player.slowTimer>0)speedMult*=0.55;   // MIRED — see BOSS_ABILITIES
     if(G.housePlacementMode)speedMult*=1.8;
     const ml=Math.hypot(dx,dy);if(ml>1){dx/=ml;dy/=ml;}
     if(skills.hiding.active){
@@ -10806,11 +10858,15 @@ function syncEntities(t){
     const edx=e.x-player.x, edz=e.y-player.y, ed2=edx*edx+edz*edz;
     if(ed2>RD2){ grp.visible=false; if(inst)inst.obj.visible=false; continue; }   // render-distance cull
     const eNear = ed2<AD2;                                                        // animation-LOD gate
-    // Prefer the animated GLTF model once its file has loaded
-    const mm=MOB_MODELS[e.type];
+    // Prefer the animated GLTF model once its file has loaded.
+    // ⚠ A floor boss keyed in MOB_MODELS uses its OWN model, not the base enemy
+    // type it borrows stats and AI from. Liliana is built on `zombie`, and
+    // without this she would fight you wearing a common zombie's body.
+    const _mk=(e.floorBoss && MOB_MODELS[e.floorBoss]) ? e.floorBoss : e.type;
+    const mm=MOB_MODELS[_mk];
     if(mm&&loadedModels[mm.file]){
       grp.visible=false;
-      const im=(inst&&inst.type===e.type)?inst:buildSlotModel(si,e.type);
+      const im=(inst&&inst.type===_mk)?inst:buildSlotModel(si,_mk);
       animModel(im,e,t,adt,eNear);
       continue;
     }
