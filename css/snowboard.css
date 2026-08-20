@@ -1,0 +1,445 @@
+/* snowboard.css — the shell around the 3D canvas.
+ *
+ * Mobile-first and phone-shaped by default; the wider layouts are the
+ * progressive enhancement, not the other way round. Three rules drive
+ * everything here:
+ *
+ *   1. Nothing depends on :hover. Every affordance has to be legible before
+ *      it is touched, because on a phone it never gets hovered.
+ *   2. Every interactive target is at least 48px, and the ride controls are
+ *      much bigger than that and pinned inside the safe area.
+ *   3. Heights use 100dvh, not 100vh, so the layout does not jump when mobile
+ *      Safari's toolbar slides away mid-run.
+ */
+
+:root {
+  --bg:        #070b14;
+  --panel:     rgba(13, 20, 34, 0.72);
+  --panel-hi:  rgba(26, 39, 65, 0.80);
+  --stroke:    rgba(148, 190, 255, 0.16);
+  --stroke-hi: rgba(148, 200, 255, 0.42);
+  --text:      #eaf1fb;
+  --muted:     #92a5c0;
+  --dim:       #61728c;
+  --accent:    #5eead4;
+  --accent-2:  #38bdf8;
+  --hot:       #fb7185;
+  --gold:      #fbbf24;
+  --r-lg: 22px;
+  --r-md: 15px;
+  --r-sm: 10px;
+  --ease: cubic-bezier(.22,.9,.28,1);
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0; padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  font-synthesis-weight: none;
+}
+
+#gl {
+  position: fixed; inset: 0;
+  width: 100%; height: 100%;
+  display: block;
+  touch-action: none;
+  z-index: 0;
+}
+
+/* Everything DOM sits above the canvas; only marked children take pointers. */
+#ui {
+  position: fixed; inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#ui > * { pointer-events: auto; }
+
+.screen {
+  position: absolute; inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: calc(var(--safe-t) + 14px) calc(var(--safe-r) + 14px) calc(var(--safe-b) + 14px) calc(var(--safe-l) + 14px);
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity .34s var(--ease), transform .34s var(--ease);
+  pointer-events: none;
+  visibility: hidden;
+}
+.screen.is-active { opacity: 1; transform: none; pointer-events: auto; visibility: visible; }
+
+/* Scrim. The 3D scene behind the menus is a sunlit snowfield — the brightest
+   backdrop a UI can sit on — so text needs its own ground rather than relying
+   on the render being dark somewhere. Top and bottom only, so the middle of the
+   frame (where the rider stands) stays clean. */
+.screen::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(4,8,15,.72) 0%, rgba(4,8,15,.12) 18%, rgba(4,8,15,0) 34%,
+                            rgba(4,8,15,0) 40%, rgba(4,8,15,.62) 72%, rgba(4,8,15,.92) 100%);
+}
+.screen > * { position: relative; }
+.screen.is-behind { opacity: 0; transform: translateY(-10px) scale(.985); }
+
+/* ── Type ─────────────────────────────────────────────────────── */
+.eyebrow {
+  font-size: 11px; font-weight: 700; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--accent);
+}
+.title {
+  text-shadow: 0 2px 20px rgba(4,8,15,.55);
+  font-size: clamp(26px, 7vw, 48px);
+  font-weight: 800; letter-spacing: -.02em; line-height: 1.02;
+  margin: 4px 0 0;
+}
+.sub { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 6px 0 0; }
+.mono { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+
+/* ── Glass surfaces ───────────────────────────────────────────── */
+.glass {
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-lg);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: 0 18px 46px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.06);
+}
+
+/* ── Buttons ──────────────────────────────────────────────────── */
+.btn {
+  appearance: none; border: 1px solid var(--stroke);
+  background: var(--panel-hi);
+  color: var(--text);
+  font: 600 15px/1 inherit;
+  letter-spacing: .01em;
+  padding: 16px 22px;
+  min-height: 52px;
+  border-radius: var(--r-md);
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  cursor: pointer;
+  transition: transform .12s var(--ease), background .2s, border-color .2s, box-shadow .2s;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.btn:active { transform: scale(.97); }
+.btn.primary {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+  color: #04121a; border-color: transparent; font-weight: 800;
+  box-shadow: 0 12px 30px rgba(56,189,248,.28), inset 0 1px 0 rgba(255,255,255,.4);
+}
+.btn.ghost { background: rgba(255,255,255,.04); }
+.btn.wide { width: 100%; }
+.btn.small { min-height: 42px; padding: 11px 16px; font-size: 13px; border-radius: var(--r-sm); }
+.btn.icon { min-height: 46px; width: 46px; padding: 0; border-radius: 50%; font-size: 17px; }
+.btn[disabled] { opacity: .38; pointer-events: none; }
+
+/* ── Top bar ──────────────────────────────────────────────────── */
+.topbar {
+  display: flex; align-items: center; gap: 10px;
+  flex: 0 0 auto; margin-bottom: 12px;
+}
+.topbar .spacer { flex: 1; }
+.crumb { font-size: 12px; color: var(--dim); letter-spacing: .1em; text-transform: uppercase; font-weight: 700; }
+
+/* ── Carousel of choice cards ─────────────────────────────────── */
+.rail {
+  display: flex; gap: 12px;
+  overflow-x: auto; overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding: 4px 2px 10px;
+  margin: 0 -2px;
+  touch-action: pan-x;
+}
+.rail::-webkit-scrollbar { display: none; }
+
+.card {
+  flex: 0 0 auto;
+  width: min(74vw, 300px);
+  scroll-snap-align: center;
+  padding: 16px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  cursor: pointer;
+  transition: border-color .2s, background .2s, transform .18s var(--ease);
+  position: relative;
+  overflow: hidden;
+}
+.card:active { transform: scale(.985); }
+.card.is-selected {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, rgba(94,234,212,.13), rgba(16,24,40,.72));
+  box-shadow: 0 0 0 1px var(--accent), 0 18px 40px rgba(0,0,0,.45);
+}
+.card.is-selected::after {
+  content: "✓";
+  position: absolute; top: 12px; right: 12px;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--accent); color: #04121a;
+  display: grid; place-items: center;
+  font-size: 13px; font-weight: 900;
+}
+.card h3 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -.01em; }
+.card .kicker { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent-2); font-weight: 700; }
+.card p { margin: 8px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+
+/* Stat bars */
+.stats { margin-top: 12px; display: grid; gap: 7px; }
+.stat { display: grid; grid-template-columns: 62px 1fr; align-items: center; gap: 9px; }
+.stat span { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); font-weight: 700; }
+.bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.09); overflow: hidden; }
+.bar i {
+  display: block; height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  transition: width .5s var(--ease);
+}
+
+/* ── Run list ─────────────────────────────────────────────────── */
+.runlist { display: grid; gap: 10px; overflow-y: auto; padding: 2px 2px 10px; flex: 1; scrollbar-width: thin; touch-action: pan-y; }
+.run {
+  display: grid; grid-template-columns: 44px 1fr auto; gap: 13px; align-items: center;
+  padding: 14px; border-radius: var(--r-md);
+  background: var(--panel); border: 1px solid var(--stroke);
+  cursor: pointer; transition: border-color .18s, background .18s, transform .16s var(--ease);
+}
+.run:active { transform: scale(.99); }
+.run.is-selected { border-color: var(--accent); background: linear-gradient(180deg, rgba(94,234,212,.12), rgba(16,24,40,.6)); }
+.grade {
+  width: 44px; height: 44px; border-radius: 13px;
+  display: grid; place-items: center; font-size: 15px; font-weight: 900;
+  background: rgba(255,255,255,.06);
+}
+.run .name { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
+.run .meta { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.run .right { text-align: right; font-size: 11px; color: var(--dim); }
+.stars { letter-spacing: 2px; font-size: 13px; color: var(--gold); }
+.stars .off { color: rgba(255,255,255,.16); }
+
+/* ── HUD ──────────────────────────────────────────────────────── */
+#hud { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .3s; }
+#hud.is-active { opacity: 1; }
+
+.hud-top {
+  position: absolute;
+  top: calc(var(--safe-t) + 10px); left: calc(var(--safe-l) + 12px); right: calc(var(--safe-r) + 12px);
+  display: flex; align-items: flex-start; gap: 10px;
+}
+.hud-chip {
+  background: rgba(8,14,26,.62);
+  border: 1px solid rgba(148,190,255,.18);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border-radius: 13px; padding: 8px 12px;
+  min-width: 78px;
+}
+.hud-chip .label { font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); font-weight: 800; }
+.hud-chip .value { font-size: 20px; font-weight: 800; line-height: 1.1; letter-spacing: -.02em; }
+.hud-chip .value small { font-size: 10px; font-weight: 700; color: var(--muted); margin-left: 2px; }
+
+/* Speed dial, bottom-left — the number you actually watch. */
+.speedo {
+  position: absolute;
+  left: calc(var(--safe-l) + 14px); bottom: calc(var(--safe-b) + 18px);
+  display: flex; align-items: baseline; gap: 6px;
+  text-shadow: 0 2px 14px rgba(0,0,0,.7);
+}
+.speedo .n { font-size: clamp(38px, 11vw, 62px); font-weight: 800; letter-spacing: -.045em; line-height: .9; }
+.speedo .u { font-size: 12px; font-weight: 800; letter-spacing: .12em; color: var(--muted); }
+
+/* Vertical progress rail on the right — a piste map, effectively. */
+.progress {
+  position: absolute; right: calc(var(--safe-r) + 13px);
+  top: calc(var(--safe-t) + 78px); bottom: calc(var(--safe-b) + 130px);
+  width: 5px; border-radius: 3px;
+  background: rgba(255,255,255,.11);
+  overflow: visible;
+}
+.progress i {
+  position: absolute; left: 0; top: 0; width: 100%;
+  border-radius: 3px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+}
+.progress .pip {
+  position: absolute; left: 50%; width: 15px; height: 15px;
+  margin-left: -7.5px; margin-top: -7.5px;
+  border-radius: 50%; background: #fff;
+  box-shadow: 0 0 0 3px rgba(94,234,212,.4), 0 4px 12px rgba(0,0,0,.5);
+}
+
+/* Combo + trick callouts */
+.combo {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  top: calc(var(--safe-t) + 70px);
+  font-size: 15px; font-weight: 900; letter-spacing: .04em;
+  color: var(--gold); text-shadow: 0 2px 12px rgba(0,0,0,.8);
+  opacity: 0; transition: opacity .2s;
+}
+.combo.is-on { opacity: 1; }
+
+#callouts {
+  position: absolute; left: 50%; top: 34%;
+  transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  pointer-events: none; width: 100%;
+}
+.callout {
+  font-size: clamp(19px, 5.2vw, 30px); font-weight: 900; letter-spacing: -.01em;
+  text-shadow: 0 3px 18px rgba(0,0,0,.8);
+  animation: pop .9s var(--ease) forwards;
+  white-space: nowrap;
+}
+.callout .pts { color: var(--gold); font-variant-numeric: tabular-nums; }
+.callout.bad { color: var(--hot); }
+@keyframes pop {
+  0%   { opacity: 0; transform: scale(.7) translateY(14px); }
+  18%  { opacity: 1; transform: scale(1.08) translateY(0); }
+  32%  { transform: scale(1); }
+  76%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-30px) scale(.94); }
+}
+
+/* Ride controls — thumb furniture, deliberately oversized. */
+.controls { position: absolute; inset: 0; pointer-events: none; }
+.ctl {
+  position: absolute; pointer-events: auto;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgba(12,20,36,.4);
+  border: 1.5px solid rgba(148,200,255,.30);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  font-size: 10px; font-weight: 900; letter-spacing: .1em;
+  color: rgba(255,255,255,.82);
+  text-align: center; line-height: 1.15;
+  transition: transform .1s var(--ease), background .12s, border-color .12s;
+  touch-action: none;
+}
+.ctl.is-held {
+  transform: scale(.92);
+  background: rgba(94,234,212,.28);
+  border-color: var(--accent);
+  color: #04121a;
+}
+#btnAction {
+  right: calc(var(--safe-r) + 22px); bottom: calc(var(--safe-b) + 22px);
+  width: 92px; height: 92px; font-size: 12px;
+}
+#btnBrake {
+  right: calc(var(--safe-r) + 124px); bottom: calc(var(--safe-b) + 26px);
+  width: 62px; height: 62px;
+}
+#btnPause {
+  pointer-events: auto;
+  position: absolute; top: calc(var(--safe-t) + 10px); right: calc(var(--safe-r) + 12px);
+  width: 40px; height: 40px; border-radius: 12px;
+  display: grid; place-items: center;
+  background: rgba(8,14,26,.5); border: 1px solid rgba(148,190,255,.14);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  color: var(--text); font-size: 14px;
+}
+
+/* Steer hint arc, shown for the first seconds of a run */
+.steerhint {
+  position: absolute; left: 50%; bottom: calc(var(--safe-b) + 40px);
+  transform: translateX(-50%);
+  font-size: 12px; color: rgba(255,255,255,.65);
+  letter-spacing: .08em; text-transform: uppercase; font-weight: 700;
+  text-shadow: 0 2px 10px rgba(0,0,0,.8);
+  transition: opacity .5s;
+}
+
+/* ── Results ──────────────────────────────────────────────────── */
+.result-hero { text-align: center; padding: 8px 0 4px; }
+.result-stars { font-size: 40px; letter-spacing: 8px; color: var(--gold); margin: 6px 0; }
+.result-stars .off { color: rgba(255,255,255,.14); }
+.result-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; margin-top: 12px; }
+.result-cell { padding: 13px; border-radius: var(--r-md); background: rgba(255,255,255,.045); border: 1px solid var(--stroke); }
+.result-cell .k { font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: var(--dim); font-weight: 800; }
+.result-cell .v { font-size: 21px; font-weight: 800; margin-top: 3px; letter-spacing: -.02em; }
+.trick-log { margin-top: 12px; max-height: 24vh; overflow-y: auto; display: grid; gap: 5px; touch-action: pan-y; }
+.trick-row { display: flex; justify-content: space-between; font-size: 12.5px; padding: 8px 11px; border-radius: 9px; background: rgba(255,255,255,.04); }
+.trick-row b { color: var(--gold); font-variant-numeric: tabular-nums; }
+
+/* ── Loader ───────────────────────────────────────────────────── */
+#loader {
+  position: fixed; inset: 0; z-index: 9;
+  display: grid; place-items: center;
+  background: radial-gradient(120% 90% at 50% 0%, #16233c 0%, #070b14 62%);
+  transition: opacity .5s var(--ease);
+}
+#loader.is-done { opacity: 0; pointer-events: none; }
+.loader-inner { text-align: center; width: min(88vw, 380px); }
+.loader-mark { font-size: 12px; letter-spacing: .42em; text-transform: uppercase; color: var(--accent); font-weight: 800; }
+.loader-title { font-size: clamp(30px, 9vw, 52px); font-weight: 900; letter-spacing: -.035em; margin: 8px 0 20px; }
+.loader-bar { height: 4px; border-radius: 2px; background: rgba(255,255,255,.10); overflow: hidden; }
+.loader-bar i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width .3s var(--ease); }
+.loader-note { margin-top: 12px; font-size: 12px; color: var(--dim); min-height: 1.4em; }
+
+/* ── Pause ────────────────────────────────────────────────────── */
+#pause {
+  position: absolute; inset: 0; z-index: 4;
+  display: none; place-items: center;
+  background: rgba(5,9,17,.72);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  padding: calc(var(--safe-t) + 20px) 20px calc(var(--safe-b) + 20px);
+}
+#pause.is-active { display: grid; }
+.pause-panel { width: min(92vw, 380px); padding: 22px; display: grid; gap: 10px; }
+
+/* Toggle rows */
+.row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; border-radius: var(--r-md);
+  background: rgba(255,255,255,.045); border: 1px solid var(--stroke);
+  font-size: 14px; font-weight: 600;
+}
+.seg { display: flex; gap: 4px; background: rgba(255,255,255,.06); border-radius: 10px; padding: 3px; }
+.seg button {
+  appearance: none; border: 0; background: transparent; color: var(--muted);
+  font: 700 11px/1 inherit; letter-spacing: .08em; text-transform: uppercase;
+  padding: 9px 11px; border-radius: 8px; cursor: pointer; min-height: 34px;
+}
+.seg button.is-on { background: var(--accent); color: #04121a; }
+
+/* ── Layout: wide screens get two columns ─────────────────────── */
+@media (min-width: 780px) {
+  .screen { padding: calc(var(--safe-t) + 26px) 34px calc(var(--safe-b) + 26px); }
+  .card { width: 290px; }
+  .runlist { grid-template-columns: 1fr 1fr; }
+  .result-grid { grid-template-columns: repeat(4, 1fr); }
+  #btnAction, #btnBrake, .steerhint { display: none; }
+}
+
+/* Landscape phones: the run list and rails need to stay reachable, and the
+   action button moves in from the very corner where a thumb cannot get it. */
+@media (max-height: 480px) and (orientation: landscape) {
+  .title { font-size: 22px; }
+  .sub { display: none; }
+  .card { width: 240px; padding: 13px; }
+  .rail { padding-bottom: 6px; }
+  #btnAction { width: 74px; height: 74px; bottom: calc(var(--safe-b) + 14px); }
+  #btnBrake { width: 52px; height: 52px; right: calc(var(--safe-r) + 108px); bottom: calc(var(--safe-b) + 20px); }
+  .speedo .n { font-size: 34px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

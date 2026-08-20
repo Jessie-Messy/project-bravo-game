@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!-- viewport-fit=cover puts the canvas under the notch; the CSS then pads the
+     UI back out with env(safe-area-inset-*). interactive-widget stops the
+     Android keyboard resizing the WebGL viewport. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+<meta name="theme-color" content="#070b14" />
+<meta name="color-scheme" content="dark" />
+<meta name="description" content="Alpenglow — snowboard ten real mountains, from a Zermatt glacier cruiser to the throat of Corbet's Couloir." />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Alpenglow — Project Bravo Snowboarding</title>
+<link rel="stylesheet" href="css/snowboard.css?v=20260820" />
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+<div id="ui"></div>
+
+<div id="loader">
+  <div class="loader-inner">
+    <div class="loader-mark">Project Bravo</div>
+    <div class="loader-title">ALPENGLOW</div>
+    <div class="loader-bar"><i id="loaderBar"></i></div>
+    <div class="loader-note" id="loaderNote">Waxing the base…</div>
+  </div>
+</div>
+
+<noscript>
+  <div style="position:fixed;inset:0;display:grid;place-items:center;padding:24px;text-align:center;font:16px system-ui;color:#eaf1fb;background:#070b14">
+    Alpenglow is a 3D game and needs JavaScript enabled.
+  </div>
+</noscript>
+
+<!-- three.js is vendored under vendor/three rather than pulled from a CDN.
+     A phone on a chairlift LTE connection should not be blocked on a
+     third-party host, and only the fifteen modules this game actually imports
+     are checked in (see vendor/three/LICENSE). -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/build/three.module.js",
+    "three/addons/": "./vendor/three/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="js/snowboard/main.js?v=20260820"></script>
+
+</body>
+</html>
