@@ -78,28 +78,35 @@ function fbm1(x, oct = 5) {
 }
 
 /**
- * Builds a ring of ridge geometry around the origin. Two rings at different
- * radii give real depth: the far one is nearly flat haze, the near one has
- * readable rock and snow faces.
+ * Builds a ring of ridge geometry around the origin.
+ *
+ * Each column is subdivided VERTICALLY rather than being a single base-to-peak
+ * quad. That is the whole difference between "distant mountain range" and "grey
+ * curtain": with two vertices per column the only colour information available
+ * is a smooth vertical gradient, whereas subdividing lets the SNOW LINE run
+ * horizontally across the range at a consistent altitude, cutting each summit
+ * where it actually crosses it. A snow line is the single strongest cue that a
+ * silhouette is a mountain and not a wall.
+ *
+ * `skirt` drops the base below the ring origin so the bottom edge is never a
+ * hard line hanging in the sky. It stays short and ends in exactly the horizon
+ * colour, because the terrain does not reach far enough to occlude a tall one.
  */
-function buildRidge(profile, radius, height, segments, seed, hazeCol, rockCol, snowCol, skirt = 2600) {
-  // `skirt` drops the base ring far below the ring's origin. The ridges sit
-  // ABOVE the rider — you are on a mountain, the neighbours are higher — so
-  // without a skirt the bottom edge of the band floats in mid-air as a hard
-  // horizontal line across the sky. The skirt is always occluded by the
-  // terrain, so it costs nothing to make it enormous.
+function buildRidge(profile, radius, height, segments, seed, hazeCol, rockCol, snowCol, skirt = 260) {
+  const LEVELS = 6;
   const pos = [], col = [], idx = [];
   const c = new THREE.Color();
+
   for (let i = 0; i <= segments; i++) {
     const t = i / segments;
     const a = t * Math.PI * 2;
     const cs = Math.cos(a), sn = Math.sin(a);
 
     // Ridge height: fbm at two scales, then the named horns on top.
-    let h = profile.base + profile.rough * 0.55 * (fbm1(t * 26 + seed, 5) - 0.35)
-                         + profile.rough * 0.22 * (fbm1(t * 71 + seed * 3, 3) - 0.4);
+    let h = profile.base + profile.rough * 0.62 * (fbm1(t * 26 + seed, 5) - 0.35)
+                         + profile.rough * 0.26 * (fbm1(t * 71 + seed * 3, 3) - 0.4);
     for (const horn of profile.horns) {
-      let dt = Math.abs(((t - horn.at) + 1.5) % 1 - 0.5);
+      const dt = Math.abs(((t - horn.at) + 1.5) % 1 - 0.5);
       const k = Math.max(0, 1 - dt / horn.w);
       if (k <= 0) continue;
       // A snow horn is a sharp power curve; a stratovolcano is a broad cone.
@@ -109,25 +116,35 @@ function buildRidge(profile, radius, height, segments, seed, hazeCol, rockCol, s
     }
     h = Math.max(0.05, h) * height;
 
-    pos.push(cs * radius, -skirt, sn * radius);
-    c.copy(hazeCol); col.push(c.r, c.g, c.b);
+    // The snow line wanders with aspect and wind, but it stays a LINE: an
+    // altitude, not a fraction of each summit's own height.
+    const snowLine = (0.30 + 0.13 * fbm1(t * 9 + seed * 5, 3)) * height;
+    const band = height * 0.07;
 
-    // Above the snow line the face is snow, below it rock — a hard-ish break
-    // rather than a gradient, because that is how a real ridge reads at range.
-    // Snow line as a fraction of this ring's maximum height, wandering along
-    // the ridge the way a real one does with aspect and wind.
-    const snowLine = (0.34 + 0.16 * fbm1(t * 40 + seed * 7, 2)) * height;
-    const mix = Math.min(1, Math.max(0, (h - snowLine) / (height * 0.30)));
-    c.copy(rockCol).lerp(snowCol, mix);
-    // Haze by height: the base of the ridge is buried in atmosphere.
-    c.lerp(hazeCol, 0.30);
-    pos.push(cs * radius, h, sn * radius);
-    col.push(c.r, c.g, c.b);
+    for (let l = 0; l <= LEVELS; l++) {
+      const f = l / LEVELS;
+      const y = -skirt + (h + skirt) * f;
+      pos.push(cs * radius, y, sn * radius);
+
+      const k = Math.min(1, Math.max(0, (y - snowLine) / band));
+      c.copy(rockCol).lerp(snowCol, k * k * (3 - 2 * k));
+      // Aerial perspective: the lower a face sits, the more atmosphere is in
+      // front of it, and anything at or below the origin is pure haze.
+      const haze = 1 - Math.min(1, Math.max(0, y / (height * 0.55)));
+      c.lerp(hazeCol, 0.20 + 0.80 * haze * haze);
+      col.push(c.r, c.g, c.b);
+    }
   }
+
+  const stride = LEVELS + 1;
   for (let i = 0; i < segments; i++) {
-    const a = i * 2, b = a + 1, cc = a + 2, d = a + 3;
-    idx.push(a, cc, b, b, cc, d);
+    for (let l = 0; l < LEVELS; l++) {
+      const a = i * stride + l, b = a + 1;
+      const cc = (i + 1) * stride + l, d = cc + 1;
+      idx.push(a, cc, b, b, cc, d);
+    }
   }
+
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
@@ -201,10 +218,14 @@ export function createEnvironment(renderer, scene, run) {
   const ridges = new THREE.Group();
   ridges.renderOrder = -1;
 
-  const hazeFar = horizon.clone().lerp(new THREE.Color(0x8fa8cc), 0.35);
-  const hazeNear = horizon.clone().lerp(new THREE.Color(0x6c86ad), 0.55);
-  const rock = new THREE.Color(run.time === 'dusk' ? 0x4a3f52 : 0x59617a);
-  const snowC = new THREE.Color(run.time === 'dawn' ? 0xffd9bd : run.time === 'dusk' ? 0xf0b9a8 : 0xf4f8ff);
+  // Aerial perspective: at four kilometres a ridge is mostly atmosphere, so
+  // these sit very close to the horizon colour. Pushing them darker "for
+  // contrast" is what turns a distant range into a cardboard cut-out.
+  const hazeFar = horizon.clone().lerp(new THREE.Color(0x9fb6d6), 0.16);
+  const hazeNear = horizon.clone().lerp(new THREE.Color(0x8ea6c8), 0.28);
+  const rock = new THREE.Color(run.time === 'dusk' ? 0x6b5c74 : 0x7c869e).lerp(horizon, 0.42);
+  const snowC = new THREE.Color(run.time === 'dawn' ? 0xffd9bd : run.time === 'dusk' ? 0xf0b9a8 : 0xf4f8ff)
+    .lerp(horizon, 0.22);
 
   // depthWrite MUST be on. These are opaque geometry standing between the sky
   // dome and the terrain: with it off, the sky dome — which draws after them —
@@ -216,14 +237,23 @@ export function createEnvironment(renderer, scene, run) {
 
   const far = new THREE.Mesh(buildRidge(
     { base: profile.base * 0.55, rough: profile.rough * 0.7, horns: profile.horns.map(h => ({ ...h, h: h.h * 0.7 })) },
-    9000, 2600, 220, 11.3, hazeFar, rock.clone().lerp(hazeFar, 0.55), snowC.clone().lerp(hazeFar, 0.45)), mkMat());
+    9000, 2600, 220, 11.3, hazeFar, rock.clone().lerp(hazeFar, 0.72), snowC.clone().lerp(hazeFar, 0.62), 420), mkMat());
   far.renderOrder = -3;
   ridges.add(far);
 
   const near = new THREE.Mesh(buildRidge(
-    profile, 4200, 1050, 300, 3.7, hazeNear, rock, snowC), mkMat());
+    profile, 4200, 1750, 300, 3.7, hazeNear, rock, snowC), mkMat());
   near.renderOrder = -2;
   ridges.add(near);
+
+  // A third range, closer and rockier. Overlapping silhouettes at three depths
+  // is what makes a horizon read as distance rather than as a painted backdrop.
+  const hazeMid = horizon.clone().lerp(new THREE.Color(0x7f96ba), 0.40);
+  const mid = new THREE.Mesh(buildRidge(
+    { base: profile.base * 0.62, rough: profile.rough * 1.3, horns: [] },
+    2100, 1150, 260, 21.7, hazeMid, rock, snowC, 200), mkMat());
+  mid.renderOrder = -1;
+  ridges.add(mid);
 
   scene.add(ridges);
 
@@ -289,7 +319,7 @@ export function createEnvironment(renderer, scene, run) {
 
     dispose() {
       envRT.dispose(); pmrem.dispose(); cloudTex.dispose();
-      far.geometry.dispose(); near.geometry.dispose();
+      far.geometry.dispose(); near.geometry.dispose(); mid.geometry.dispose();
       for (const c of clouds.children) { c.geometry.dispose(); c.material.dispose(); }
     },
   };

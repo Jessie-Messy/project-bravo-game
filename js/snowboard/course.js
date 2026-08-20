@@ -317,7 +317,22 @@ export class Course {
     // anything that looks like a fence.
     if (t > 1) {
       const over = au - hw;
-      y += Math.min(26, over * 0.10 + over * over * 0.006);
+      // Capped high enough (60 m, reached around 120 m out) that the run sits
+      // in a valley rather than on a table, and shallow enough — about 40° at
+      // its steepest — that the flanks stay SNOW. An earlier, steeper version
+      // crossed the shader's rock threshold and walled a glacier cruiser into a
+      // grey gorge. The cap exists so a player who leaves the corridor at speed
+      // meets a hillside rather than an infinite ramp.
+      // An APRON first: 34 m of barely-rising snow outside the corridor before
+      // the hillside proper starts. Without it the flanks begin at the piste
+      // edge and the run reads as a trench — the two shoulders converge in
+      // perspective into a dark V a few metres either side of the rider. The
+      // apron pushes that framing out to where it belongs and gives the run
+      // somewhere to spill into.
+      const APRON = 34;
+      const near = Math.min(over, APRON) * 0.045;
+      const far = Math.max(0, over - APRON);
+      y += near + Math.min(60, far * 0.10 + far * far * 0.005);
     }
 
     // Features

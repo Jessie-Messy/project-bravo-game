@@ -31,25 +31,25 @@ export const QUALITY = {
   low: Object.freeze({
     pixelRatio: 1.0, composer: false, bloom: null, shadows: false,
     shadowMapSize: 0, viewDist: 240, chunkAhead: 6, terrainRes: 0.55,
-    treeBudget: 260, sprayMax: 220, snowfall: 500, anisotropy: 4,
+    treeBudget: 420, sprayMax: 220, snowfall: 500, anisotropy: 4,
     sparkle: false, groomDetail: false, speedLines: false,
   }),
   medium: Object.freeze({
     pixelRatio: 1.5, composer: true, bloom: Object.freeze({ strength: 0.34, radius: 0.5, threshold: 2.4 }),
     shadows: true, shadowMapSize: 1024, viewDist: 320, chunkAhead: 8, terrainRes: 0.75,
-    treeBudget: 520, sprayMax: 420, snowfall: 900, anisotropy: 8,
+    treeBudget: 900, sprayMax: 420, snowfall: 900, anisotropy: 8,
     sparkle: true, groomDetail: true, speedLines: true,
   }),
   high: Object.freeze({
     pixelRatio: 1.75, composer: true, bloom: Object.freeze({ strength: 0.40, radius: 0.55, threshold: 2.3 }),
     shadows: true, shadowMapSize: 2048, viewDist: 440, chunkAhead: 11, terrainRes: 1.0,
-    treeBudget: 900, sprayMax: 700, snowfall: 1400, anisotropy: 16,
+    treeBudget: 1700, sprayMax: 700, snowfall: 1400, anisotropy: 16,
     sparkle: true, groomDetail: true, speedLines: true,
   }),
   ultra: Object.freeze({
     pixelRatio: 2.0, composer: true, bloom: Object.freeze({ strength: 0.46, radius: 0.6, threshold: 2.2 }),
     shadows: true, shadowMapSize: 4096, viewDist: 600, chunkAhead: 15, terrainRes: 1.25,
-    treeBudget: 1400, sprayMax: 1100, snowfall: 2200, anisotropy: 16,
+    treeBudget: 2600, sprayMax: 1100, snowfall: 2200, anisotropy: 16,
     sparkle: true, groomDetail: true, speedLines: true,
   }),
 };
