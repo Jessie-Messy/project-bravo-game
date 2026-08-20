@@ -20,6 +20,8 @@
 import * as THREE from 'three';
 import { CHUNK_LEN } from './course.js';
 
+export const DISTANT_LEN = 1500;   // metres of coarse terrain past the detail window
+
 export function createSnowMaterial(run, snowType, opts = {}) {
   // Snow's real albedo is ~0.85, not 1.0, and the difference matters: at 1.0
   // every lit surface clips to white and the shading disappears. Sitting the
@@ -120,18 +122,18 @@ export function createSnowMaterial(run, snowType, opts = {}) {
         float drift = vnoise3(vec3(vWPos.x * 0.55, vWPos.y * 0.2, vWPos.z * 0.18));
         diffuseColor.rgb *= 1.0 + (drift - 0.5) * 0.10 * (0.4 + uPowder);
 
-        // Rock break-through on genuinely steep faces only — past about 50°,
-        // where snow sloughs off. Catching gentler ground than that turns every
-        // out-of-bounds shoulder grey.
-        float rockMask = smoothstep(0.66, 0.40, slope + (vnoise3(vWPos * 0.8) - 0.5) * 0.16);
+        // Rock break-through on genuinely steep faces only — past about 55°,
+        // where snow sloughs off. Catching gentler ground than that turns the
+        // valley flanks grey and the run reads as a quarry.
+        float rockMask = smoothstep(0.58, 0.32, slope + (vnoise3(vWPos * 0.8) - 0.5) * 0.15);
         diffuseColor.rgb = mix(diffuseColor.rgb, uRockCol * (0.75 + grain * 0.6), rockMask * 0.92);
 
         // The same corduroy as a faint tonal stripe. Normal-map detail vanishes
         // under mip filtering a hundred metres out; a brightness difference
         // survives, which keeps the piste reading as groomed all the way to the
         // fog line.
-        float cord = sin(vWPos.x * 18.0) * 0.5 + 0.5;
-        diffuseColor.rgb *= 1.0 + (cord - 0.5) * 0.055 * vGroom * uGroomDetail;
+        float cord = sin(vWPos.x * 7.0) * 0.5 + 0.5;
+        diffuseColor.rgb *= 1.0 + (cord - 0.5) * 0.12 * vGroom * uGroomDetail;
 
         // Scraped ice on the fall line of a hardpack piste.
         float scrape = smoothstep(0.55, 0.95, vnoise3(vec3(vWPos.x * 0.9, 0.0, vWPos.z * 0.12)));
@@ -157,10 +159,10 @@ export function createSnowMaterial(run, snowType, opts = {}) {
         if (uGroomDetail > 0.5 && vGroom > 0.01) {
           // ~35 cm corduroy running down the fall line, plus a finer second
           // harmonic so it does not read as a single clean sine.
-          float rip = sin(vWPos.x * 18.0) * 0.5 + sin(vWPos.x * 41.0 + vWPos.z * 0.4) * 0.22;
+          float rip = sin(vWPos.x * 7.0) * 0.5 + sin(vWPos.x * 16.0 + vWPos.z * 0.4) * 0.26;
           vec3 t = normalize(vec3(1.0, 0.0, 0.0) - vWNrm * vWNrm.x);
           vec3 tv = normalize((viewMatrix * vec4(t, 0.0)).xyz);
-          normal = normalize(normal + tv * rip * 0.17 * vGroom);
+          normal = normalize(normal + tv * rip * 0.38 * vGroom);
         }
         // Micro-relief everywhere, so grazing light picks up texture.
         vec3 nOff = vec3(
@@ -228,16 +230,26 @@ export class TerrainField {
     // to avoid. They age out naturally as the rider descends.
   }
 
-  /** Lateral half-extent of the built mesh at distance d. */
+  /**
+   * Lateral half-extent of the built mesh at distance d.
+   *
+   * Deliberately far wider than the corridor. At 42 m the mesh's own boundary
+   * was inside the frame from the chase camera — a hard silhouette edge with
+   * sky behind it, sweeping past the rider like a pair of dark wings. The fix
+   * is not more vertices, it is putting the boundary outside the view: the
+   * column warp below keeps the same vertex count concentrated on the piste and
+   * spends only its outermost handful on the far hillside, which is nearly flat
+   * out there anyway.
+   */
   _extentAt(d) {
-    return this.course.widthAt(d) * 1.35 + 42;
+    return this.course.widthAt(d) * 1.3 + 155;
   }
 
   /** Column j of `cols`, warped so resolution concentrates on the piste. */
   _colU(j, extent) {
     const s = (j / this.cols) * 2 - 1;
     const a = Math.abs(s);
-    return Math.sign(s) * Math.pow(a, 1.7) * extent;
+    return Math.sign(s) * Math.pow(a, 2.1) * extent;
   }
 
   _build(ci) {
@@ -341,12 +353,84 @@ export class TerrainField {
         this.chunks.delete(i);
       }
     }
+    if (this._distantAt === undefined || riderD - this._distantAt > 120) this._buildDistant(riderD);
     return built;
+  }
+
+  // ── Distant shell ───────────────────────────────────────────────
+  // The detailed chunk window only reaches chunkAhead × 40 m. Without something
+  // beyond it the fog has to be dense enough to bury that edge, which on a
+  // bluebird day at Zermatt throws away the entire reason to be up there. This
+  // is one coarse mesh covering the next 1.5 km — about 2,000 height samples,
+  // rebuilt every 120 m of descent, so roughly once every three seconds at
+  // speed. It sits 0.6 m below the detailed chunks so the overlap band always
+  // resolves in the detail's favour instead of z-fighting with it.
+  _buildDistant(fromD) {
+    const course = this.course;
+    const near = fromD + this.ahead * CHUNK_LEN - 60;
+    const far = Math.min(course.total + 400, near + DISTANT_LEN);
+    const rows = 44, cols = 40;
+    const pos = new Float32Array((rows + 1) * (cols + 1) * 3);
+    const groom = new Float32Array((rows + 1) * (cols + 1));
+    const curv = new Float32Array((rows + 1) * (cols + 1));
+    const idx = new Uint32Array(rows * cols * 6);
+
+    let vi = 0;
+    for (let r = 0; r <= rows; r++) {
+      // Bias the sampling toward the near end, where a metre of error is
+      // several pixels; out at 1.5 km nobody can tell.
+      const t = Math.pow(r / rows, 1.5);
+      const d = near + (far - near) * t;
+      const z = -d;
+      const c = course.centreAt(d);
+      // Much wider than the detail mesh: at this range the corridor is a thread
+      // and what fills the frame is the hillside either side of it.
+      const extent = course.widthAt(d) * 1.4 + 340;
+      for (let j = 0; j <= cols; j++) {
+        const u = (Math.pow(Math.abs(j / cols * 2 - 1), 1.9) * Math.sign(j / cols * 2 - 1)) * extent;
+        const x = c + u;
+        pos[vi * 3] = x; pos[vi * 3 + 1] = course.height(x, z) - 1.5; pos[vi * 3 + 2] = z;
+        groom[vi] = 0;
+        curv[vi] = 0;
+        vi++;
+      }
+    }
+    let ii = 0;
+    const stride = cols + 1;
+    for (let r = 0; r < rows; r++) {
+      for (let j = 0; j < cols; j++) {
+        const a = r * stride + j, b = a + 1, cc = a + stride, dd = cc + 1;
+        idx[ii++] = a; idx[ii++] = cc; idx[ii++] = b;
+        idx[ii++] = b; idx[ii++] = cc; idx[ii++] = dd;
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('aGroom', new THREE.BufferAttribute(groom, 1));
+    g.setAttribute('aCurv', new THREE.BufferAttribute(curv, 1));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    g.computeVertexNormals();
+    g.computeBoundingSphere();
+
+    if (this.distant) {
+      this.group.remove(this.distant);
+      this.distant.geometry.dispose();
+    }
+    const m = new THREE.Mesh(g, this.material);
+    m.castShadow = false;
+    m.receiveShadow = false;
+    m.matrixAutoUpdate = false;
+    m.updateMatrix();
+    m.renderOrder = -1;      // painted before the detail it sits underneath
+    this.group.add(m);
+    this.distant = m;
+    this._distantAt = fromD;
   }
 
   /** Build every chunk in the window right now (used on the loading screen). */
   prime(riderD) {
     while (this.update(riderD, 4) > 0) { /* keep going until the window is full */ }
+    this._buildDistant(riderD);
   }
 
   setUniform(name, value) {
@@ -360,6 +444,8 @@ export class TerrainField {
   dispose() {
     for (const [, m] of this.chunks) m.geometry.dispose();
     this.chunks.clear();
+    this.distant?.geometry.dispose();
+    this.distant = null;
     this.material.dispose();
   }
 }

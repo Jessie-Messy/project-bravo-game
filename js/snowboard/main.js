@@ -13,7 +13,7 @@ import { getSettings, getTier, setTier, onTierChange, frameTick, PHYS } from './
 import { SNOW_TYPES } from './data/runs.js';
 import { deriveHandling } from './data/gear.js';
 import { Course, CHUNK_LEN } from './course.js';
-import { TerrainField } from './terrain.js';
+import { TerrainField, DISTANT_LEN } from './terrain.js';
 import { Scenery } from './scenery.js';
 import { createEnvironment } from './sky.js';
 import { createRider } from './rider.js';
@@ -164,11 +164,10 @@ async function buildWorld(sel, onProgress = () => {}) {
   snowfall.setPixelRatio(renderer.getPixelRatio());
   root.add(snowfall.points);
 
-  // Pin the fog to how far the terrain actually reaches — chunkAhead chunks of
-  // CHUNK_LEN metres — so the cull edge is always buried, whichever is denser:
-  // the weather's own haze or the minimum needed to hide it. 1.35/extent puts
-  // roughly 84% fog at the last chunk, which fades it out rather than cutting.
-  const terrainReach = quality.chunkAhead * CHUNK_LEN;
+  // Fog only has to bury the far edge of the DISTANT shell, not the detail
+  // window, which is what lets a bluebird day at Zermatt keep its view instead
+  // of drowning the valley in haze to hide a cull line 440 m out.
+  const terrainReach = quality.chunkAhead * CHUNK_LEN + DISTANT_LEN;
   scene.fog.density = Math.max(env.weather.fogDensity, 1.35 / terrainReach);
 
   const handling = deriveHandling(sel.board, sel.rider);
@@ -516,6 +515,11 @@ function tick(now) {
     const d = world.ride.distance;
     world.terrain.update(d, state === 'menu' ? 1 : 2);
     world.scenery.update(d);
+    // Particle sizes are in metres, so they need the camera's current
+    // projection — and the FOV widens with speed, so this is per frame.
+    const vh = renderer.domElement.height / renderer.getPixelRatio();
+    world.spray.setProjection(vh, camera.fov);
+    world.snowfall.setProjection(vh, camera.fov);
     world.spray.update(dt, world.env.weather.wind * 2);
     world.snowfall.update(dt, camera, world.ride.vel);
     world.env.update(camera, dt);
@@ -541,7 +545,7 @@ function tick(now) {
 
   // Render
   const sp01 = world.ride ? Math.min(1, world.ride.groundSpeed / (PHYS.MAX_SPEED * 0.62)) : 0;
-  if (composer) {
+  if (composer && !window.SNOW?.noPost) {
     composer.setLook(state === 'ride' ? sp01 : 0, flash);
     composer.render(dt);
   } else {
@@ -577,5 +581,12 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-// Expose a little of the machinery for debugging without a bundler.
-window.SNOW = { get world() { return world; }, get state() { return state; }, setTier, getTier, renderer, scene, camera };
+// Expose a little of the machinery for debugging without a bundler. `noPost`
+// bypasses the composer, which is how you tell a grading artefact apart from a
+// geometry one without editing a file.
+window.SNOW = {
+  get world() { return world; },
+  get state() { return state; },
+  noPost: false,
+  setTier, getTier, renderer, scene, camera,
+};

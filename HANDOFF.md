@@ -16,6 +16,100 @@ handoff is invisible to the next session and causes collisions.
 
 ---
 
+## Alpenglow — the snowboard game (`snowboard.html`)
+
+A second, self-contained game in this repo. It shares the repo, the conventions
+and nothing else: no imports cross between `js/snowboard/` and `js/`, no shared
+state, no shared save key. You can work on either without reading the other.
+
+- **Run it:** serve the repo root and open `/snowboard.html`. `start_game.bat`
+  still opens the medieval prototype; point a browser at `snowboard.html`
+  manually, or use any static server (`npx serve -l 5173 .`).
+- **three.js is VENDORED** at `vendor/three/` (r160, 15 modules, MIT). The
+  medieval prototype still uses the jsDelivr CDN — that is deliberate, not an
+  inconsistency. A phone game should not block first paint on a third-party
+  host. `vendor/three/README.md` says how to refresh it.
+
+### The one idea worth knowing
+
+`js/snowboard/course.js` is a **single analytic height function**, `height(x,z)`.
+It is the only source of truth for where the snow is:
+
+- `terrain.js` evaluates it to build chunk geometry
+- `physics.js` evaluates it four times a frame to stand the rider on it
+- `scenery.js` evaluates it once at load to sit trees on it
+
+Nothing can disagree about the ground, which is the entire bug class that a
+separate collision mesh introduces. **If you change the shape of the mountain,
+change it there and everything follows.** A run is authored as a pitch profile,
+a corridor width profile and a list of feature zones (moguls, kickers, halfpipe,
+crevasses…) in `data/runs.js`.
+
+Physics is ballistic-first: every frame integrates full 3D velocity under
+gravity, then asks whether the board ended up below the snow. Going airborne off
+a roller, a mogul, a kicker lip or a cliff band all fall out of those three
+lines — `physics.js` does not know features exist.
+
+### Files
+
+| File | What it owns |
+| --- | --- |
+| `config.js` | quality tiers, device detect, auto-demote, all physics/scoring tunables |
+| `data/runs.js` | the ten mountains — pitch, width, weather, feature zones |
+| `data/gear.js` | six boards, six riders, and the stats→physics mapping |
+| `course.js` | the height function, the props list |
+| `terrain.js` | snow shader + 40 m chunk streamer + the distant shell |
+| `scenery.js` | procedural trees/rocks/seracs/piste furniture, all instanced |
+| `sky.js` | Preetham sky, snow-tuned lighting, the three-ring skyline |
+| `rider.js` | procedural rider and board, posed from one `pose` object |
+| `physics.js` | the ride |
+| `fx.js` | spray and snowfall particles |
+| `post.js` | bloom → tone map → grade (speed streaks, vignette) |
+| `ui.js` / `css/snowboard.css` | screens, HUD, saved bests |
+| `input.js` | touch / keyboard / tilt / gamepad, one output struct |
+| `main.js` | boot, world assembly, camera, frame loop |
+
+### Gotchas this cost real time
+
+- **Backticks inside the GLSL template literals.** `terrain.js` builds shader
+  chunks in `` `...` `` strings. A backtick in a *comment* inside one silently
+  ends the literal and the module fails to parse with "missing ) after argument
+  list", pointing at a line several above the real one. Parse every file
+  (`node --check`) after editing a shader.
+- **`normal` is in VIEW space** inside `#include <normal_fragment_maps>`.
+  Perturbing it with a world-space vector tilts it in whatever direction the
+  camera faces — the corduroy was invisible for exactly this reason. Rotate
+  offsets with `viewMatrix` first.
+- **The sky dome will paint over the skyline.** Ridge materials must have
+  `depthWrite: true` and the Sky mesh needs a very negative `renderOrder`;
+  otherwise the dome draws afterwards, passes the depth test against geometry
+  that never wrote depth, and erases the mountains.
+- **Bloom threshold is in HDR scene units**, before tone mapping. Sunlit snow
+  sits around 1.5–2.5 there, so the "sensible" 0.9 blooms the entire slope into
+  a white halo. It is 2.2–2.4.
+- **Particle sizes are metres**, converted with `viewportHeight / (2·tan(fov/2))`.
+  The first version used a magic constant with unitless sizes and a single spray
+  particle rendered over a thousand pixels wide — on screen it read as a white
+  sheet hanging off the board.
+- **The terrain mesh's own lateral edge is visible** from the chase camera.
+  It is 155 m out, not 42, for that reason — widening it costs nothing because
+  the column warp keeps the vertex count on the piste.
+- **Exposure is the whole ballgame on snow.** Sunlit snow has to land near 0.8,
+  not 1.0. `TIME_PRESETS[*].exposure` in `sky.js` is where that lives, and the
+  values are low (0.24–0.40) on purpose.
+
+### Not done yet
+
+- No multiplayer, no ghosts, no leaderboard. Bests are `localStorage` only
+  (`bravoSnowSave_v1`).
+- Rails/boxes are ridable and score a grind, but there is no dedicated grind
+  balance mechanic.
+- Verified in Chromium (desktop and emulated phone, portrait and landscape).
+  Not yet run on real iOS/Android hardware — tilt steering in particular is
+  implemented and permission-gated but untested on a physical device.
+
+---
+
 ## Graphics overhaul — COMMITTED and on `master`
 
 ⚠ This section used to read "IN PROGRESS — branch `graphics-overhaul`, UNCOMMITTED".

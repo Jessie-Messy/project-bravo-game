@@ -12,6 +12,12 @@
 
 import * as THREE from 'three';
 
+// aSize is a real diameter IN METRES, and uScale carries the only thing needed
+// to turn that into pixels: viewportHeightPx / (2 * tan(fov/2)). The previous
+// version used a magic 300.0 with sizes in arbitrary units, which put a single
+// close spray particle at over a thousand pixels across — on screen it read as
+// a white sheet hanging off the board, not as snow. Sizing in metres also means
+// the field stays correct when the FOV widens with speed.
 const PARTICLE_VS = /* glsl */`
   attribute float aSize;
   attribute float aLife;
@@ -19,12 +25,14 @@ const PARTICLE_VS = /* glsl */`
   varying float vLife;
   varying vec3  vTint;
   uniform float uPixelRatio;
+  uniform float uScale;
+  uniform float uMaxPx;
   void main() {
     vLife = aLife;
     vTint = aTint;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     gl_Position = projectionMatrix * mv;
-    gl_PointSize = aSize * uPixelRatio * (300.0 / max(1.0, -mv.z));
+    gl_PointSize = min(aSize * uScale / max(0.35, -mv.z), uMaxPx) * uPixelRatio;
   }
 `;
 
@@ -58,6 +66,9 @@ function makePoints(count, color, opacity, blending, sizeAttenuation = true) {
       uColor: { value: new THREE.Color(color) },
       uOpacity: { value: opacity },
       uPixelRatio: { value: 1 },
+      uScale: { value: 600 },     // recomputed from the live camera each frame
+      uMaxPx: { value: 140 },     // fill-rate guard: one particle must never
+                                  // become a full-screen quad
     },
     transparent: true,
     depthWrite: false,
@@ -112,7 +123,9 @@ export class Spray {
       this.vel[i * 3 + 1] = ry * 2.2 + up.y * ry;
       this.vel[i * 3 + 2] = -dir.z * back + rz + up.z * ry * 2;
 
-      this.size.array[i] = (0.18 + Math.random() * 0.4) * (0.7 + power * 1.5) * 14;
+      // Metres across. A thrown clump of snow is a hand-sized thing that
+      // expands as it drifts, not a beach ball.
+      this.size.array[i] = (0.10 + Math.random() * 0.22) * (0.7 + power * 1.1);
       this.ttl[i] = 0.5 + Math.random() * (0.6 + power * 0.9);
       this.age[i] = 0;
       this.life.array[i] = 1;
@@ -142,7 +155,7 @@ export class Spray {
       this.pos.array[i * 3 + 2] += this.vel[i * 3 + 2] * dt;
       // Fade in fast, out slow.
       this.life.array[i] = Math.min(1, t * 6) * (1 - t) * (1 - t);
-      this.size.array[i] *= 1 + dt * 0.9;      // the cloud expands as it drifts
+      this.size.array[i] *= 1 + dt * 0.75;     // the cloud expands as it drifts
     }
     this.points.geometry.setDrawRange(0, this.count);
     this.pos.needsUpdate = true;
@@ -152,6 +165,10 @@ export class Spray {
   }
 
   setPixelRatio(r) { this.points.material.uniforms.uPixelRatio.value = r; }
+  setProjection(heightPx, fovDeg) {
+    this.points.material.uniforms.uScale.value =
+      heightPx / (2 * Math.tan(fovDeg * Math.PI / 360));
+  }
   dispose() { this.points.geometry.dispose(); this.points.material.dispose(); }
 }
 
@@ -178,7 +195,10 @@ export class Snowfall {
       // A spread of flake sizes is what gives the field depth; all-equal sizes
       // read as a bug.
       const big = Math.random() < 0.22;
-      this.size.array[i] = (big ? 3.2 + Math.random() * 3.5 : 1.0 + Math.random() * 1.8);
+      // Near flakes are metres from the lens, so even a real 5 mm flake needs
+      // to be a few centimetres here to register at all; the 'big' ones are the
+      // out-of-focus foreground flakes every snow photograph has.
+      this.size.array[i] = big ? 0.10 + Math.random() * 0.16 : 0.025 + Math.random() * 0.05;
       this.life.array[i] = big ? 0.85 : 0.55 + Math.random() * 0.3;
       this.vel[i * 3] = (Math.random() - 0.5) * 0.8;
       this.vel[i * 3 + 1] = -(0.9 + Math.random() * 2.4) * (big ? 1.35 : 1);
@@ -216,5 +236,9 @@ export class Snowfall {
   }
 
   setPixelRatio(r) { this.points.material.uniforms.uPixelRatio.value = r; }
+  setProjection(heightPx, fovDeg) {
+    this.points.material.uniforms.uScale.value =
+      heightPx / (2 * Math.tan(fovDeg * Math.PI / 360));
+  }
   dispose() { this.points.geometry.dispose(); this.points.material.dispose(); }
 }
