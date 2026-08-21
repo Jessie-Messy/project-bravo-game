@@ -506,10 +506,33 @@ let lastFrameDt = 1 / 60;
 // re-armed on the first line, so without this a single throwing subsystem
 // leaves the loop running and doing nothing for the rest of the session: the
 // game is frozen, the screen is live, and there is no clue on it as to why.
+//
+// The report goes ON SCREEN as well as to the console, and that is the whole
+// point of it. A phone has no console. The first version of this guard logged
+// and nothing else, so a SecurityError from the gamepad API — thrown every
+// frame, on the first frame of every run — presented to the player as a game
+// that simply would not start, and took two rounds of back-and-forth to
+// identify. An error the player can read is an error they can report.
 let loopErrors = 0;
 function reportLoopError(where, err) {
-  if (loopErrors++ === 0) console.error(`Frame loop error in ${where}:`, err);
+  if (loopErrors++ === 0) {
+    console.error(`Frame loop error in ${where}:`, err);
+    showLoopError(where, err);
+  }
   if (loopErrors === 60) console.error('Frame loop still failing; further errors suppressed.');
+}
+
+function showLoopError(where, err) {
+  try {
+    const bar = document.createElement('div');
+    bar.className = 'errbar';
+    const msg = (err && (err.message || err.name)) || String(err);
+    bar.innerHTML = `<b>Something broke in the ${where} loop.</b>
+      <span>${msg.replace(/[<&]/g, c => (c === '<' ? '&lt;' : '&amp;'))}</span>
+      <button type="button" aria-label="Dismiss">Dismiss</button>`;
+    bar.querySelector('button').onclick = () => bar.remove();
+    uiRoot.appendChild(bar);
+  } catch { /* the reporter must never be the thing that throws */ }
 }
 
 function tick(now) {

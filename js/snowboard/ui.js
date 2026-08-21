@@ -42,6 +42,9 @@ export function writeSave(s) {
 
 export class UI {
   constructor(root, hooks) {
+    // Stamped on <html> so the stylesheet can ask "does this device have
+    // touch?" instead of guessing from the viewport width.
+    document.documentElement.classList.toggle('is-touch', IS_TOUCH);
     this.root = root;
     this.hooks = hooks;
     this.save = loadSave();

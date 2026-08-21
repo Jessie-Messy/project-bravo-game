@@ -94,6 +94,24 @@ lines — `physics.js` does not know features exist.
 - **The terrain mesh's own lateral edge is visible** from the chase camera.
   It is 155 m out, not 42, for that reason — widening it costs nothing because
   the column warp keeps the vertex count on the piste.
+- **`navigator.getGamepads()` THROWS in an embed.** The Gamepad API is gated by
+  Permissions Policy, and in a document not granted it the method exists and
+  refuses to run — feature-detecting it is not enough. It was polled every
+  frame, from inside the frame loop, and only once a run was under way, so the
+  SecurityError took out physics, camera, HUD and streaming together: the game
+  reached the start gate and froze there, with the ollie button still lighting
+  up because that is pure CSS. The result is latched off after the first
+  refusal. Treat any Permissions-Policy-gated API the same way.
+- **The frame loop's error guard must be VISIBLE.** It originally logged to the
+  console and nothing else, which on a phone is nowhere. That is what turned
+  the bug above into two rounds of guesswork. It now paints a dismissible
+  banner (`.errbar`) with the message.
+- **Never gate touch controls on viewport width.** They were hidden by a
+  `min-width: 780px` media query, so they vanished on any touch device
+  measuring wide — a phone in landscape, a tablet, or an embed whose iframe
+  reports a desktop layout width — leaving a touch player unable to ollie.
+  Gate on the `is-touch` class instead, stamped on `<html>` from the same
+  detection the input layer uses.
 - **Two clocks in the frame loop.** `dt` is clamped to 1/4 s so a backgrounded
   tab cannot teleport the rider; `realDt` is not. Anything measuring the
   *world* uses the clamp, anything measuring the *device* (the quality
