@@ -24,6 +24,10 @@ const STORE_KEY = 'bravoSnowQuality_v1';
 //   bloom.threshold— in HDR scene units, BEFORE tone mapping: sunlit snow sits
 //                   around 1.5–2.5 there, so anything under ~2 blooms the whole
 //                   slope into a white halo instead of just the glints.
+//   msaa / smaa    — stated per tier rather than inferred from shadowMapSize,
+//                   which is how a phone ended up paying for 4x MSAA AND an
+//                   SMAA pass at the same time. They are alternatives; only
+//                   the top desktop tier is allowed to buy both.
 //   treeBudget    — instanced conifers alive at once across all chunks.
 //   sprayMax      — particles in the board-spray pool.
 //   snowfall      — ambient falling-snow particle count.
@@ -32,24 +36,28 @@ export const QUALITY = {
     pixelRatio: 1.0, composer: false, bloom: null, shadows: false,
     shadowMapSize: 0, viewDist: 240, chunkAhead: 6, terrainRes: 0.55,
     treeBudget: 420, sprayMax: 220, snowfall: 500, anisotropy: 4,
+    msaa: 0, smaa: false,
     sparkle: false, groomDetail: false, speedLines: false,
   }),
   medium: Object.freeze({
     pixelRatio: 1.5, composer: true, bloom: Object.freeze({ strength: 0.34, radius: 0.5, threshold: 2.4 }),
     shadows: true, shadowMapSize: 1024, viewDist: 320, chunkAhead: 8, terrainRes: 0.75,
     treeBudget: 900, sprayMax: 420, snowfall: 900, anisotropy: 8,
+    msaa: 0, smaa: false,
     sparkle: true, groomDetail: true, speedLines: true,
   }),
   high: Object.freeze({
     pixelRatio: 1.75, composer: true, bloom: Object.freeze({ strength: 0.40, radius: 0.55, threshold: 2.3 }),
     shadows: true, shadowMapSize: 2048, viewDist: 440, chunkAhead: 11, terrainRes: 1.0,
     treeBudget: 1700, sprayMax: 700, snowfall: 1400, anisotropy: 16,
+    msaa: 0, smaa: true,
     sparkle: true, groomDetail: true, speedLines: true,
   }),
   ultra: Object.freeze({
     pixelRatio: 2.0, composer: true, bloom: Object.freeze({ strength: 0.46, radius: 0.6, threshold: 2.2 }),
     shadows: true, shadowMapSize: 4096, viewDist: 600, chunkAhead: 15, terrainRes: 1.25,
     treeBudget: 2600, sprayMax: 1100, snowfall: 2200, anisotropy: 16,
+    msaa: 4, smaa: true,
     sparkle: true, groomDetail: true, speedLines: true,
   }),
 };
@@ -68,11 +76,21 @@ function guessTier() {
   const mem = navigator.deviceMemory || (IS_MOBILE ? 4 : 8);
   const cores = navigator.hardwareConcurrency || (IS_MOBILE ? 4 : 8);
   if (IS_MOBILE) {
-    // Phones lie about cores far less than they lie about memory, so cores
-    // carry the decision here. A modern iPhone reports 6; a budget Android 4.
-    if (cores >= 6 && mem >= 4) return 'high';
-    if (cores >= 4) return 'medium';
-    return 'low';
+    // Phones get MEDIUM at best on a first run, and it is worth being explicit
+    // about why, because the detection here used to say `high`.
+    //
+    // Safari does not implement deviceMemory, so `mem` falls back to 4 on
+    // every iPhone, and every modern iPhone reports 6 cores — which meant the
+    // check below passed on all of them and handed a phone the desktop tier:
+    // 1.75 pixel ratio, 2048 shadows, 4x MSAA and SMAA on top. That is a
+    // multi-second first frame on hardware that could have run the game fine,
+    // and the player sees a game that will not start.
+    //
+    // Nothing here can measure a GPU, so guessing upward is the wrong bet: the
+    // watchdog can only demote, and every second spent above the device's real
+    // ceiling is a second of unplayable game. Start conservative; a player who
+    // wants more can raise it in Settings and it is remembered.
+    return cores >= 6 ? 'medium' : 'low';
   }
   if (cores >= 8 && mem >= 8) return 'ultra';
   if (cores >= 4) return 'high';
@@ -102,21 +120,36 @@ export function setTier(t, { persist = true } = {}) {
 
 // ── Auto-demote watchdog ──────────────────────────────────────────
 // A phone that thermally throttles three minutes into a run is the common
-// case, not the exception. Sustained slow frames drop the tier one step; we
-// never promote back up automatically, because oscillating between tiers looks
-// far worse than simply staying on the lower one.
+// case, not the exception. Sustained slow frames drop the tier; we never
+// promote back up automatically, because oscillating between tiers looks far
+// worse than simply staying on the lower one.
+//
+// MUST be fed REAL elapsed time, not the simulation's clamped dt. With the
+// clamp, a device rendering at 0.7 fps reports 0.25 s per frame, so a one
+// second sampling window took four real seconds to close and a demotion took
+// half a minute — by which point the player has already put the phone down.
+//
+// A really bad frame rate also demotes more than one step at once. There is no
+// value in stepping politely down from ultra to high on hardware that is
+// managing two frames a second.
 let _slow = 0, _frames = 0, _acc = 0;
 
-export function frameTick(dt) {
-  _frames++; _acc += dt;
-  if (_acc < 1) return;
+export function frameTick(realDt) {
+  _frames++; _acc += realDt;
+  if (_acc < 0.8) return;
   const fps = _frames / _acc;
   _frames = 0; _acc = 0;
-  if (fps < 26) _slow++; else _slow = Math.max(0, _slow - 1);
-  if (_slow >= 4) {
+  if (fps >= 26) { _slow = Math.max(0, _slow - 1); return; }
+
+  _slow++;
+  // One bad window is enough when it is catastrophic; otherwise wait for two,
+  // so a single hitch (a chunk build, a shader compile) never costs a tier.
+  const steps = fps < 8 ? 2 : fps < 16 ? 1 : 0;
+  if (_slow >= 2 || steps >= 2) {
     _slow = 0;
     const i = TIERS.indexOf(_tier);
-    if (i > 0) setTier(TIERS[i - 1], { persist: false });
+    const target = Math.max(0, i - Math.max(1, steps));
+    if (target < i) setTier(TIERS[target], { persist: false });
   }
 }
 

@@ -101,7 +101,8 @@ window.addEventListener('orientationchange', () => setTimeout(resize, 220));
 // ── World ─────────────────────────────────────────────────────────
 let world = null;
 let building = false;         // a world build is in flight; DROP IN must wait
-let state = 'boot';           // boot | menu | countdown | ride | finished
+let state = 'boot';
+let countdownEndsAt = 0;      // wall-clock, deliberately not simulation time           // boot | menu | countdown | ride | finished
 let countdown = 0;
 let flash = 0;
 let camYaw = 0, camDist = 8, camHeight = 3.2, camFov = 64;
@@ -283,7 +284,15 @@ function startRun() {
   resetRide();
   ui.enterRide();
   state = 'countdown';
-  countdown = 2.6;
+  // Wall clock, NOT accumulated simulation time. dt is clamped to 1/4 second so
+  // a backgrounded tab cannot teleport the rider, but that clamp also means a
+  // device rendering slower than 4 fps advances the countdown slower than real
+  // time — and the first second of a run is the slowest there is, with shaders
+  // compiling and chunks uploading. A phone could sit on "3" for ten seconds
+  // and read, correctly, as a game that will not start.
+  countdown = COUNTDOWN_SEC;
+  countdownEndsAt = performance.now() + COUNTDOWN_SEC * 1000;
+  world._lastCount = null;      // so a retry calls "3" again, not silence
   input.enabled = true;
   input.reset();
   audio.init();
@@ -490,20 +499,50 @@ function onFinish() {
 // ── Frame loop ────────────────────────────────────────────────────
 let last = performance.now();
 const MAX_STEP = 1 / 90;
+const COUNTDOWN_SEC = 2.6;
+let lastFrameDt = 1 / 60;
+
+// Errors inside the loop are reported once and then swallowed. rAF is
+// re-armed on the first line, so without this a single throwing subsystem
+// leaves the loop running and doing nothing for the rest of the session: the
+// game is frozen, the screen is live, and there is no clue on it as to why.
+let loopErrors = 0;
+function reportLoopError(where, err) {
+  if (loopErrors++ === 0) console.error(`Frame loop error in ${where}:`, err);
+  if (loopErrors === 60) console.error('Frame loop still failing; further errors suppressed.');
+}
 
 function tick(now) {
   requestAnimationFrame(tick);
-  let dt = (now - last) / 1000;
+  try {
+    simulate(now);
+  } catch (err) {
+    reportLoopError('update', err);
+  }
+  try {
+    present();
+  } catch (err) {
+    reportLoopError('render', err);
+  }
+}
+
+function simulate(now) {
+  const realDt = (now - last) / 1000;
   last = now;
-  if (dt > 0.25) dt = 0.25;              // a backgrounded tab must not teleport
+  // Two clocks on purpose. `dt` drives the simulation and is clamped, so a
+  // backgrounded tab cannot teleport the rider through the mountain on the
+  // frame it comes back. `realDt` is what actually elapsed, and it is what the
+  // performance watchdog has to measure — fed the clamped value, it thinks a
+  // device managing one frame a second is managing four.
+  const dt = Math.min(realDt, 0.25);
   if (!world) return;
 
   const paused = ui.isPaused;
-  frameTick(dt);
+  frameTick(realDt);
 
   if (!paused) {
     if (state === 'countdown') {
-      countdown -= dt;
+      countdown = (countdownEndsAt - now) / 1000;
       const n = Math.ceil(countdown);
       if (n !== world._lastCount) {
         world._lastCount = n;
@@ -569,11 +608,17 @@ function tick(now) {
     flash = Math.max(0, flash - dt * 1.8);
   }
 
-  // Render
+  lastFrameDt = dt;
+}
+
+/** Draw. Kept separate from the simulation so a throw in one still leaves the
+ *  other running — a frozen picture and a live picture fail very differently. */
+function present() {
+  if (!world) return;
   const sp01 = world.ride ? Math.min(1, world.ride.groundSpeed / (PHYS.MAX_SPEED * 0.62)) : 0;
   if (composer && !window.SNOW?.noPost) {
     composer.setLook(state === 'ride' ? sp01 : 0, flash);
-    composer.render(dt);
+    composer.render(lastFrameDt);
   } else {
     renderer.render(scene, camera);
   }

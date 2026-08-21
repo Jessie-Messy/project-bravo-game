@@ -96,7 +96,7 @@ export function createComposer(renderer, scene, camera, quality) {
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
   const target = new THREE.WebGLRenderTarget(size.x, size.y, {
     type: THREE.HalfFloatType,
-    samples: quality.shadowMapSize >= 2048 ? 4 : 0,   // MSAA where we can afford it
+    samples: quality.msaa || 0,
   });
   const composer = new EffectComposer(renderer, target);
   composer.addPass(new RenderPass(scene, camera));
@@ -114,10 +114,7 @@ export function createComposer(renderer, scene, camera, quality) {
   const grade = new ShaderPass(GradeShader);
   composer.addPass(grade);
 
-  if (quality.shadowMapSize >= 2048) {
-    const smaa = new SMAAPass(size.x, size.y);
-    composer.addPass(smaa);
-  }
+  if (quality.smaa) composer.addPass(new SMAAPass(size.x, size.y));
 
   return {
     composer, grade, bloom,

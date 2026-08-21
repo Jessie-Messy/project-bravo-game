@@ -8,7 +8,17 @@
 // Nothing is created until the first user gesture, because every mobile browser
 // requires that and an AudioContext built earlier just sits suspended.
 
+// `unavailable` latches once the browser has refused us an AudioContext, so we
+// stop retrying a constructor that throws — and, more importantly, so that
+// every entry point below can no-op instead of dereferencing a null `ac`.
+//
+// This module sits inside the DROP IN handler. When it threw, the exception
+// propagated out of the click listener and the run never started: tapping the
+// button did nothing at all, on a device where everything else worked. Sound is
+// a garnish and it must never be able to stop the game — so nothing here is
+// allowed to throw, at any entry point, for any reason.
 let ac = null, master = null, bus = null;
+let unavailable = false;
 let muted = false, volume = 0.7;
 let ride = null;                 // the continuous ride bed
 let started = false;
@@ -16,11 +26,11 @@ let started = false;
 export function isMuted() { return muted; }
 export function setMuted(v) {
   muted = v;
-  if (master) master.gain.setTargetAtTime(muted ? 0 : volume, ac.currentTime, 0.05);
+  if (ac && master) master.gain.setTargetAtTime(muted ? 0 : volume, ac.currentTime, 0.05);
 }
 export function setVolume(v) {
   volume = v;
-  if (master && !muted) master.gain.setTargetAtTime(v, ac.currentTime, 0.05);
+  if (ac && master && !muted) master.gain.setTargetAtTime(v, ac.currentTime, 0.05);
 }
 
 function noiseBuffer(seconds = 2) {
@@ -43,9 +53,28 @@ function makeIR(dur, decay) {
 }
 
 export function init() {
-  if (ac) { if (ac.state === 'suspended') ac.resume(); return ac; }
+  if (unavailable) return null;
+  if (ac) {
+    // resume() rejects rather than throws, but a browser that has torn the
+    // context down can throw here too.
+    try { if (ac.state === 'suspended') ac.resume(); } catch { /* keep playing silently */ }
+    return ac;
+  }
   const Ctx = window.AudioContext || window.webkitAudioContext;
-  if (!Ctx) return null;
+  if (!Ctx) { unavailable = true; return null; }
+  try {
+    return build(Ctx);
+  } catch (err) {
+    // Refused: no autoplay permission in this frame, too many live contexts,
+    // audio disabled at the OS level. Play the rest of the game in silence.
+    console.warn('Audio unavailable, continuing without sound:', err?.message || err);
+    unavailable = true;
+    ac = master = bus = null;
+    return null;
+  }
+}
+
+function build(Ctx) {
   ac = new Ctx();
 
   const limiter = ac.createDynamicsCompressor();
@@ -67,10 +96,17 @@ export function init() {
 
 /** Start the continuous ride bed. Safe to call more than once. */
 export function startRide(snowType) {
-  init();
-  if (!ac || started) return;
+  if (!init() || started) return;
   started = true;
+  try {
+    buildRide(snowType);
+  } catch (err) {
+    console.warn('Ride audio unavailable:', err?.message || err);
+    ride = null;
+  }
+}
 
+function buildRide(snowType) {
   const nb = noiseBuffer(3);
 
   // Board on snow: broadband noise through a bandpass whose centre frequency
@@ -115,6 +151,7 @@ export function startRide(snowType) {
  */
 export function updateRide(speed01, slip, grounded, edge) {
   if (!ride || !ac) return;
+  try {
   const t = ac.currentTime, k = 0.06;
   const contact = grounded ? 1 : 0.06;
 
@@ -131,12 +168,14 @@ export function updateRide(speed01, slip, grounded, edge) {
 
   ride.rumbleGain.gain.setTargetAtTime(contact * speed01 * speed01 * 0.35, t, k);
   ride.rumbleLP.frequency.setTargetAtTime(90 + speed01 * 190, t, k);
+  } catch { ride = null; }     // called every frame — fail once, stay quiet
 }
 
 export function stopRide() {
+  started = false;
   if (!ride) return;
   for (const n of ride.nodes) { try { n.stop(); } catch { /* already stopped */ } }
-  ride = null; started = false;
+  ride = null;
 }
 
 // ── One-shots ─────────────────────────────────────────────────────
@@ -151,7 +190,7 @@ function env(node, gain, attack, decay, when = 0) {
 }
 
 function burst({ freq = 200, gain = 0.3, attack = 0.005, decay = 0.25, type = 'noise', filter = 'lowpass', q = 1, sweep = 0, rev = 0.2 }) {
-  if (!ac) return;
+  if (!ac || !master) return;
   let src;
   if (type === 'noise') {
     src = ac.createBufferSource();
@@ -177,7 +216,7 @@ function burst({ freq = 200, gain = 0.3, attack = 0.005, decay = 0.25, type = 'n
 }
 
 function tone(freq, gain, dur, type = 'sine', rev = 0.25) {
-  if (!ac) return;
+  if (!ac || !master) return;
   const o = ac.createOscillator();
   o.type = type; o.frequency.value = freq;
   const e = env(o, gain, 0.008, dur);
@@ -186,7 +225,17 @@ function tone(freq, gain, dur, type = 'sine', rev = 0.25) {
   o.start(e.t); o.stop(e.stop);
 }
 
-export const sfx = {
+/** Swallow anything a sound effect throws. The caller is always gameplay. */
+function safely(fn) {
+  return (...args) => {
+    if (unavailable) return;
+    try { fn(...args); } catch (err) {
+      console.warn('Sound effect failed, continuing:', err?.message || err);
+    }
+  };
+}
+
+const effects = {
   pop()      { init(); burst({ freq: 900, gain: 0.16, attack: 0.004, decay: 0.10, sweep: 0.35, rev: 0.15 }); },
   land(hard) { init(); burst({ freq: hard ? 180 : 320, gain: hard ? 0.42 : 0.24, attack: 0.004, decay: hard ? 0.4 : 0.22, sweep: 0.3, rev: 0.3 }); },
   crash()    {
@@ -209,16 +258,22 @@ export const sfx = {
   select()   { init(); tone(520, 0.09, 0.09, 'triangle', 0.1); tone(780, 0.06, 0.12, 'sine', 0.15); },
   start()    {
     init();
-    [0, 0.12, 0.24].forEach((d, i) => setTimeout(() => tone(440 * Math.pow(2, i / 3), 0.14, 0.2, 'triangle', 0.3), d * 1000));
+    // Deferred notes need their own guard: a throw inside a setTimeout lands on
+    // window.onerror, not on whoever called start().
+    [0, 0.12, 0.24].forEach((d, i) => setTimeout(
+      safely(() => tone(440 * Math.pow(2, i / 3), 0.14, 0.2, 'triangle', 0.3)), d * 1000));
   },
   finish(stars) {
     init();
     const seq = [0, 4, 7, 12, 16, 19];
     for (let i = 0; i < 3 + stars; i++) {
-      setTimeout(() => tone(523.25 * Math.pow(2, seq[i % seq.length] / 12), 0.15, 0.5, 'triangle', 0.45), i * 130);
+      setTimeout(safely(() => tone(523.25 * Math.pow(2, seq[i % seq.length] / 12), 0.15, 0.5, 'triangle', 0.45)), i * 130);
     }
   },
 };
 
-export function suspend() { if (ac && ac.state === 'running') ac.suspend(); }
-export function resume() { if (ac && ac.state === 'suspended') ac.resume(); }
+export const sfx = Object.fromEntries(
+  Object.entries(effects).map(([name, fn]) => [name, safely(fn)]));
+
+export function suspend() { try { if (ac && ac.state === 'running') ac.suspend(); } catch { /* ignore */ } }
+export function resume()  { try { if (ac && ac.state === 'suspended') ac.resume(); } catch { /* ignore */ } }

@@ -94,6 +94,25 @@ lines — `physics.js` does not know features exist.
 - **The terrain mesh's own lateral edge is visible** from the chase camera.
   It is 155 m out, not 42, for that reason — widening it costs nothing because
   the column warp keeps the vertex count on the piste.
+- **Two clocks in the frame loop.** `dt` is clamped to 1/4 s so a backgrounded
+  tab cannot teleport the rider; `realDt` is not. Anything measuring the
+  *world* uses the clamp, anything measuring the *device* (the quality
+  watchdog) must use real time, and anything the player is waiting on (the
+  countdown) runs on `performance.now()` directly. Fed clamped time, a phone
+  rendering at 1 fps advanced the countdown at a quarter speed and sat on "3"
+  for ten seconds — a game that visibly would not start.
+- **Sound must never be able to stop the game.** `new AudioContext()` throws
+  outright in some browsers and frames, and it used to sit unguarded inside the
+  DROP IN handler: the exception propagated out of the click listener and the
+  run never started, on a device where everything else worked. Every entry
+  point in `audio.js` now no-ops rather than throwing, including the ones fired
+  from `setTimeout` (whose exceptions land on `window.onerror`, not on the
+  caller).
+- **Mobile tier detection cannot see a GPU.** Safari does not implement
+  `deviceMemory` and every modern iPhone reports 6 cores, so a "cores ≥ 6 and
+  memory ≥ 4" check passed on all of them and handed phones the desktop tier.
+  Phones start at `medium` at most; the watchdog can only demote, so guessing
+  upward costs the player real seconds of unplayable game.
 - **Exposure is the whole ballgame on snow.** Sunlit snow has to land near 0.8,
   not 1.0. `TIME_PRESETS[*].exposure` in `sky.js` is where that lives, and the
   values are low (0.24–0.40) on purpose.
