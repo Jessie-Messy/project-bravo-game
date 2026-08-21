@@ -399,6 +399,34 @@ html, body {
 .trick-row { display: flex; justify-content: space-between; font-size: 12.5px; padding: 8px 11px; border-radius: 9px; background: rgba(11,17,29,.78); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
 .trick-row b { color: var(--gold); font-variant-numeric: tabular-nums; }
 
+/* ── Error banner ─────────────────────────────────────────────── */
+/* Shown when the frame loop throws. Deliberately plain and deliberately
+   unmissable: its whole job is to turn "the game doesn't work" into a sentence
+   the player can read off a phone screen and send back. */
+.errbar {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  top: calc(var(--safe-t) + 10px);
+  width: min(94vw, 520px); z-index: 8;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  padding: 12px 14px; border-radius: var(--r-md);
+  background: rgba(46, 12, 20, .94);
+  border: 1px solid var(--hot);
+  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  font-size: 12.5px; line-height: 1.45; color: #ffe4e9;
+}
+.errbar b { flex: 1 0 100%; font-size: 13px; color: #fff; }
+.errbar span {
+  flex: 1 1 auto; min-width: 0;
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
+  color: #ffc9d3; overflow-wrap: anywhere;
+}
+.errbar button {
+  flex: 0 0 auto; appearance: none; cursor: pointer;
+  border: 1px solid rgba(255,255,255,.28); background: rgba(255,255,255,.10);
+  color: #fff; font: 700 11px/1 inherit; letter-spacing: .06em;
+  text-transform: uppercase; padding: 9px 12px; border-radius: 8px; min-height: 34px;
+}
+
 /* ── Loader ───────────────────────────────────────────────────── */
 #loader {
   position: fixed; inset: 0; z-index: 9;
@@ -447,8 +475,16 @@ html, body {
   .card { width: 290px; }
   .runlist { grid-template-columns: 1fr 1fr; }
   .result-grid { grid-template-columns: repeat(4, 1fr); }
-  #btnAction, #btnBrake, .steerhint { display: none; }
 }
+
+/* Whether the thumb controls exist is a question about the DEVICE, not about
+   how many pixels wide the window is. Gating them on a min-width media query
+   meant they vanished on any touch device whose viewport measured wide — a
+   phone in landscape, a tablet, or an embed whose iframe reports a desktop
+   layout width — leaving a touch user with a game and no way to ollie. The
+   `is-touch` class is set once from the same detection the input layer uses. */
+#btnAction, #btnBrake { display: none; }
+html.is-touch #btnAction, html.is-touch #btnBrake { display: grid; }
 
 /* Landscape phones: the run list and rails need to stay reachable, and the
    action button moves in from the very corner where a thumb cannot get it. */

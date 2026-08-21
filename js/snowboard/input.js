@@ -38,6 +38,7 @@ export class Input {
 
     this.keys = new Set();
     this.enabled = false;
+    this._padsBlocked = false;   // set once getGamepads() is refused
     this.sensitivity = opts.sensitivity ?? 1;
 
     this._bind();
@@ -167,6 +168,35 @@ export class Input {
 
   recentreTilt() { this.tiltZero = null; }
 
+  /**
+   * Gamepads, or null if this document is not allowed to have them.
+   *
+   * The Gamepad API is gated by Permissions Policy, and in a document that was
+   * not granted it — which is most embeds and iframes — `getGamepads()` does
+   * not return an empty list. It THROWS a SecurityError. Feature-detecting the
+   * method is not enough; it exists, it just refuses to run.
+   *
+   * That mattered enormously: this is called every frame, from inside the
+   * frame loop, and only once a run is under way. The throw took out physics,
+   * camera, HUD and terrain streaming in one go, so the game reached the start
+   * gate and then sat there — the ollie button still lit up, because that is
+   * pure CSS on pointerdown, and nothing else in the world moved again.
+   *
+   * The result is latched: a context that refuses once refuses forever, and
+   * re-entering a try/catch sixty times a second to be told the same thing is
+   * waste. A real pad plugged in later is the price, and it is the right one —
+   * nobody is docking a controller to a phone mid-run.
+   */
+  _readGamepads() {
+    if (this._padsBlocked || !navigator.getGamepads) return null;
+    try {
+      return navigator.getGamepads();
+    } catch {
+      this._padsBlocked = true;
+      return null;
+    }
+  }
+
   // ── Per-frame poll ──────────────────────────────────────────────
   poll(dt) {
     const s = this.state;
@@ -184,8 +214,8 @@ export class Input {
     // than written to the shared held-state: a pad reporting "not pressed" must
     // never cancel a thumb that is holding the on-screen button.
     let padGrab = false, padBrake = false;
-    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-    for (const p of pads) {
+    const pads = this._readGamepads();
+    for (const p of (pads || [])) {
       if (!p) continue;
       const ax = p.axes[0] || 0;
       if (Math.abs(ax) > 0.14) steer += ax;
