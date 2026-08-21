@@ -176,7 +176,7 @@ html, body {
   scroll-snap-align: center;
   padding: 16px;
   border-radius: var(--r-lg);
-  background: var(--panel);
+  background: rgba(11, 17, 29, .84);
   border: 1px solid var(--stroke);
   backdrop-filter: blur(16px) saturate(140%);
   -webkit-backdrop-filter: blur(16px) saturate(140%);
@@ -188,7 +188,7 @@ html, body {
 .card:active { transform: scale(.985); }
 .card.is-selected {
   border-color: var(--accent);
-  background: linear-gradient(180deg, rgba(94,234,212,.13), rgba(16,24,40,.72));
+  background: rgba(13, 22, 34, .92);
   box-shadow: 0 0 0 1px var(--accent), 0 18px 40px rgba(0,0,0,.45);
 }
 .card.is-selected::after {
@@ -219,11 +219,23 @@ html, body {
 .run {
   display: grid; grid-template-columns: 44px 1fr auto; gap: 13px; align-items: center;
   padding: 14px; border-radius: var(--r-md);
-  background: var(--panel); border: 1px solid var(--stroke);
+  /* Nearly opaque on purpose. These rows sit over a sunlit 3D snowfield, and
+     at the panel's usual transparency the secondary text washed out completely
+     against it — worst of all on the selected row, where a light accent tint
+     was being added on top. */
+  background: rgba(11, 17, 29, .84);
+  border: 1px solid var(--stroke);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   cursor: pointer; transition: border-color .18s, background .18s, transform .16s var(--ease);
 }
 .run:active { transform: scale(.99); }
-.run.is-selected { border-color: var(--accent); background: linear-gradient(180deg, rgba(94,234,212,.12), rgba(16,24,40,.6)); }
+.run.is-selected {
+  border-color: var(--accent);
+  background: rgba(13, 22, 34, .93);
+  /* Accent as an edge, not a wash: it marks the row without lifting the
+     background luminance into the text. */
+  box-shadow: inset 3px 0 0 0 var(--accent), 0 10px 26px rgba(0,0,0,.42);
+}
 .grade {
   width: 44px; height: 44px; border-radius: 13px;
   display: grid; place-items: center; font-size: 15px; font-weight: 900;
@@ -378,11 +390,13 @@ html, body {
 .result-stars { font-size: 40px; letter-spacing: 8px; color: var(--gold); margin: 6px 0; }
 .result-stars .off { color: rgba(255,255,255,.14); }
 .result-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; margin-top: 12px; }
-.result-cell { padding: 13px; border-radius: var(--r-md); background: rgba(255,255,255,.045); border: 1px solid var(--stroke); }
+/* Opaque, like the run rows and for the same reason: the live 3D scene is
+   directly behind these and a 4.5% white wash is not a background. */
+.result-cell { padding: 13px; border-radius: var(--r-md); background: rgba(11,17,29,.82); border: 1px solid var(--stroke); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
 .result-cell .k { font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: var(--dim); font-weight: 800; }
 .result-cell .v { font-size: 21px; font-weight: 800; margin-top: 3px; letter-spacing: -.02em; }
 .trick-log { margin-top: 12px; max-height: 24vh; overflow-y: auto; display: grid; gap: 5px; touch-action: pan-y; }
-.trick-row { display: flex; justify-content: space-between; font-size: 12.5px; padding: 8px 11px; border-radius: 9px; background: rgba(255,255,255,.04); }
+.trick-row { display: flex; justify-content: space-between; font-size: 12.5px; padding: 8px 11px; border-radius: 9px; background: rgba(11,17,29,.78); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
 .trick-row b { color: var(--gold); font-variant-numeric: tabular-nums; }
 
 /* ── Loader ───────────────────────────────────────────────────── */
@@ -415,7 +429,8 @@ html, body {
 .row {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 12px 14px; border-radius: var(--r-md);
-  background: rgba(255,255,255,.045); border: 1px solid var(--stroke);
+  background: rgba(11,17,29,.80); border: 1px solid var(--stroke);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
   font-size: 14px; font-weight: 600;
 }
 .seg { display: flex; gap: 4px; background: rgba(255,255,255,.06); border-radius: 10px; padding: 3px; }
