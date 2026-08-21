@@ -30,14 +30,33 @@ const loader = document.getElementById('loader');
 const loaderBar = document.getElementById('loaderBar');
 const loaderNote = document.getElementById('loaderNote');
 
+/** Replace the loading copy with something that explains a dead end. */
+function showFatal(message) {
+  if (loaderNote) loaderNote.textContent = message;
+  loader?.classList.remove('is-done');
+  const bar = loaderBar?.parentElement;
+  if (bar) bar.style.display = 'none';
+}
+
 // ── Renderer ──────────────────────────────────────────────────────
-const renderer = new THREE.WebGLRenderer({
-  canvas,
-  antialias: false,          // the composer's SMAA does this better where it runs
-  powerPreference: 'high-performance',
-  stencil: false,
-  depth: true,
-});
+// Guarded, because the failure mode otherwise is a black screen and no
+// explanation: a phone with WebGL disabled, a browser that refuses a context
+// under memory pressure, or a machine with no GPU at all. Throwing here halts
+// module evaluation deliberately — there is no game without a renderer — but
+// the player is told why first.
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: false,        // the composer's SMAA does this better where it runs
+    powerPreference: 'high-performance',
+    stencil: false,
+    depth: true,
+  });
+} catch (err) {
+  showFatal('This browser could not start WebGL, so the mountain cannot be drawn. Try a different browser, or check that hardware acceleration is switched on.');
+  throw err;
+}
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -568,7 +587,7 @@ function tick(now) {
     await buildWorld(ui.sel, setLoadingProgress);
   } catch (err) {
     console.error(err);
-    loaderNote.textContent = 'Could not start: ' + (err?.message || err);
+    showFatal('Could not build the run: ' + (err?.message || err));
     return;
   }
   toMenu();

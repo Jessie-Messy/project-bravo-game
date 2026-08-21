@@ -1,3 +1,9 @@
 {
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "build:snowboard": "node tools/build-snowboard-single.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
 }
