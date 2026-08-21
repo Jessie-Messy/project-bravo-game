@@ -98,6 +98,16 @@ lines — `physics.js` does not know features exist.
   not 1.0. `TIME_PRESETS[*].exposure` in `sky.js` is where that lives, and the
   values are low (0.24–0.40) on purpose.
 
+### Playing it without a server
+
+`npm install && npm run build:snowboard` inlines every module and every byte of
+CSS into one ~705 kB page at `dist/alpenglow.html` (gitignored). That form is
+for handing someone a link or a file, and for hosts that refuse external
+requests entirely; `snowboard.html` stays the maintained form you develop
+against. The build is a resolver plugin over esbuild — three.js's bare
+specifiers come from `vendor/`, since esbuild has no importmap — and it refuses
+to emit if either inlined payload contains its own closing tag.
+
 ### Not done yet
 
 - No multiplayer, no ghosts, no leaderboard. Bests are `localStorage` only

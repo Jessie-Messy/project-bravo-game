@@ -236,7 +236,7 @@ export function createEnvironment(renderer, scene, run) {
   // these sit very close to the horizon colour. Pushing them darker "for
   // contrast" is what turns a distant range into a cardboard cut-out.
   const hazeFar = horizon.clone().lerp(new THREE.Color(0x9fb6d6), 0.16);
-  const hazeNear = horizon.clone().lerp(new THREE.Color(0x8ea6c8), 0.28);
+  const hazeNear = horizon.clone().lerp(new THREE.Color(0x8ea6c8), 0.22);
   const rock = new THREE.Color(run.time === 'dusk' ? 0x6b5c74 : 0x7c869e).lerp(horizon, 0.42);
   const snowC = new THREE.Color(run.time === 'dawn' ? 0xf3d8c6 : run.time === 'dusk' ? 0xd6c2cc : 0xf4f8ff)
     .lerp(horizon, 0.22);
@@ -262,7 +262,10 @@ export function createEnvironment(renderer, scene, run) {
 
   // A third range, closer and rockier. Overlapping silhouettes at three depths
   // is what makes a horizon read as distance rather than as a painted backdrop.
-  const hazeMid = horizon.clone().lerp(new THREE.Color(0x7f96ba), 0.40);
+  // Kept close to the horizon colour so the ring's lower body dissolves into
+  // the sky instead of standing as a flat blue block between the terrain and
+  // the peaks — which is all a viewer sees of it in portrait.
+  const hazeMid = horizon.clone().lerp(new THREE.Color(0x7f96ba), 0.20);
   const mid = new THREE.Mesh(buildRidge(
     { base: profile.base * 0.62, rough: profile.rough * 1.3, horns: [] },
     2100, 1150, 260, 21.7, hazeMid, rock, snowC, 200), mkMat());
