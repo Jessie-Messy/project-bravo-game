@@ -145,6 +145,24 @@ against. The build is a resolver plugin over esbuild — three.js's bare
 specifiers come from `vendor/`, since esbuild has no importmap — and it refuses
 to emit if either inlined payload contains its own closing tag.
 
+### Testing it
+
+`npm run build:snowboard && npm run smoke:snowboard` drives the built page
+inside an iframe that is **denied the gamepad permission**, at a phone
+viewport, **entirely by synthesised touch** — no keyboard anywhere. It boots,
+drops in, checks the rider actually descends, drags to steer, taps ollie, and
+probes every browser API the game touches in that context.
+
+Both of those conditions are the point. Three shipped bugs were invisible to a
+test suite that looked thorough, because every test ran the page top-level
+(where all APIs are permitted) and steered with the keyboard (a path no phone
+has). Reintroduce the `getGamepads` bug and this harness fails five checks with
+`0.0 m, t=0.00s` — which is exactly what the person holding the phone reported.
+
+Playwright is deliberately NOT a dependency: it is large and most work here
+does not need it. The script exits 2 with instructions when it is missing, so a
+skip is distinguishable from a failure.
+
 ### Not done yet
 
 - No multiplayer, no ghosts, no leaderboard. Bests are `localStorage` only
