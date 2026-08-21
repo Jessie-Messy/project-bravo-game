@@ -20,6 +20,7 @@
 
 const DS = 2;             // metres between tabulated samples
 const RUNOUT = 90;        // flat-ish outrun past the finish line
+const EMPTY = [];         // shared empty result, so collidersNear never allocates
 const LEAD_IN = 40;       // start gate sits at d = 0 with terrain behind it
 
 // ── Noise ─────────────────────────────────────────────────────────
@@ -73,6 +74,7 @@ function mulberry(seed) {
 }
 
 export const CHUNK_LEN = 40;   // metres of course per terrain chunk
+const COLLIDER_BUCKET = 12;    // metres per obstacle bucket
 
 export class Course {
   constructor(run, seed = 20260820) {
@@ -317,22 +319,29 @@ export class Course {
     // anything that looks like a fence.
     if (t > 1) {
       const over = au - hw;
-      // Capped high enough (60 m, reached around 120 m out) that the run sits
+      // Capped high enough (45 m, reached around 150 m out) that the run sits
       // in a valley rather than on a table, and shallow enough — about 40° at
       // its steepest — that the flanks stay SNOW. An earlier, steeper version
       // crossed the shader's rock threshold and walled a glacier cruiser into a
       // grey gorge. The cap exists so a player who leaves the corridor at speed
       // meets a hillside rather than an infinite ramp.
-      // An APRON first: 34 m of barely-rising snow outside the corridor before
+      // An APRON first: a band of barely-rising snow outside the corridor before
       // the hillside proper starts. Without it the flanks begin at the piste
       // edge and the run reads as a trench — the two shoulders converge in
-      // perspective into a dark V a few metres either side of the rider. The
-      // apron pushes that framing out to where it belongs and gives the run
-      // somewhere to spill into.
-      const APRON = 34;
-      const near = Math.min(over, APRON) * 0.045;
-      const far = Math.max(0, over - APRON);
-      y += near + Math.min(60, far * 0.10 + far * far * 0.005);
+      // perspective into a dark V a few metres either side of the rider.
+      //
+      // Both the apron and the steepness beyond it scale with the CORRIDOR
+      // WIDTH, and that is what lets one function serve a 90 m glacier
+      // boulevard and a 15 m couloir. On the wide run you get 35 m of open
+      // apron and a distant hillside; in Corbet's throat you get 10 m and then
+      // walls past 55°, which is steep enough for the shader's rock to break
+      // through — so the couloir gets rock walls without a single line of
+      // couloir-specific code.
+      const apron = Math.min(46, Math.max(6, hw * 1.4));
+      const steep = Math.min(3.2, Math.max(1, 26 / hw));
+      const near = Math.min(over, apron) * 0.045;
+      const far = Math.max(0, over - apron);
+      y += near + Math.min(45 * steep, (far * 0.09 + far * far * 0.004) * steep);
     }
 
     // Features
@@ -502,7 +511,11 @@ export class Course {
       // Trees inside the corridor — the whole point of a glade run.
       const gd = isGladed(d);
       if (gd > 0) {
-        const n = Math.max(1, Math.ceil(gd * 2.4));
+        // Fewer attempts than the flanking forest gets. Trees inside the
+        // corridor are OBSTACLES, and at the old spacing a glade was a wall of
+        // them roughly every five metres — a slalom nobody could hold speed
+        // through. This lands them around eight to ten metres apart.
+        const n = Math.max(1, Math.ceil(gd * 1.4));
         for (let i = 0; i < n; i++) {
           if (R() > gd) continue;
           const u = (R() - 0.5) * 2 * hw * 0.92;
@@ -597,6 +610,29 @@ export class Course {
     // boundary — that was ~1500 height() calls in a single frame.
     for (const p of props) p.y = this.height(p.x, p.z);
 
+    // ── Obstacles ─────────────────────────────────────────────────
+    // Trees and boulders are things you hit. Without this a glade run is
+    // scenery you ride straight through, and Strawberry Fields means nothing.
+    // Bucketed at 12 m so a collision test looks at a handful of candidates
+    // rather than every prop on the mountain.
+    this.colliders = new Map();
+    const addCollider = (x, z, r, top) => {
+      const key = Math.floor((-z) / COLLIDER_BUCKET);
+      let arr = this.colliders.get(key);
+      if (!arr) this.colliders.set(key, arr = []);
+      arr.push({ x, z, r2: r * r, top });
+    };
+    for (const p of props) {
+      if (p.type === 'conifer') {
+        // Radius is the trunk plus the lower branches you would actually catch.
+        addCollider(p.x, p.z, 0.62 + p.s * 0.42, p.y + (6 + (p.v % 3) * 2.6) * p.s);
+      } else if (p.type === 'rock' && p.s > 0.7) {
+        addCollider(p.x, p.z, 0.80 * p.s, p.y + 1.1 * p.s);
+      } else if (p.type === 'tower') {
+        addCollider(p.x, p.z, 1.15, p.y + 11);
+      }
+    }
+
     this.props = props;
     this.propBuckets = new Map();
     for (const p of props) {
@@ -608,4 +644,14 @@ export class Course {
   }
 
   propsInChunk(ci) { return this.propBuckets.get(ci) || []; }
+
+  /**
+   * One bucket of obstacles. Callers test bucket k and k+1 themselves rather
+   * than being handed a merged array: this runs on every physics substep, and
+   * concatenating two arrays there allocates ~180 throwaway arrays a second.
+   */
+  colliderBucket(k) { return this.colliders.get(k) || EMPTY; }
+
+  /** Bucket index for a distance down the hill. */
+  colliderKey(d) { return Math.floor(d / COLLIDER_BUCKET); }
 }

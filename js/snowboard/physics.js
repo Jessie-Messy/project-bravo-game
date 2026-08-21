@@ -127,6 +127,12 @@ export class Ride {
       this.airTime += dt;
     }
 
+    // ── Obstacles ─────────────────────────────────────────────────
+    // Checked after integration, against the board's own position: a tree is
+    // only in the way if you are below its canopy, so clearing one off a cliff
+    // drop is a legitimate line.
+    if (this.crashCooldown <= 0 && this.groundSpeed > 5) this._checkObstacles();
+
     // ── Bookkeeping ───────────────────────────────────────────────
     this.stats.topSpeed = Math.max(this.stats.topSpeed, this.groundSpeed);
     this.stats.distance = Math.max(this.stats.distance, this.distance);
@@ -350,6 +356,21 @@ export class Ride {
       this.emit('trick', { name, points: total, combo: this.combo, airT });
     }
     this.pending = 0;
+  }
+
+  _checkObstacles() {
+    const k = this.course.colliderKey(this.distance);
+    const x = this.pos.x, z = this.pos.z, y = this.pos.y;
+    // Two buckets so a collider straddling a boundary is never missed.
+    for (let b = 0; b < 2; b++) {
+      const list = this.course.colliderBucket(k + b);
+      for (let i = 0; i < list.length; i++) {
+        const c = list[i];
+        if (y > c.top) continue;                 // cleared it — that is a line
+        const dx = x - c.x, dz = z - c.z;
+        if (dx * dx + dz * dz < c.r2) { this._crash('tree'); return; }
+      }
+    }
   }
 
   _crash(reason) {

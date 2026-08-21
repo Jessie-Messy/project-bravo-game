@@ -32,7 +32,7 @@ export function createSnowMaterial(run, snowType, opts = {}) {
     color: tint,
     roughness: 0.72,
     metalness: 0.0,
-    envMapIntensity: 0.9,
+    envMapIntensity: 1.15,
     dithering: true,
   });
 

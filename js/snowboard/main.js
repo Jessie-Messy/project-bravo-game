@@ -81,6 +81,7 @@ window.addEventListener('orientationchange', () => setTimeout(resize, 220));
 
 // ── World ─────────────────────────────────────────────────────────
 let world = null;
+let building = false;         // a world build is in flight; DROP IN must wait
 let state = 'boot';           // boot | menu | countdown | ride | finished
 let countdown = 0;
 let flash = 0;
@@ -115,6 +116,7 @@ function disposeWorld() {
 }
 
 async function buildWorld(sel, onProgress = () => {}) {
+  building = true;
   disposeWorld();
   const run = sel.run;
   const root = new THREE.Group();
@@ -177,6 +179,7 @@ async function buildWorld(sel, onProgress = () => {}) {
   resetRide();
   onProgress(1, 'Ready');
   await frame();
+  building = false;
   return world;
 }
 
@@ -254,6 +257,10 @@ function setLoadingProgress(p, note) {
 }
 
 function startRun() {
+  // The loading overlay blocks taps while a run is being built, but nothing
+  // else does — and a start that lands mid-build gets silently reset by the
+  // resetRide() at the end of buildWorld.
+  if (building || !world) return;
   resetRide();
   ui.enterRide();
   state = 'countdown';
@@ -419,7 +426,7 @@ function drainEvents() {
       }
       case 'crash':
         audio.sfx.crash();
-        ui.callout(e.reason === 'wall' ? 'WIPEOUT' : 'CRASH', 0, true);
+        ui.callout(e.reason === 'tree' ? 'TREE!' : e.reason === 'wall' ? 'WIPEOUT' : 'CRASH', 0, true);
         flash = 0.55;
         break;
       case 'pop': audio.sfx.pop(); break;
@@ -587,6 +594,7 @@ document.addEventListener('visibilitychange', () => {
 window.SNOW = {
   get world() { return world; },
   get state() { return state; },
+  get building() { return building; },
   noPost: false,
-  setTier, getTier, renderer, scene, camera,
+  ui, input, setTier, getTier, renderer, scene, camera,
 };

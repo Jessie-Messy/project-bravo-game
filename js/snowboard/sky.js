@@ -30,11 +30,11 @@ import { Sky } from 'three/addons/objects/Sky.js';
 // time of day rather than derived, because a wrong fog colour is the second way
 // to turn a snow scene into milk.
 export const TIME_PRESETS = {
-  dawn:      { elevation: 3.2,  azimuth: 118, key: 0xffb27a, keyI: 2.4, fill: 0x6f8fd0, ground: 0xc9d6ee, exposure: 0.36, turbidity: 4.5, rayleigh: 2.6, mie: 0.009, mieG: 0.86, fog: 0xd8bfb2 },
-  morning:   { elevation: 21,   azimuth: 135, key: 0xfff0d8, keyI: 3.1, fill: 0x8fb2e8, ground: 0xdfe8f8, exposure: 0.28, turbidity: 3.0, rayleigh: 1.6, mie: 0.006, mieG: 0.82, fog: 0xb4cdea },
-  midday:    { elevation: 56,   azimuth: 172, key: 0xffffff, keyI: 3.4, fill: 0x9dc0f2, ground: 0xe8eefb, exposure: 0.24, turbidity: 2.2, rayleigh: 1.1, mie: 0.004, mieG: 0.80, fog: 0xbdd6f2 },
-  afternoon: { elevation: 29,   azimuth: 232, key: 0xffe3bd, keyI: 2.9, fill: 0x8fb0e0, ground: 0xdde6f6, exposure: 0.29, turbidity: 3.6, rayleigh: 1.9, mie: 0.007, mieG: 0.83, fog: 0xc4cfe4 },
-  dusk:      { elevation: 1.4,  azimuth: 258, key: 0xff9a5c, keyI: 2.0, fill: 0x5c74b8, ground: 0xb9c6e6, exposure: 0.40, turbidity: 6.0, rayleigh: 3.2, mie: 0.011, mieG: 0.88, fog: 0x8a90bc },
+  dawn:      { elevation: 3.2,  azimuth: 118, key: 0xffb27a, keyI: 2.4, fill: 0x6f8fd0, ground: 0xc9d6ee, exposure: 0.30, turbidity: 4.5, rayleigh: 2.6, mie: 0.009, mieG: 0.86, fog: 0xd8bfb2 },
+  morning:   { elevation: 21,   azimuth: 135, key: 0xfff0d8, keyI: 3.1, fill: 0x8fb2e8, ground: 0xdfe8f8, exposure: 0.23, turbidity: 3.0, rayleigh: 1.6, mie: 0.006, mieG: 0.82, fog: 0xb4cdea },
+  midday:    { elevation: 56,   azimuth: 172, key: 0xffffff, keyI: 3.4, fill: 0x9dc0f2, ground: 0xe8eefb, exposure: 0.20, turbidity: 2.2, rayleigh: 1.1, mie: 0.004, mieG: 0.80, fog: 0xbdd6f2 },
+  afternoon: { elevation: 29,   azimuth: 232, key: 0xffe3bd, keyI: 2.9, fill: 0x8fb0e0, ground: 0xdde6f6, exposure: 0.24, turbidity: 3.6, rayleigh: 1.9, mie: 0.007, mieG: 0.83, fog: 0xc4cfe4 },
+  dusk:      { elevation: 1.4,  azimuth: 258, key: 0xff9a5c, keyI: 2.0, fill: 0x5c74b8, ground: 0xb9c6e6, exposure: 0.33, turbidity: 6.0, rayleigh: 3.2, mie: 0.011, mieG: 0.88, fog: 0x8a90bc },
 };
 
 // Weather multiplies the time preset. `flat` lifts the fill and crushes the key
@@ -105,6 +105,12 @@ function buildRidge(profile, radius, height, segments, seed, hazeCol, rockCol, s
     // Ridge height: fbm at two scales, then the named horns on top.
     let h = profile.base + profile.rough * 0.62 * (fbm1(t * 26 + seed, 5) - 0.35)
                          + profile.rough * 0.26 * (fbm1(t * 71 + seed * 3, 3) - 0.4);
+    // Horn heights are multiples of the ring height, and the ring heights were
+    // raised to put the skyline above the run — so they need scaling back down
+    // to stay believable. Sanity check: the real Matterhorn stands about 2.5 km
+    // above Zermatt at 5 km out, which is 27°. Unscaled, this ring's tallest
+    // horn subtended 46° and read as a pink wall across half the sky.
+    const HORN_SCALE = 0.55;
     for (const horn of profile.horns) {
       const dt = Math.abs(((t - horn.at) + 1.5) % 1 - 0.5);
       const k = Math.max(0, 1 - dt / horn.w);
@@ -112,7 +118,7 @@ function buildRidge(profile, radius, height, segments, seed, hazeCol, rockCol, s
       // A snow horn is a sharp power curve; a stratovolcano is a broad cone.
       const shape = horn.volcano ? Math.pow(k, 1.35) : Math.pow(k, 0.62);
       const skew = horn.hook ? horn.hook * Math.sin((t - horn.at) / horn.w * Math.PI) * k : 0;
-      h += horn.h * (shape + skew * 0.35);
+      h += horn.h * HORN_SCALE * (shape + skew * 0.35);
     }
     h = Math.max(0.05, h) * height;
 
@@ -202,14 +208,22 @@ export function createEnvironment(renderer, scene, run) {
   scene.add(sun);
   scene.add(sun.target);
 
-  // Snow bounce. `ground` is the up-facing snow colour reflected back into the
-  // scene, and it is why the underside of a rider on snow is never black.
-  const hemi = new THREE.HemisphereLight(time.fill, time.ground, 0.78 * wx.fillMul + wx.flat * 0.8);
+  // Snow bounce, and it is worth being explicit about how large this has to be.
+  // Snow reflects ~85% of what lands on it, and a slope is surrounded by more
+  // snow, so a surface facing AWAY from the sun is still receiving most of a
+  // full hemisphere of bounced light. The photographic result is a key-to-fill
+  // ratio near 1.5:1, not the 4:1 an outdoor scene on grass or rock would have.
+  //
+  // At the ratio this used to run, every valley flank not facing the sun went
+  // to near-black and the run read as a trench cut through slag. `ground` is
+  // the up-facing snow colour being thrown back up into the scene, and it is
+  // the single most important light in a snow render.
+  const hemi = new THREE.HemisphereLight(time.fill, time.ground, 1.45 * wx.fillMul + wx.flat * 0.6);
   scene.add(hemi);
 
   // A dim cool fill from the anti-sun side keeps deep shadow readable without
   // washing out the key. On storm days it does most of the work.
-  const fill = new THREE.DirectionalLight(time.fill, 0.22 + wx.flat * 0.55);
+  const fill = new THREE.DirectionalLight(time.fill, 0.30 + wx.flat * 0.5);
   fill.position.set(-sunPos.x * 120, 90, -sunPos.z * 120);
   scene.add(fill);
 
@@ -224,7 +238,7 @@ export function createEnvironment(renderer, scene, run) {
   const hazeFar = horizon.clone().lerp(new THREE.Color(0x9fb6d6), 0.16);
   const hazeNear = horizon.clone().lerp(new THREE.Color(0x8ea6c8), 0.28);
   const rock = new THREE.Color(run.time === 'dusk' ? 0x6b5c74 : 0x7c869e).lerp(horizon, 0.42);
-  const snowC = new THREE.Color(run.time === 'dawn' ? 0xffd9bd : run.time === 'dusk' ? 0xf0b9a8 : 0xf4f8ff)
+  const snowC = new THREE.Color(run.time === 'dawn' ? 0xf3d8c6 : run.time === 'dusk' ? 0xd6c2cc : 0xf4f8ff)
     .lerp(horizon, 0.22);
 
   // depthWrite MUST be on. These are opaque geometry standing between the sky

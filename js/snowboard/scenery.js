@@ -77,7 +77,7 @@ function makeConifer(variant, palette) {
     const th = h * (0.30 - t * 0.13);
     const cone = new THREE.ConeGeometry(r, th, 7, 1);
     cone.translate(0, y + th * 0.35, 0);
-    parts.push(paint(cone, palette.needle, { top: palette.needleTip, topAmt: 0.55, topPow: 0.8 }));
+    parts.push(paint(cone, palette.needle, { top: palette.needleTip, topAmt: 0.7, topPow: 0.7 }));
 
     // The snow layer: a wider, flatter cone offset a hair up the trunk.
     const cap = new THREE.ConeGeometry(r * 0.97, th * 0.42, 7, 1);
@@ -231,16 +231,21 @@ function makeRail(box) {
 }
 
 // ── Scenery manager ───────────────────────────────────────────────
+// Needle colours look far too pale written down and are still barely green on
+// screen. A conifer's measured albedo is under 10%, and at the exposure a snow
+// scene needs (0.24–0.40) anything authored at that value renders as a black
+// cut-out. These are lifted well above the physical figure so the trees read as
+// dark GREEN against the snow rather than as holes in it.
 const TREE_PALETTES = {
-  coastal:  { bark: 0x3a2c22, needle: 0x1d3b2a, needleTip: 0x2f5c3f, snow: 0xf3f8ff },
-  yotei:    { bark: 0x4a3a2e, needle: 0x22402f, needleTip: 0x38634a, snow: 0xfbfdff },
-  alps:     { bark: 0x352a20, needle: 0x1a3326, needleTip: 0x2b5138, snow: 0xeef5ff },
-  sierra:   { bark: 0x4a3527, needle: 0x24422c, needleTip: 0x3d6640, snow: 0xf2f8ff },
-  rockies:  { bark: 0x3d2e24, needle: 0x1e3a2c, needleTip: 0x33593e, snow: 0xf1f7ff },
-  monashee: { bark: 0x33281f, needle: 0x17301f, needleTip: 0x2a4f33, snow: 0xf4faff },
-  tetons:   { bark: 0x3b2d23, needle: 0x1f3a2b, needleTip: 0x35603f, snow: 0xf1f7ff },
-  matterhorn:{ bark: 0x352a20, needle: 0x1a3326, needleTip: 0x2b5138, snow: 0xeef5ff },
-  montblanc:{ bark: 0x352a20, needle: 0x1b3527, needleTip: 0x2c5339, snow: 0xeff6ff },
+  coastal:  { bark: 0x53412f, needle: 0x39674c, needleTip: 0x5d9068, snow: 0xf3f8ff },
+  yotei:    { bark: 0x5e4a38, needle: 0x3f6e52, needleTip: 0x63996f, snow: 0xfbfdff },
+  alps:     { bark: 0x4c3c2c, needle: 0x345f47, needleTip: 0x568861, snow: 0xeef5ff },
+  sierra:   { bark: 0x5f4433, needle: 0x426b4c, needleTip: 0x6a9a6a, snow: 0xf2f8ff },
+  rockies:  { bark: 0x523e30, needle: 0x3a6650, needleTip: 0x5e9169, snow: 0xf1f7ff },
+  monashee: { bark: 0x47372a, needle: 0x315c43, needleTip: 0x52855d, snow: 0xf4faff },
+  tetons:   { bark: 0x503e2f, needle: 0x3b6750, needleTip: 0x5f9269, snow: 0xf1f7ff },
+  matterhorn:{ bark: 0x4c3c2c, needle: 0x345f47, needleTip: 0x568861, snow: 0xeef5ff },
+  montblanc:{ bark: 0x4c3c2c, needle: 0x366249, needleTip: 0x578a63, snow: 0xeff6ff },
 };
 
 export class Scenery {
