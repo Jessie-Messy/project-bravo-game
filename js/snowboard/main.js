@@ -684,4 +684,5 @@ window.SNOW = {
   get building() { return building; },
   noPost: false,
   ui, input, setTier, getTier, renderer, scene, camera,
+  THREE,   // so a console (or a test) can raycast and inspect the graph
 };

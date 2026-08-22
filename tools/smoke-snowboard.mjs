@@ -200,6 +200,31 @@ try {
       `airTotal ${before.toFixed(2)} → ${after.toFixed(2)}`);
   }
 
+  // The terrain shipped inside-out: every triangle wound so its front face
+  // pointed at the ground. Backface culling then removed the mountain whenever
+  // you looked down at it, leaving sky showing through the hillside, and
+  // `slope = normal.y` came out near -1 so the shader's rock mask ran at full
+  // strength across the whole piste. It survived weeks of screenshots because
+  // enough geometry faced the camera at grazing angles to look like terrain.
+  // Two cheap assertions make that unrepeatable.
+  const solid = await frame.evaluate(() => {
+    const T = window.SNOW.THREE, w = window.SNOW.world, r = w.ride;
+    const chunk = [...w.terrain.chunks.values()][0];
+    const n = chunk.geometry.attributes.normal;
+    let sum = 0;
+    for (let i = 0; i < n.count; i++) sum += n.getY(i);
+    const rc = new T.Raycaster(
+      new T.Vector3(r.pos.x, r.pos.y + 60, r.pos.z), new T.Vector3(0, -1, 0), 0.01, 500);
+    return {
+      meanNormalY: sum / n.count,
+      hitsFromAbove: rc.intersectObject(w.terrain.group, true).length,
+    };
+  });
+  check('terrain faces up (not inside-out)', solid.meanNormalY > 0.5,
+    `mean normal.y ${solid.meanNormalY.toFixed(3)}`);
+  check('terrain is solid from above', solid.hitsFromAbove > 0,
+    `${solid.hitsFromAbove} hit(s) casting straight down`);
+
   check('no frame-loop error banner', !(await frame.evaluate(() => !!document.querySelector('.errbar'))));
   check('no uncaught page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 } catch (err) {

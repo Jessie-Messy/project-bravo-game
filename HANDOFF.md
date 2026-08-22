@@ -94,6 +94,20 @@ lines — `physics.js` does not know features exist.
 - **The terrain mesh's own lateral edge is visible** from the chase camera.
   It is 155 m out, not 42, for that reason — widening it costs nothing because
   the column warp keeps the vertex count on the piste.
+- **Terrain triangle winding.** The chunk meshes shipped INSIDE-OUT: rows run
+  down the hill (z decreasing) and columns run +x, so the order that is
+  counter-clockwise seen from above is `a → b → c`, and the file had `a → c →
+  b`. Backface culling then deleted the mountain whenever you looked down at
+  it — large areas of the frame were the sky dome showing through the
+  hillside — and because the snow shader reads `slope = vWNrm.y`, every normal
+  sitting at about -0.95 meant the rock mask ran at full strength across the
+  whole piste. It survived weeks of screenshots because enough geometry faced
+  the camera at grazing angles to still look like terrain, and because the
+  physics never touches the mesh (it reads `course.height()`), so the rider
+  stood on ground that was not being drawn. If the snow ever looks flat,
+  grey, or patchy again, check this first: `npm run smoke:snowboard` asserts
+  the mean normal points up and that a ray cast straight down actually hits
+  something.
 - **`navigator.getGamepads()` THROWS in an embed.** The Gamepad API is gated by
   Permissions Policy, and in a document not granted it the method exists and
   refuses to run — feature-detecting it is not enough. It was polled every

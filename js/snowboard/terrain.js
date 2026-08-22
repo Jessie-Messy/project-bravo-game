@@ -22,6 +22,9 @@ import { CHUNK_LEN } from './course.js';
 
 export const DISTANT_LEN = 1500;   // metres of coarse terrain past the detail window
 
+const SHELL_SINK = 1.6;      // metres the coarse shell sits below true height
+const SHELL_REBUILD = 40;    // rebuild after this much descent, so the seam never drifts far
+
 export function createSnowMaterial(run, snowType, opts = {}) {
   // Snow's real albedo is ~0.85, not 1.0, and the difference matters: at 1.0
   // every lit surface clips to white and the shading disappears. Sitting the
@@ -302,13 +305,22 @@ export class TerrainField {
       }
     }
 
+    // WINDING. Rows advance down the hill (z decreases) and columns advance
+    // in +x, so the counter-clockwise-when-seen-from-above order is a → b → c.
+    // Wound the other way — as this was, for the entire life of the file — the
+    // whole mountain is inside out: every triangle's front face points at the
+    // ground, backface culling removes the terrain when viewed from above, and
+    // what is left is sky showing through the hillside in large featureless
+    // patches. It also silently broke everything downstream that reads the
+    // normal: `slope = vWNrm.y` came out at about -0.95, so the shader's rock
+    // mask was fully on across the entire piste.
     let ii = 0;
     const stride = cols + 1;
     for (let r = 0; r < rows; r++) {
       for (let j = 0; j < cols; j++) {
         const a = r * stride + j, b = a + 1, cc = a + stride, dd = cc + 1;
-        idx[ii++] = a; idx[ii++] = cc; idx[ii++] = b;
-        idx[ii++] = b; idx[ii++] = cc; idx[ii++] = dd;
+        idx[ii++] = a; idx[ii++] = b; idx[ii++] = cc;
+        idx[ii++] = b; idx[ii++] = dd; idx[ii++] = cc;
       }
     }
 
@@ -353,7 +365,7 @@ export class TerrainField {
         this.chunks.delete(i);
       }
     }
-    if (this._distantAt === undefined || riderD - this._distantAt > 120) this._buildDistant(riderD);
+    if (this._distantAt === undefined || riderD - this._distantAt > SHELL_REBUILD) this._buildDistant(riderD);
     return built;
   }
 
@@ -367,9 +379,25 @@ export class TerrainField {
   // resolves in the detail's favour instead of z-fighting with it.
   _buildDistant(fromD) {
     const course = this.course;
-    const near = fromD + this.ahead * CHUNK_LEN - 60;
+    // Start essentially AT the detail window's far edge, not 60 m inside it.
+    //
+    // A deep, distance-varying sink was the wrong idea: the shell reaches far
+    // wider laterally than the detail mesh does (it has to — at 1.5 km the
+    // hillside either side is most of the frame), so anywhere outside the
+    // detail's own lateral extent a sunk shell is not hidden by anything. It
+    // simply showed as a dark slab lying across the view with a hard edge.
+    //
+    // The honest fix is to stop the two meshes overlapping much at all: begin
+    // where the detail ends, rebuild often enough that the rider cannot outrun
+    // the seam, and carry one small uniform offset that reads as nothing at
+    // this distance but still breaks the z-fighting tie.
+    const near = fromD + this.ahead * CHUNK_LEN - 15;
     const far = Math.min(course.total + 400, near + DISTANT_LEN);
-    const rows = 44, cols = 40;
+    // 56 columns, not 40, and a much gentler lateral warp below. The shell's
+    // job is the FLANKS as much as the piste: out there its samples were tens
+    // of metres apart across ground that curves, so its chords cut above the
+    // detail mesh and surfaced as pale sheets hanging over the hillside.
+    const rows = 44, cols = 56;
     const pos = new Float32Array((rows + 1) * (cols + 1) * 3);
     const groom = new Float32Array((rows + 1) * (cols + 1));
     const curv = new Float32Array((rows + 1) * (cols + 1));
@@ -387,9 +415,9 @@ export class TerrainField {
       // and what fills the frame is the hillside either side of it.
       const extent = course.widthAt(d) * 1.4 + 340;
       for (let j = 0; j <= cols; j++) {
-        const u = (Math.pow(Math.abs(j / cols * 2 - 1), 1.9) * Math.sign(j / cols * 2 - 1)) * extent;
+        const u = (Math.pow(Math.abs(j / cols * 2 - 1), 1.35) * Math.sign(j / cols * 2 - 1)) * extent;
         const x = c + u;
-        pos[vi * 3] = x; pos[vi * 3 + 1] = course.height(x, z) - 1.5; pos[vi * 3 + 2] = z;
+        pos[vi * 3] = x; pos[vi * 3 + 1] = course.height(x, z) - SHELL_SINK; pos[vi * 3 + 2] = z;
         groom[vi] = 0;
         curv[vi] = 0;
         vi++;
@@ -400,8 +428,8 @@ export class TerrainField {
     for (let r = 0; r < rows; r++) {
       for (let j = 0; j < cols; j++) {
         const a = r * stride + j, b = a + 1, cc = a + stride, dd = cc + 1;
-        idx[ii++] = a; idx[ii++] = cc; idx[ii++] = b;
-        idx[ii++] = b; idx[ii++] = cc; idx[ii++] = dd;
+        idx[ii++] = a; idx[ii++] = b; idx[ii++] = cc;   // same winding as the detail mesh
+        idx[ii++] = b; idx[ii++] = dd; idx[ii++] = cc;
       }
     }
     const g = new THREE.BufferGeometry();

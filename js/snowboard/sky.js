@@ -92,7 +92,7 @@ function fbm1(x, oct = 5) {
  * hard line hanging in the sky. It stays short and ends in exactly the horizon
  * colour, because the terrain does not reach far enough to occlude a tall one.
  */
-function buildRidge(profile, radius, height, segments, seed, hazeCol, rockCol, snowCol, skirt = 260) {
+function buildRidge(profile, radius, height, segments, seed, hazeCol, rockCol, snowCol, skirt = 260, aerial = 0.5) {
   const LEVELS = 6;
   const pos = [], col = [], idx = [];
   const c = new THREE.Color();
@@ -138,6 +138,14 @@ function buildRidge(profile, radius, height, segments, seed, hazeCol, rockCol, s
       // front of it, and anything at or below the origin is pure haze.
       const haze = 1 - Math.min(1, Math.max(0, y / (height * 0.55)));
       c.lerp(hazeCol, 0.20 + 0.80 * haze * haze);
+      // Then the whole ring toward the horizon colour by how far away it is.
+      // These meshes opt out of scene fog (they sit kilometres out, where fog
+      // would erase them entirely), so their aerial perspective has to be
+      // baked — and without it they came out DARKER than the lit terrain in
+      // front of them. That is backwards: distance pales things. The visible
+      // symptom was a hard tonal step straight across the frame wherever the
+      // skyline met the snow.
+      c.lerp(hazeCol, aerial);
       col.push(c.r, c.g, c.b);
     }
   }
@@ -251,12 +259,12 @@ export function createEnvironment(renderer, scene, run) {
 
   const far = new THREE.Mesh(buildRidge(
     { base: profile.base * 0.55, rough: profile.rough * 0.7, horns: profile.horns.map(h => ({ ...h, h: h.h * 0.7 })) },
-    9000, 2600, 220, 11.3, hazeFar, rock.clone().lerp(hazeFar, 0.72), snowC.clone().lerp(hazeFar, 0.62), 420), mkMat());
+    9000, 2600, 220, 11.3, hazeFar, rock.clone().lerp(hazeFar, 0.72), snowC.clone().lerp(hazeFar, 0.62), 420, 0.90), mkMat());
   far.renderOrder = -3;
   ridges.add(far);
 
   const near = new THREE.Mesh(buildRidge(
-    profile, 4200, 1750, 300, 3.7, hazeNear, rock, snowC), mkMat());
+    profile, 4200, 1750, 300, 3.7, hazeNear, rock, snowC, 260, 0.84), mkMat());
   near.renderOrder = -2;
   ridges.add(near);
 
@@ -268,7 +276,7 @@ export function createEnvironment(renderer, scene, run) {
   const hazeMid = horizon.clone().lerp(new THREE.Color(0x7f96ba), 0.20);
   const mid = new THREE.Mesh(buildRidge(
     { base: profile.base * 0.62, rough: profile.rough * 1.3, horns: [] },
-    2100, 1150, 260, 21.7, hazeMid, rock, snowC, 200), mkMat());
+    2100, 1150, 260, 21.7, hazeMid, rock, snowC, 200, 0.74), mkMat());
   mid.renderOrder = -1;
   ridges.add(mid);
 
