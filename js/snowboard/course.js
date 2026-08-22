@@ -341,7 +341,15 @@ export class Course {
       const steep = Math.min(3.2, Math.max(1, 26 / hw));
       const near = Math.min(over, apron) * 0.045;
       const far = Math.max(0, over - apron);
-      y += near + Math.min(45 * steep, (far * 0.09 + far * far * 0.004) * steep);
+      // Saturate, do not clamp. `Math.min(cap, …)` put a perfectly flat plateau
+      // at exactly the cap height, stretching to the edge of the mesh — and a
+      // dead-level plateau seen from the piste is a hard horizontal slab lying
+      // across the entire frame, which is precisely what it looked like. An
+      // exponential approach to the same ceiling gives the identical silhouette
+      // from below with no edge anywhere on it.
+      const cap = 45 * steep;
+      const rise = (far * 0.09 + far * far * 0.004) * steep;
+      y += near + cap * (1 - Math.exp(-rise / cap));
     }
 
     // Features

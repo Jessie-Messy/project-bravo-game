@@ -11,7 +11,12 @@ const STORE_KEY = 'bravoSnowQuality_v1';
 //   pixelRatio    — hard cap, not a target. A 3x phone screen rendering a
 //                   full-res frame is the single fastest way to drop to 20fps,
 //                   and at this camera distance nobody can see the difference
-//                   between 2.0 and 3.0.
+//                   between 2.0 and 3.0. But 1.0 is too far the other way: on a
+//                   DPR-3 handset that is a third of linear resolution — a
+//                   ninth of the pixels — upscaled, and every terrain edge
+//                   becomes a visible staircase next to crisp DOM text. The
+//                   floor is 1.25 even on the low tier for that reason; the
+//                   watchdog has other knobs to turn.
 //   shadowMapSize — 0 means shadows are off entirely, so callers never build a
 //                   shadow camera they will not sample.
 //   viewDist      — how far down the hill terrain chunks are kept alive. Fog is
@@ -33,14 +38,14 @@ const STORE_KEY = 'bravoSnowQuality_v1';
 //   snowfall      — ambient falling-snow particle count.
 export const QUALITY = {
   low: Object.freeze({
-    pixelRatio: 1.0, composer: false, bloom: null, shadows: false,
+    pixelRatio: 1.25, composer: false, bloom: null, shadows: false,
     shadowMapSize: 0, viewDist: 240, chunkAhead: 6, terrainRes: 0.55,
     treeBudget: 420, sprayMax: 220, snowfall: 500, anisotropy: 4,
     msaa: 0, smaa: false,
     sparkle: false, groomDetail: false, speedLines: false,
   }),
   medium: Object.freeze({
-    pixelRatio: 1.5, composer: true, bloom: Object.freeze({ strength: 0.34, radius: 0.5, threshold: 2.4 }),
+    pixelRatio: 1.7, composer: true, bloom: Object.freeze({ strength: 0.34, radius: 0.5, threshold: 2.4 }),
     shadows: true, shadowMapSize: 1024, viewDist: 320, chunkAhead: 8, terrainRes: 0.75,
     treeBudget: 900, sprayMax: 420, snowfall: 900, anisotropy: 8,
     msaa: 0, smaa: false,

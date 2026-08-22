@@ -193,6 +193,13 @@ function makeBoardGeometry(b) {
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   geo.setIndex(idx);
   geo.computeVertexNormals();
+  // The loft above builds the nose at +Z because that is the natural way to
+  // write it, but the rider TRAVELS toward -Z. Left as-is the board points
+  // backwards down the mountain: tail first, back foot leading, which is
+  // exactly as wrong as it sounds and is visible the moment you look at the
+  // rider. Rotating rather than negating z keeps the winding — and therefore
+  // the normals — intact; a sign flip would turn the whole deck inside out.
+  geo.rotateY(Math.PI);
   return geo;
 }
 
@@ -218,7 +225,9 @@ export function createBoard(boardDef, { shadows = true } = {}) {
   const bindMat = mat(0x14171f, { roughness: 0.55 });
   const strapMat = mat(0x2b313d, { roughness: 0.8 });
   const stance = boardDef.length * 0.175;
-  const angles = [15, -6];
+  // Front binding first. Angles mirror with the board: a lead foot angled 15°
+  // toward the nose is -15° now that the nose is at -Z.
+  const angles = [-15, 6];
   const bindings = [];
   for (let i = 0; i < 2; i++) {
     const b = new THREE.Group();
@@ -230,7 +239,7 @@ export function createBoard(boardDef, { shadows = true } = {}) {
       const st = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.026, 0.02), strapMat);
       st.position.set(0, sy, 0.03); b.add(st);
     }
-    b.position.set(0, 0.014, (i === 0 ? 1 : -1) * stance);
+    b.position.set(0, 0.014, (i === 0 ? -1 : 1) * stance);   // [0] is the front foot
     b.rotation.y = THREE.MathUtils.degToRad(angles[i]);
     b.castShadow = shadows;
     grp.add(b);
@@ -283,7 +292,7 @@ export function createRider(riderDef, boardDef, { shadows = true } = {}) {
   for (let i = 0; i < 2; i++) {
     const sign = i === 0 ? 1 : -1;
     const hip = new THREE.Group();
-    hip.position.set(0, 0.86 * S, sign * stance * 0.55);
+    hip.position.set(0, 0.86 * S, -sign * stance * 0.55);   // front leg toward the nose
     const thigh = new THREE.Mesh(CAP(0.085 * S, legL * 0.75), pants);
     thigh.position.y = -legL * 0.5; thigh.castShadow = shadows;
     hip.add(thigh);
@@ -380,7 +389,7 @@ export function createRider(riderDef, boardDef, { shadows = true } = {}) {
   for (let i = 0; i < 2; i++) {
     const sign = i === 0 ? 1 : -1;
     const sh = new THREE.Group();
-    sh.position.set(0, 0.38 * S, sign * build.shoulders * 0.5 * S);
+    sh.position.set(0, 0.38 * S, -sign * build.shoulders * 0.5 * S);   // lead arm toward the nose
     const upper = new THREE.Mesh(CAP(0.055 * S, 0.22 * S), jacket);
     upper.position.y = -0.16 * S; upper.castShadow = shadows;
     sh.add(upper);
