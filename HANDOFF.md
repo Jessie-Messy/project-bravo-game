@@ -16,6 +16,179 @@ handoff is invisible to the next session and causes collisions.
 
 ---
 
+## Alpenglow — the snowboard game (`snowboard.html`)
+
+A second, self-contained game in this repo. It shares the repo, the conventions
+and nothing else: no imports cross between `js/snowboard/` and `js/`, no shared
+state, no shared save key. You can work on either without reading the other.
+
+- **Run it:** serve the repo root and open `/snowboard.html`. `start_game.bat`
+  still opens the medieval prototype; point a browser at `snowboard.html`
+  manually, or use any static server (`npx serve -l 5173 .`).
+- **three.js is VENDORED** at `vendor/three/` (r160, 15 modules, MIT). The
+  medieval prototype still uses the jsDelivr CDN — that is deliberate, not an
+  inconsistency. A phone game should not block first paint on a third-party
+  host. `vendor/three/README.md` says how to refresh it.
+
+### The one idea worth knowing
+
+`js/snowboard/course.js` is a **single analytic height function**, `height(x,z)`.
+It is the only source of truth for where the snow is:
+
+- `terrain.js` evaluates it to build chunk geometry
+- `physics.js` evaluates it four times a frame to stand the rider on it
+- `scenery.js` evaluates it once at load to sit trees on it
+
+Nothing can disagree about the ground, which is the entire bug class that a
+separate collision mesh introduces. **If you change the shape of the mountain,
+change it there and everything follows.** A run is authored as a pitch profile,
+a corridor width profile and a list of feature zones (moguls, kickers, halfpipe,
+crevasses…) in `data/runs.js`.
+
+Physics is ballistic-first: every frame integrates full 3D velocity under
+gravity, then asks whether the board ended up below the snow. Going airborne off
+a roller, a mogul, a kicker lip or a cliff band all fall out of those three
+lines — `physics.js` does not know features exist.
+
+### Files
+
+| File | What it owns |
+| --- | --- |
+| `config.js` | quality tiers, device detect, auto-demote, all physics/scoring tunables |
+| `data/runs.js` | the ten mountains — pitch, width, weather, feature zones |
+| `data/gear.js` | six boards, six riders, and the stats→physics mapping |
+| `course.js` | the height function, the props list |
+| `terrain.js` | snow shader + 40 m chunk streamer + the distant shell |
+| `scenery.js` | procedural trees/rocks/seracs/piste furniture, all instanced |
+| `sky.js` | Preetham sky, snow-tuned lighting, the three-ring skyline |
+| `rider.js` | procedural rider and board, posed from one `pose` object |
+| `physics.js` | the ride |
+| `fx.js` | spray and snowfall particles |
+| `post.js` | bloom → tone map → grade (speed streaks, vignette) |
+| `ui.js` / `css/snowboard.css` | screens, HUD, saved bests |
+| `input.js` | touch / keyboard / tilt / gamepad, one output struct |
+| `main.js` | boot, world assembly, camera, frame loop |
+
+### Gotchas this cost real time
+
+- **Backticks inside the GLSL template literals.** `terrain.js` builds shader
+  chunks in `` `...` `` strings. A backtick in a *comment* inside one silently
+  ends the literal and the module fails to parse with "missing ) after argument
+  list", pointing at a line several above the real one. Parse every file
+  (`node --check`) after editing a shader.
+- **`normal` is in VIEW space** inside `#include <normal_fragment_maps>`.
+  Perturbing it with a world-space vector tilts it in whatever direction the
+  camera faces — the corduroy was invisible for exactly this reason. Rotate
+  offsets with `viewMatrix` first.
+- **The sky dome will paint over the skyline.** Ridge materials must have
+  `depthWrite: true` and the Sky mesh needs a very negative `renderOrder`;
+  otherwise the dome draws afterwards, passes the depth test against geometry
+  that never wrote depth, and erases the mountains.
+- **Bloom threshold is in HDR scene units**, before tone mapping. Sunlit snow
+  sits around 1.5–2.5 there, so the "sensible" 0.9 blooms the entire slope into
+  a white halo. It is 2.2–2.4.
+- **Particle sizes are metres**, converted with `viewportHeight / (2·tan(fov/2))`.
+  The first version used a magic constant with unitless sizes and a single spray
+  particle rendered over a thousand pixels wide — on screen it read as a white
+  sheet hanging off the board.
+- **The terrain mesh's own lateral edge is visible** from the chase camera.
+  It is 155 m out, not 42, for that reason — widening it costs nothing because
+  the column warp keeps the vertex count on the piste.
+- **Terrain triangle winding.** The chunk meshes shipped INSIDE-OUT: rows run
+  down the hill (z decreasing) and columns run +x, so the order that is
+  counter-clockwise seen from above is `a → b → c`, and the file had `a → c →
+  b`. Backface culling then deleted the mountain whenever you looked down at
+  it — large areas of the frame were the sky dome showing through the
+  hillside — and because the snow shader reads `slope = vWNrm.y`, every normal
+  sitting at about -0.95 meant the rock mask ran at full strength across the
+  whole piste. It survived weeks of screenshots because enough geometry faced
+  the camera at grazing angles to still look like terrain, and because the
+  physics never touches the mesh (it reads `course.height()`), so the rider
+  stood on ground that was not being drawn. If the snow ever looks flat,
+  grey, or patchy again, check this first: `npm run smoke:snowboard` asserts
+  the mean normal points up and that a ray cast straight down actually hits
+  something.
+- **`navigator.getGamepads()` THROWS in an embed.** The Gamepad API is gated by
+  Permissions Policy, and in a document not granted it the method exists and
+  refuses to run — feature-detecting it is not enough. It was polled every
+  frame, from inside the frame loop, and only once a run was under way, so the
+  SecurityError took out physics, camera, HUD and streaming together: the game
+  reached the start gate and froze there, with the ollie button still lighting
+  up because that is pure CSS. The result is latched off after the first
+  refusal. Treat any Permissions-Policy-gated API the same way.
+- **The frame loop's error guard must be VISIBLE.** It originally logged to the
+  console and nothing else, which on a phone is nowhere. That is what turned
+  the bug above into two rounds of guesswork. It now paints a dismissible
+  banner (`.errbar`) with the message.
+- **Never gate touch controls on viewport width.** They were hidden by a
+  `min-width: 780px` media query, so they vanished on any touch device
+  measuring wide — a phone in landscape, a tablet, or an embed whose iframe
+  reports a desktop layout width — leaving a touch player unable to ollie.
+  Gate on the `is-touch` class instead, stamped on `<html>` from the same
+  detection the input layer uses.
+- **Two clocks in the frame loop.** `dt` is clamped to 1/4 s so a backgrounded
+  tab cannot teleport the rider; `realDt` is not. Anything measuring the
+  *world* uses the clamp, anything measuring the *device* (the quality
+  watchdog) must use real time, and anything the player is waiting on (the
+  countdown) runs on `performance.now()` directly. Fed clamped time, a phone
+  rendering at 1 fps advanced the countdown at a quarter speed and sat on "3"
+  for ten seconds — a game that visibly would not start.
+- **Sound must never be able to stop the game.** `new AudioContext()` throws
+  outright in some browsers and frames, and it used to sit unguarded inside the
+  DROP IN handler: the exception propagated out of the click listener and the
+  run never started, on a device where everything else worked. Every entry
+  point in `audio.js` now no-ops rather than throwing, including the ones fired
+  from `setTimeout` (whose exceptions land on `window.onerror`, not on the
+  caller).
+- **Mobile tier detection cannot see a GPU.** Safari does not implement
+  `deviceMemory` and every modern iPhone reports 6 cores, so a "cores ≥ 6 and
+  memory ≥ 4" check passed on all of them and handed phones the desktop tier.
+  Phones start at `medium` at most; the watchdog can only demote, so guessing
+  upward costs the player real seconds of unplayable game.
+- **Exposure is the whole ballgame on snow.** Sunlit snow has to land near 0.8,
+  not 1.0. `TIME_PRESETS[*].exposure` in `sky.js` is where that lives, and the
+  values are low (0.24–0.40) on purpose.
+
+### Playing it without a server
+
+`npm install && npm run build:snowboard` inlines every module and every byte of
+CSS into one ~705 kB page at `dist/alpenglow.html` (gitignored). That form is
+for handing someone a link or a file, and for hosts that refuse external
+requests entirely; `snowboard.html` stays the maintained form you develop
+against. The build is a resolver plugin over esbuild — three.js's bare
+specifiers come from `vendor/`, since esbuild has no importmap — and it refuses
+to emit if either inlined payload contains its own closing tag.
+
+### Testing it
+
+`npm run build:snowboard && npm run smoke:snowboard` drives the built page
+inside an iframe that is **denied the gamepad permission**, at a phone
+viewport, **entirely by synthesised touch** — no keyboard anywhere. It boots,
+drops in, checks the rider actually descends, drags to steer, taps ollie, and
+probes every browser API the game touches in that context.
+
+Both of those conditions are the point. Three shipped bugs were invisible to a
+test suite that looked thorough, because every test ran the page top-level
+(where all APIs are permitted) and steered with the keyboard (a path no phone
+has). Reintroduce the `getGamepads` bug and this harness fails five checks with
+`0.0 m, t=0.00s` — which is exactly what the person holding the phone reported.
+
+Playwright is deliberately NOT a dependency: it is large and most work here
+does not need it. The script exits 2 with instructions when it is missing, so a
+skip is distinguishable from a failure.
+
+### Not done yet
+
+- No multiplayer, no ghosts, no leaderboard. Bests are `localStorage` only
+  (`bravoSnowSave_v1`).
+- Rails/boxes are ridable and score a grind, but there is no dedicated grind
+  balance mechanic.
+- Verified in Chromium (desktop and emulated phone, portrait and landscape).
+  Not yet run on real iOS/Android hardware — tilt steering in particular is
+  implemented and permission-gated but untested on a physical device.
+
+---
+
 ## Graphics overhaul — COMMITTED and on `master`
 
 ⚠ This section used to read "IN PROGRESS — branch `graphics-overhaul`, UNCOMMITTED".
