@@ -261,9 +261,21 @@ export function createRider(riderDef, boardDef, { shadows = true } = {}) {
   const H = build.height;
   const S = H / 1.75;                      // scale everything off a 1.75 m base
 
-  const root = new THREE.Group();          // world placement
+  const root = new THREE.Group();          // world placement — OWNED BY main.js
+  // A dedicated group for the crash tumble, between the world placement and the
+  // edge roll.
+  //
+  // It exists because pose code must never touch `root`'s own transform. main.js
+  // writes root.quaternion every frame (surface alignment × yaw), and in three
+  // `.rotation` and `.quaternion` are two views of one state kept in sync — so a
+  // `root.rotation.x *= 0.86` here read back the composed orientation as an XYZ
+  // Euler, scaled one component, and rebuilt the quaternion from it. Harmless on
+  // flat ground at yaw 0, and near yaw ±90°, where that decomposition is
+  // ill-conditioned, enough to stand the rider on their head.
+  const tumble = new THREE.Group();
+  root.add(tumble);
   const tilt = new THREE.Group();          // edge angle — rolls about the board
-  root.add(tilt);
+  tumble.add(tilt);
 
   const board = createBoard(boardDef, { shadows });
   tilt.add(board);
@@ -293,19 +305,19 @@ export function createRider(riderDef, boardDef, { shadows = true } = {}) {
     const sign = i === 0 ? 1 : -1;
     const hip = new THREE.Group();
     hip.position.set(0, 0.86 * S, -sign * stance * 0.55);   // front leg toward the nose
-    const thigh = new THREE.Mesh(CAP(0.085 * S, legL * 0.75), pants);
+    const thigh = new THREE.Mesh(CAP(0.083 * S, legL * 0.75), pants);
     thigh.position.y = -legL * 0.5; thigh.castShadow = shadows;
     hip.add(thigh);
 
     const knee = new THREE.Group();
     knee.position.y = -legL;
-    const shin = new THREE.Mesh(CAP(0.070 * S, shinL * 0.72), pants);
+    const shin = new THREE.Mesh(CAP(0.062 * S, shinL * 0.72), pants);
     shin.position.y = -shinL * 0.5; shin.castShadow = shadows;
     knee.add(shin);
 
     const ankle = new THREE.Group();
     ankle.position.y = -shinL;
-    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.115 * S, 0.20 * S, 0.24 * S), bootM);
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.105 * S, 0.18 * S, 0.26 * S), bootM);
     boot.position.y = -0.05 * S;
     boot.castShadow = shadows;
     ankle.add(boot);
@@ -320,66 +332,105 @@ export function createRider(riderDef, boardDef, { shadows = true } = {}) {
   const pelvis = new THREE.Group();
   pelvis.position.y = 0.88 * S;
   body.add(pelvis);
-  const hipMesh = new THREE.Mesh(CAP(0.135 * S, 0.10 * S), pants);
-  hipMesh.rotation.z = Math.PI / 2; hipMesh.castShadow = shadows;
+  // ── Proportions ─────────────────────────────────────────────────
+  // Sized against the standard human canon rather than by eye, because by eye
+  // this was a bowling pin. For a figure of height H: chest breadth ≈ 0.19 H,
+  // chest DEPTH ≈ 0.145 H, hip breadth ≈ 0.19 H, head ≈ 0.105 H wide by
+  // 0.133 H tall, neck ≈ 0.074 H across. S is H/1.75, so an H-fraction becomes
+  // an S-value by multiplying by 1.75.
+  //
+  // The torso was a capsule of radius `build.chest * S` — circular in
+  // cross-section and twice as wide as the data says, because build.chest is
+  // already a breadth in metres (0.31 m for Kai, 0.37 m for Darius), and a
+  // capsule takes a radius. Halving it honours the per-character number instead
+  // of doubling it, and the x-scale makes the section an ellipse: a chest is
+  // much wider than it is deep, and a circular one is most of why the rider
+  // read as a blob with a head balanced on it.
+  const chestR = build.chest * 0.5 * S;
+  const CHEST_DEPTH = 0.76;                       // depth ÷ breadth
+
+  // The capsule's own axis is +Y, and it has to end up along Z, because Z is
+  // the rider's lateral axis here — the board runs down it and the two legs are
+  // offset along it. Rotating about Z (which is what this did) laid the pelvis
+  // along X instead, i.e. front-to-back, so the figure was 0.33 m deep and
+  // 0.21 m wide through the hips: exactly the real numbers, exactly swapped.
+  const hipMesh = new THREE.Mesh(CAP(0.105 * S, 0.12 * S), pants);
+  hipMesh.rotation.x = Math.PI / 2;
+  hipMesh.scale.set(0.82, 1, 1);                  // and hips are shallower than they are wide
+  hipMesh.castShadow = shadows;
   pelvis.add(hipMesh);
 
   const spine = new THREE.Group();
   spine.position.y = 0.04 * S;
   pelvis.add(spine);
-  const chest = new THREE.Mesh(CAP(build.chest * S, 0.30 * S), jacket);
-  chest.position.y = 0.22 * S; chest.castShadow = shadows;
+  const chest = new THREE.Mesh(CAP(chestR, 0.18 * S), jacket);
+  chest.position.y = 0.23 * S;
+  chest.scale.set(CHEST_DEPTH, 1, 1);
+  chest.castShadow = shadows;
   spine.add(chest);
   // Shoulder yoke in the contrast colour — the detail that stops the jacket
   // reading as a single extruded tube.
-  const yoke = new THREE.Mesh(CAP(build.chest * S * 1.02, 0.10 * S), jacketAlt);
-  yoke.position.y = 0.34 * S; yoke.castShadow = shadows;
+  const yoke = new THREE.Mesh(CAP(chestR * 1.06, 0.08 * S), jacketAlt);
+  yoke.position.y = 0.44 * S;
+  // Squashed in Y as well: a capsule's cap height is its radius, so at chest
+  // breadth this reads as a second torso rather than a shoulder band.
+  yoke.scale.set(CHEST_DEPTH, 0.62, 1);
+  yoke.castShadow = shadows;
   spine.add(yoke);
 
   if (fit.scarf) {
-    const sc = new THREE.Mesh(new THREE.TorusGeometry(0.10 * S, 0.038 * S, 6, 14), mat(fit.scarf, { roughness: 0.9 }));
-    sc.rotation.x = Math.PI / 2; sc.position.y = 0.44 * S;
+    const sc = new THREE.Mesh(new THREE.TorusGeometry(0.082 * S, 0.032 * S, 6, 14), mat(fit.scarf, { roughness: 0.9 }));
+    sc.rotation.x = Math.PI / 2; sc.position.y = 0.55 * S;
     spine.add(sc);
     mats.push(sc.material);
   }
 
   // Head
+  // Acromion sits at 0.82 H and the hip joint at 0.53 H, so the shoulder line
+  // belongs 0.51 m above the spine root, not 0.34 — the short torso is why the
+  // head looked sunk between the shoulders even after it was sized correctly.
   const neck = new THREE.Group();
-  neck.position.y = 0.46 * S;
+  neck.position.y = 0.56 * S;
   spine.add(neck);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.105 * S, 14, 12), skin);
-  head.scale.set(0.94, 1.06, 1.0);
-  head.position.y = 0.10 * S; head.castShadow = shadows;
+  // An actual neck. Without one the head sat straight on the shoulders, which
+  // is most of what made the figure read as a toy rather than a person.
+  const neckMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.062 * S, 0.070 * S, 0.09 * S, 8), skin);
+  neckMesh.position.y = 0.015 * S;
+  neck.add(neckMesh);
+  // Heads are taller than they are wide, and narrower than they are deep.
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.094 * S, 14, 12), skin);
+  head.scale.set(0.98, 1.22, 1.06);
+  head.position.y = 0.153 * S; head.castShadow = shadows;
   neck.add(head);
 
   if (fit.helmet) {
-    const hel = new THREE.Mesh(new THREE.SphereGeometry(0.122 * S, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.62), mat(fit.helmet, { roughness: 0.28, metalness: 0.1 }));
-    hel.position.y = 0.115 * S; hel.castShadow = shadows;
+    const hel = new THREE.Mesh(new THREE.SphereGeometry(0.106 * S, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.62), mat(fit.helmet, { roughness: 0.28, metalness: 0.1 }));
+    hel.position.y = 0.166 * S; hel.castShadow = shadows;
     neck.add(hel);
     mats.push(hel.material);
   } else {
-    const bn = new THREE.Mesh(new THREE.SphereGeometry(0.120 * S, 14, 12, 0, Math.PI * 2, 0, Math.PI * 0.60), mat(fit.beanie || 0x333333, { roughness: 0.95 }));
-    bn.position.y = 0.118 * S; bn.castShadow = shadows;
+    const bn = new THREE.Mesh(new THREE.SphereGeometry(0.104 * S, 14, 12, 0, Math.PI * 2, 0, Math.PI * 0.60), mat(fit.beanie || 0x333333, { roughness: 0.95 }));
+    bn.position.y = 0.170 * S; bn.castShadow = shadows;
     neck.add(bn);
-    const cuff = new THREE.Mesh(new THREE.TorusGeometry(0.108 * S, 0.024 * S, 6, 16), bn.material);
-    cuff.rotation.x = Math.PI / 2; cuff.position.y = 0.10 * S;
+    const cuff = new THREE.Mesh(new THREE.TorusGeometry(0.096 * S, 0.021 * S, 6, 16), bn.material);
+    cuff.rotation.x = Math.PI / 2; cuff.position.y = 0.146 * S;
     neck.add(cuff);
-    const bob = new THREE.Mesh(new THREE.SphereGeometry(0.042 * S, 10, 8), bn.material);
-    bob.position.y = 0.235 * S;
+    const bob = new THREE.Mesh(new THREE.SphereGeometry(0.036 * S, 10, 8), bn.material);
+    bob.position.y = 0.290 * S;
     neck.add(bob);
     mats.push(bn.material);
     // Hair spilling out under the beanie.
-    const hair = new THREE.Mesh(new THREE.SphereGeometry(0.112 * S, 12, 10, 0, Math.PI * 2, Math.PI * 0.42, Math.PI * 0.30), hairM);
-    hair.position.y = 0.10 * S;
+    const hair = new THREE.Mesh(new THREE.SphereGeometry(0.099 * S, 12, 10, 0, Math.PI * 2, Math.PI * 0.42, Math.PI * 0.30), hairM);
+    hair.position.y = 0.154 * S;
     neck.add(hair);
   }
 
   // Goggles — strap band plus a wraparound lens.
-  const strap = new THREE.Mesh(new THREE.TorusGeometry(0.113 * S, 0.020 * S, 6, 18), frameM);
-  strap.rotation.x = Math.PI / 2; strap.position.y = 0.115 * S;
+  const strap = new THREE.Mesh(new THREE.TorusGeometry(0.101 * S, 0.018 * S, 6, 18), frameM);
+  strap.rotation.x = Math.PI / 2; strap.position.y = 0.160 * S;
   neck.add(strap);
-  const lens = new THREE.Mesh(new THREE.SphereGeometry(0.108 * S, 16, 10, -0.95, 1.9, 0.85, 0.62), lensM);
-  lens.position.y = 0.112 * S;
+  const lens = new THREE.Mesh(new THREE.SphereGeometry(0.097 * S, 16, 10, -0.95, 1.9, 0.85, 0.62), lensM);
+  lens.position.y = 0.158 * S;
   lens.rotation.y = Math.PI * 0.5;
   lens.scale.set(1.06, 1.0, 1.10);
   neck.add(lens);
@@ -389,17 +440,17 @@ export function createRider(riderDef, boardDef, { shadows = true } = {}) {
   for (let i = 0; i < 2; i++) {
     const sign = i === 0 ? 1 : -1;
     const sh = new THREE.Group();
-    sh.position.set(0, 0.38 * S, -sign * build.shoulders * 0.5 * S);   // lead arm toward the nose
-    const upper = new THREE.Mesh(CAP(0.055 * S, 0.22 * S), jacket);
+    sh.position.set(0, 0.51 * S, -sign * build.shoulders * 0.5 * S);   // lead arm toward the nose
+    const upper = new THREE.Mesh(CAP(0.048 * S, 0.20 * S), jacket);
     upper.position.y = -0.16 * S; upper.castShadow = shadows;
     sh.add(upper);
     const el = new THREE.Group();
-    el.position.y = -0.32 * S;
-    const fore = new THREE.Mesh(CAP(0.048 * S, 0.20 * S), jacket);
+    el.position.y = -0.30 * S;
+    const fore = new THREE.Mesh(CAP(0.040 * S, 0.19 * S), jacket);
     fore.position.y = -0.14 * S; fore.castShadow = shadows;
     el.add(fore);
-    const glove = new THREE.Mesh(new THREE.SphereGeometry(0.062 * S, 10, 8), jacketAlt);
-    glove.position.y = -0.29 * S; glove.scale.set(1, 0.9, 1.15);
+    const glove = new THREE.Mesh(new THREE.SphereGeometry(0.052 * S, 10, 8), jacketAlt);
+    glove.position.y = -0.27 * S; glove.scale.set(1, 0.9, 1.15);
     el.add(glove);
     sh.add(el);
     spine.add(sh);
@@ -492,11 +543,11 @@ export function createRider(riderDef, boardDef, { shadows = true } = {}) {
     if (crash > 0.01) {
       // A tumble, not a ragdoll: spin the whole assembly and let the limbs
       // flail. Cheap, and at 25 m/s nobody is inspecting the joint solution.
-      root.rotation.x = crash * Math.sin(pose.t * 6.5) * 1.2;
+      tumble.rotation.x = crash * Math.sin(pose.t * 6.5) * 1.2;
       tilt.rotation.z += crash * Math.sin(pose.t * 8.1) * 1.6;
       body.rotation.z = crash * 0.5 * Math.sin(pose.t * 5.0);
     } else {
-      root.rotation.x *= 0.86;
+      tumble.rotation.x *= 0.86;
       body.rotation.z *= 0.86;
     }
   }
