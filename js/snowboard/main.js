@@ -331,8 +331,16 @@ function updateCamera(dt) {
     tmp2.set(p.x, p.y + cfg.look, p.z);
     camLook.lerp(tmp2, 1 - Math.exp(-6 * dt));
     camera.position.copy(camPos);
+    camera.up.set(0, 1, 0);
     camera.lookAt(camLook);
-    camera.rotation.z = 0;
+    // NO `camera.rotation.z = 0` here. lookAt already guarantees zero roll when
+    // up is world-up, so it bought nothing — and it cost a great deal, because
+    // reading `.rotation` decomposes the quaternion lookAt just built into an
+    // XYZ Euler and writing a component rebuilds the quaternion from it. That
+    // decomposition is ill-conditioned as the orbit sweeps through yaw ±90°,
+    // where the yaw splits between the x and z terms; zeroing z there stood the
+    // whole camera on its head, which is what put the rider upside down on the
+    // picker screens.
     camFov += ((window.innerHeight > window.innerWidth ? 58 : 50) - camFov) * (1 - Math.exp(-3 * dt));
     camera.fov = camFov;
     camera.updateProjectionMatrix();
@@ -380,7 +388,11 @@ function updateCamera(dt) {
   camera.up.set(0, 1, 0);
   camera.lookAt(camLook);
   // A touch of roll into the turn. Small — this is seasoning, not a barrel roll.
-  camera.rotation.z += -r.edge * 0.055 - r.slip * 0.02 * Math.sign(r.edge);
+  // Applied as a rotation about the camera's OWN forward axis rather than by
+  // writing `rotation.z`, which would round-trip the orientation through an
+  // Euler and hit the same gimbal problem the menu camera did whenever the
+  // chase yaw passes ±90° — which a meandering course does regularly.
+  camera.rotateZ(-r.edge * 0.055 - r.slip * 0.02 * Math.sign(r.edge));
 
   const targetFov = (window.innerHeight > window.innerWidth ? 74 : 64) + sp01 * 17 + (r.crashT > 0 ? 6 : 0);
   camFov += (targetFov - camFov) * (1 - Math.exp(-2.6 * dt));
