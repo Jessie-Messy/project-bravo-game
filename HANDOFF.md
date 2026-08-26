@@ -13,6 +13,15 @@ handoff is invisible to the next session and causes collisions.
   clone, and don't commit it.
 - Run locally: `start_game.bat` (serves on http://localhost:5173, opens `medieval_prototype.html`).
 - Main game code is one big module: `js/game3d.js`. Shared state: `js/state.js`. Tunables: `js/constants.js`.
+- ⚠ **Never commit the deploy `.bat` helpers** (`VPS_GIT_PULL.bat`,
+  `VPS_SETUP_AND_DEPLOY.bat`, `COMMIT_AND_DEPLOY.bat`, `DEPLOY.bat`) — two of them
+  carry the VPS password in plaintext. They are gitignored as of 2026-08-26 and the
+  password has **never** been in git history (verified across all refs).
+
+### Stopping point — 2026-08-26
+Achievement system / boss HP bar / NPC minimap dots committed and pushed; client and
+world server redeployed to the VPS. See the session note in "Known gotchas" about the
+stale `HEAD.lock` — that was why the 2026-08-08 session could not push.
 
 ---
 
@@ -311,18 +320,28 @@ on the Intel path is a floor, not a reading.
 Both are vsync-capped at 144Hz, i.e. there is real headroom left at ultra. The
 plan's original 50fps merge gate is comfortably met.
 
-**Not started:** GTAO (needs the additive-FX reparent under an `fxGroup` — the
-plan assumed ~8 materials, the real count is **297 additive meshes**).
+**GTAO: DONE.** The `fxGroup` virtual group is live (`game3d.js` ~lines
+11266-11286), populated by a `refreshFxList()` traversal at boot and passed into
+`createComposer`. Ultra tier carries `gtao:true` in `quality.js`; the pass itself
+is implemented in `composer.js` with fxGroup hide/restore in a `try/finally`.
+Measured 142.9fps / 7.0ms on an RTX 2050 (vsync-capped).
 
-**Open, from the critic pass (verify each before acting — one of its findings
-was a misdiagnosis):** characters reportedly don't attenuate at night while the
-world goes black; masonry reportedly picks up a red cast at night (suspicious,
-since night ambient `0x0c102b` is blue, so the stated cause can't be right);
-dusk reads neutral where it should be amber; the forest is a visible rectangular
-grid of identical clones (cheap fix: jitter position/rotation/scale per
-instance). Its claim that `calls:1, tris:1` means "dead instrumentation" is
-**wrong** — that's `renderer.info` reflecting the composer's final fullscreen
-pass, which is expected once EffectComposer is in play.
+**Critic-pass items — all resolved 2026-08-08.** Three of the four turned out to
+be misdiagnoses, which is why the warning above said to verify before acting:
+- **Characters don't attenuate at night** — ✅ NOT A BUG. `makeRig()` already uses
+  `MeshStandardMaterial` for all four materials; IBL dims via `applyEnvIntensity`,
+  ambient and directional dim via `updateEnvironmentCycle`.
+- **Red cast at night** — ✅ NOT A BUG. It is **Vampire Night Vision**
+  (`playerLight` at `#e06075`, intensity 0.85, gated on `player.race==='Vampire'`
+  in `updateEnvironmentCycle`). The suspicion recorded above was right: the blue
+  night ambient was never the cause.
+- **Dusk reads neutral** — ✅ FIXED AND VERIFIED. `horizonF` divisor 0.30 → 0.55
+  in `sky.js` (~line 539). Verified: 19:00 reads `[1.21,1.17,1.00]` warm, 20:00
+  reads `[0.32,0.16,0.08]` deep amber.
+- **Forest is a grid of clones** — ✅ NOT A BUG. Per-tree position/girth/height/
+  Y-spin jitter is already live, hashed from tile coords in `rebuildTrees`.
+The `calls:1, tris:1` claim was wrong for the reason stated above (that's
+`renderer.info` reflecting the composer's final fullscreen pass).
 
 ---
 
@@ -556,6 +575,15 @@ pass, which is expected once EffectComposer is in play.
 ---
 
 ## Known gotchas / things that bit us
+- ⚠ **A stale `.git/HEAD.lock` silently blocks every commit and push.** The 2026-08-08
+  session ended with a crashed git process that left a **zero-byte `.git/HEAD.lock`**
+  behind. Git then refused every ref write for 18 days with *"Another git process seems
+  to be running"* — which is why that session's work sat uncommitted and "we couldn't
+  push". The existing `.bat` helpers only delete `index.lock`, **not `HEAD.lock`**, so
+  they never cleared it. If a commit or push fails with that message, check for **both**:
+  `ls .git/*.lock`. A `git fsmonitor--daemon` process in the process list is normal and
+  is *not* the culprit — check the lock file's timestamp instead; if it is old and
+  zero-byte, delete it.
 - **`constants.js` crash**: an unclosed object literal in `RACES` (missing `}`) took the whole game down (every module failed to import). If the game shows a blank page, syntax-check `constants.js` first: `node --input-type=module -e "import('./js/constants.js').then(()=>console.log('ok')).catch(e=>console.log(e.message))"`.
 - **Naming collisions across sessions**: my char-panel `CHAR_W/CHAR_H` collided with the existing character-model-height `CHAR_H`. Renamed panel consts to `CHARP_W/CHARP_H`. Grep before adding top-level consts.
 - **`state.js` is edited by multiple sessions** — merge its `player{}` and `G{}` carefully; both sessions add fields there.
@@ -610,10 +638,20 @@ Chosen direction (from the depth discussion): **contract board → progression c
 2. ✅ **Dungeon depth & bosses** (DONE): 5 floors, generated + connectivity-verified, two named bosses, depth-gated loot, wired as `delve`/`floorboss` contract targets.
    ✅ **Boss mechanics added 2026-07-25** — see the section below; they're no longer just buffed stats.
 3. ✅ **World loot chests** (DONE): 23 seeded chests + boss-arena hoards across the dungeon floors, lazily-rolled depth-scaled contents, Take-All panel, looted state saved, plus a `chest` contract. (Player-built secure chests are unchanged — these are separate world containers.)
-4. *(Not selected, backlog)* Achievements & museum-collection meta for completionists.
+4. ✅ **Achievement system** (DONE 2026-08-08): 15 permanent per-character milestones across combat, progression, dungeon, and world categories. `G.achiev` (a Set, serialised as an array). `grantAchiev(id)` is idempotent. Gold trophy toast top-right (4.4s, fade in/out, **queued** so back-to-back grants don't overlap). Achievements are listed in the quest journal (J). Wired to: kill count (1/100/500), champ/boss kills (Gravebinder/Molloch), levels (10/25/50), dungeon entry + floor 5, relic spend, curator bounty, first house, any skill at 10. Save/load/reset wired. `G.totalKills` and `G.gambitHinted` are now correctly persisted too (they previously were not).
+   *(Not selected for future)* Museum-collection meta for completionists.
 
 ### Systems that already exist but testers rarely find (surface them via contracts/quests)
-- Champion altars (wave defense) · Museum Curator rotating artifact bounty · Antiquarian rotating shop · Gambit engine (rule-based auto-combat) · Housing.
+✅ **DONE 2026-08-08 — all five are now surfaced.**
+- **Hidden NPCs**: all four (Antiquarian, Museum Curator, Cryptologist, Grave Robber) now have `[E]` proximity labels and coloured ♦ dots on the minimap, plus an entry in the TOWN & GOLD help section.
+- **Contracts**: `antiq` and `bounty` added to the board template pool. `questEvent('relic')` fires on an antiquarian purchase; `questEvent('bounty')` fires on curator bounty fulfilment.
+- **New quest — Relic Seeker** (spend a relic at the antiquarian), appended to the chain as the bridge between the altar boss drop and the artifact system. The "all quests complete" floater now points players at the contract board.
+- **Boss HP bar**: named floor bosses now show a top-centre HP bar with an enrage tag — a 1080 HP fight with no readout was disorienting.
+- Champion altars (wave defense) — surfaced via the quest chain + `altar` contract ✓
+- Museum Curator (rotating bounty) — minimap dot + label + `bounty` contract ✓
+- Antiquarian (relic shop) — minimap dot + label + `antiq` contract + Relic Seeker quest ✓
+- Gambit engine — in the Y-key help text; hint floater fires after the 5th career kill (`G.gambitHinted`) ✓
+- Housing — in the quest chain (wall quest) + HOUSING help section ✓
 
 ---
 
