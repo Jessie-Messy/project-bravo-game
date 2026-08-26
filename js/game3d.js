@@ -4429,7 +4429,11 @@ function skillLv(sk) {
 }
 function skillXpPrev(sk){const lv=skillLv(sk);return lv<=1?0:XP_LEVELS[lv-1];}
 function skillXpMax(sk) {const lv=skillLv(sk);return lv>=10?XP_LEVELS[9]:XP_LEVELS[lv];}
-function addSkillXp(sk,amt){if(skillLv(sk)>=10)return; sk.xp+=amt*(1+artifactBonus('xpMult'));}
+function addSkillXp(sk,amt){
+  if(skillLv(sk)>=10)return;
+  sk.xp+=amt*(1+artifactBonus('xpMult'));
+  if(skillLv(sk)>=10) grantAchiev('skill_max');   // "Master Artisan"
+}
 function tacticsLv()  {return skillLv(skills.tactics);}
 function archeryLv()  {return skillLv(skills.archery);}
 function hidingLv()   {return skillLv(skills.hiding);}
@@ -5933,6 +5937,88 @@ function takeAllCorpse(){
   addFloater(player.x,player.y-30,'looted corpse');G.corpse=null;G.corpseLootOpen=false;
 }
 
+// ── Achievement system ────────────────────────────────────────────
+// Permanent per-character milestones stored in G.achiev (a Set serialised
+// as an array in the save). grantAchiev(id) is idempotent — calling it
+// twice for the same id is harmless. The toast queues so back-to-back
+// grants don't overlap on screen.
+const ACHIEVEMENTS = [
+  // Combat
+  {id:'first_blood', title:'First Blood',        desc:'Slay your first enemy.'},
+  {id:'centurion',   title:'Centurion',           desc:'Slay 100 enemies.'},
+  {id:'warlord',     title:'Warlord',             desc:'Slay 500 enemies.'},
+  {id:'champ_slay',  title:'Champion Slayer',     desc:'Defeat a dungeon champion.'},
+  {id:'gravebinder', title:'Gravebinder Felled',  desc:'Slay The Gravebinder on Floor 3.'},
+  {id:'molloch_dead',title:'Molloch Slain',        desc:'Slay Ratking Molloch on Floor 5.'},
+  // Progression
+  {id:'level10',     title:'Journeyman',           desc:'Reach level 10.'},
+  {id:'level25',     title:'Veteran',              desc:'Reach level 25.'},
+  {id:'level50',     title:'Legend',               desc:'Reach the level cap.'},
+  // Dungeon
+  {id:'dungeon',     title:'Into the Dark',        desc:'Enter the dungeon.'},
+  {id:'dungeon5',    title:'Deep Delver',          desc:'Reach dungeon floor 5.'},
+  // World / Economy
+  {id:'relic',       title:'Relic Seeker',         desc:'Spend a relic at the Antiquarian.'},
+  {id:'curator',     title:"Curator's Favor",      desc:'Fulfill a museum bounty.'},
+  {id:'house',       title:'Homesteader',          desc:'Place your first house.'},
+  {id:'skill_max',   title:'Master Artisan',       desc:'Max any skill to level 10.'},
+];
+const _achievQueue = [];
+let _achievToast = null;   // {title, desc, startMs, durationMs}
+
+function grantAchiev(id) {
+  if (!G.achiev) G.achiev = new Set();
+  if (G.achiev.has(id)) return;
+  const def = ACHIEVEMENTS.find(a => a.id === id);
+  if (!def) return;
+  G.achiev.add(id);
+  saveGame(true);
+  try { snd.quest(); } catch(_){}
+  _achievQueue.push({title: def.title, desc: def.desc});
+}
+
+function drawAchievToast() {
+  // Advance queue when previous toast has expired
+  if (!_achievToast && _achievQueue.length)
+    _achievToast = { ..._achievQueue.shift(), startMs: performance.now(), durationMs: 4400 };
+  if (!_achievToast) return;
+  const age = performance.now() - _achievToast.startMs;
+  if (age >= _achievToast.durationMs) { _achievToast = null; return; }
+
+  const dur = _achievToast.durationMs, fadeIn = 350, fadeOut = 700;
+  let alpha = age < fadeIn ? age/fadeIn : age > dur-fadeOut ? (dur-age)/fadeOut : 1;
+  alpha = Math.max(0, Math.min(1, alpha));
+
+  const ctx = G.ctx;
+  const W = G.canvas.width, TW = 288, TH = 64, TX = W - TW - 14, TY = 14;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  // Panel background
+  ctx.fillStyle = 'rgba(10,6,2,0.90)';
+  ctx.fillRect(TX, TY, TW, TH);
+  // Gold top border accent
+  ctx.fillStyle = '#c8a440';
+  ctx.fillRect(TX, TY, TW, 2);
+  // Left accent bar
+  ctx.fillStyle = '#c8a440';
+  ctx.fillRect(TX, TY, 3, TH);
+  // Header text
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 10px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = '#c8a440';
+  ctx.fillText('\u{1F3C6}  ACHIEVEMENT UNLOCKED', TX + 10, TY + 15);
+  // Title
+  ctx.font = 'bold 14px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = '#f0dca0';
+  ctx.fillText(_achievToast.title, TX + 10, TY + 34);
+  // Description
+  ctx.font = '11px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle = 'rgba(220,200,160,0.80)';
+  ctx.fillText(_achievToast.desc, TX + 10, TY + 52);
+  ctx.restore();
+}
+
 // ── Quest system ──────────────────────────────────────────────────
 // A linear tutorial chain: each quest teaches one mechanic and pays a
 // reward. questEvent(ev, id) is called from the gameplay hooks below;
@@ -5951,10 +6037,13 @@ const QUESTS=[
   {id:'wall',    title:'Homesteader',      desc:'Craft a wall (1 plank) and place it — the first stone of your future home.',                  goal:{ev:'wall',n:1},              reward:{planks:5}},
   {id:'altar',   title:'Shrine Seeker',    desc:'Awaken a champion altar: find a purple shrine (M map) and stand near it. Survive the waves!', goal:{ev:'altar',n:1},             reward:{gold:50}},
   {id:'dungeon', title:'Into the Depths',  desc:'Brave the Rat Dungeon: enter the glowing portal at the cave mouth on the main road south of the crossroads.', goal:{ev:'dungeon',n:1}, reward:{gold:100,potions:3}},
+  {id:'antiq_intro', title:'Relic Seeker', desc:'Visit the Antiquarian in Lunar City (purple ♦ on the M map) and spend a champion relic to claim your first artifact.', goal:{ev:'relic',n:1}, reward:{gold:75}},
 ];
 const questState={idx:0, prog:0};
 function questEvent(ev, id){
   contractEvent(ev, id);          // contracts run forever, independent of the finite quest chain
+  if(ev==='relic')  grantAchiev('relic');     // "Relic Seeker"
+  if(ev==='bounty') grantAchiev('curator');   // "Curator's Favor"
   if(questState.idx>=QUESTS.length) return;
   const q=QUESTS[questState.idx], g=q.goal;
   if(g.ev!==ev || (g.id&&g.id!==id)) return;
@@ -5973,7 +6062,7 @@ function questEvent(ev, id){
   if(questState.idx<QUESTS.length)
     addFloater(player.x,player.y-72,'⚑ New quest: '+QUESTS[questState.idx].title+'  [J]');
   else
-    addFloater(player.x,player.y-72,'⚑ All quests complete — the realm is yours!');
+    addFloater(player.x,player.y-72,'⚑ All quests complete — check the Contract Board [E] for endless work!');
 }
 function grantRandomArtifact(w1,w2,w3){
   const r=Math.random(),tier=r<w1?1:(r<w1+w2?2:3);
@@ -6020,6 +6109,17 @@ function killXp(e){
 }
 hooks.onKill = e => {
   questEvent('kill', e.type);
+  // First-time gambit hint: after 5th career kill, nudge the player toward Y.
+  G.totalKills = (G.totalKills||0)+1;
+  if(G.totalKills===5&&!G.gambitHinted){
+    G.gambitHinted=true;
+    setTimeout(()=>addFloater(player.x,player.y-84,'⚙ Tip: press Y to automate combat with Gambits!'),2500);
+  }
+  // Kill-count achievements (idempotent)
+  if(G.totalKills>=1)   grantAchiev('first_blood');
+  if(G.totalKills>=100) grantAchiev('centurion');
+  if(G.totalKills>=500) grantAchiev('warlord');
+  if(e.isChamp || e.isChampBoss) grantAchiev('champ_slay');
   if(e.floorBoss){                                  // named floor boss felled
     if(!G.floorBossesDown)G.floorBossesDown={};
     G.floorBossesDown[G.dungeonFloor]=true;
@@ -6027,13 +6127,20 @@ hooks.onKill = e => {
     questEvent('floorboss', e.floorBoss);
     inv.gold+=250; addFloater(player.x,player.y-52,'+250g bounty');
     grantRandomArtifact(0.2,0.4,0.4);               // bosses skew to high-tier artifacts
+    if(e.floorBoss==='gravebinder') grantAchiev('gravebinder');
+    if(e.floorBoss==='molloch')     grantAchiev('molloch_dead');
   }
   // ── character progression: XP → levels → stat points
   const xp=killXp(e);
   const before=player.level;
   addPlayerXp(xp);
   addFloater(player.x,player.y-20,'+'+xp+' xp');
-  if(player.level>before){ recomputeDerivedStats(); snd.quest(); }
+  if(player.level>before){
+    recomputeDerivedStats(); snd.quest();
+    if(player.level>=10) grantAchiev('level10');
+    if(player.level>=25) grantAchiev('level25');
+    if(player.level>=50) grantAchiev('level50');
+  }
   // ── ARPG loot: rarity/affix/socketed gear from tougher kills
   rollArpgLoot(e);
   if(e.isChampBoss){
@@ -6050,8 +6157,12 @@ function questPoll(){
   const anyAltar=CHAMP_ALTARS.some(a=>a.state!=='idle');
   if(anyAltar&&!_qAltarWas)questEvent('altar');
   _qAltarWas=anyAltar;
-  if(G.inDungeon&&!_qDunWas)questEvent('dungeon');
+  if(G.inDungeon&&!_qDunWas){
+    questEvent('dungeon');
+    grantAchiev('dungeon');                             // "Into the Dark"
+  }
   _qDunWas=G.inDungeon;
+  if(G.dungeonFloor>=5) grantAchiev('dungeon5');        // "Deep Delver"
 }
 // ── Dungeon floors & named bosses ─────────────────────────────────
 // Floor bosses reuse existing enemy AI/models with buffed stats, a name and
@@ -6219,6 +6330,10 @@ const CONTRACT_TEMPLATES=[
   {id:'slayer',gen:tier=>{const which=tier>=4?'molloch':'gravebinder';
     const nm=FLOOR_BOSSES[which].name;
     return {title:'Slay '+nm, desc:'Destroy '+nm+' in the deep', ev:'floorboss', evId:which, need:1};}},
+  // Discovery contracts — guide players toward hidden systems
+  {id:'antiq', gen:tier=>{const need=1+Math.floor(tier/3);
+    return {title:'Relic Exchange', desc:'Spend '+need+' relic'+(need>1?'s':'')+' at the Antiquarian (💜 on map, [E] to browse)', ev:'relic', evId:null, need};}},
+  {id:'bounty', gen:()=>({title:'Museum Commission', desc:'Fulfill a bounty at the Museum Curator (★ on map, [E] to view)', ev:'bounty', evId:null, need:1})},
 ];
 function contractTier(){ return Math.min(6, 1+Math.floor((G.contractRank||0)/3)); }
 function makeContract(tier){
@@ -6259,7 +6374,13 @@ function ensureContracts(){
 function completeContract(i){
   const c=G.contracts[i]; if(!c)return;
   inv.gold+=c.gold;
+  const _lvBefore=player.level;
   addPlayerXp(c.xp); recomputeDerivedStats();
+  if(player.level>_lvBefore){
+    if(player.level>=10) grantAchiev('level10');
+    if(player.level>=25) grantAchiev('level25');
+    if(player.level>=50) grantAchiev('level50');
+  }
   addFloater(player.x,player.y-58,'✔ CONTRACT DONE: '+c.title);
   addFloater(player.x,player.y-40,'+'+c.gold+'g   +'+c.xp+' xp');
   if(c.bonus==='gear'){
@@ -6374,7 +6495,9 @@ const QUEST_W=320;
 function renderQuestPanel(){
   ensureContracts();
   const ctx=G.ctx,rowH=30,headH=34;
-  const H=headH+QUESTS.length*rowH+58+22+(G.contracts||[]).length*16;
+  const earnedN=(G.achiev||new Set()).size;
+  const achievH=20+(earnedN>0?earnedN*14:0)+14;  // section header + earned list + margin
+  const H=headH+QUESTS.length*rowH+58+22+(G.contracts||[]).length*16+achievH;
   const {px,py}=panelAt('quests', Math.round(G.canvas.width/2-QUEST_W/2), Math.max(8,Math.round(G.canvas.height/2-H/2)), QUEST_W, H);
   ctx.fillStyle='rgba(18,13,8,.94)';ctx.fillRect(px,py,QUEST_W,H);
   ctx.strokeStyle='#c8a25a';ctx.lineWidth=1.5;ctx.strokeRect(px,py,QUEST_W,H);
@@ -6415,6 +6538,24 @@ function renderQuestPanel(){
     ctx.textAlign='right';ctx.fillStyle='#f0d060';
     ctx.fillText(c.gold+'g',px+QUEST_W-14,y);ctx.textAlign='left';
     y+=16;
+  }
+  // Achievements section
+  y+=6;
+  const earned=G.achiev||new Set();
+  ctx.fillStyle='#c8a440';ctx.font='bold 12px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillText('\u{1F3C6} ACHIEVEMENTS  '+earned.size+' / '+ACHIEVEMENTS.length,px+14,y);
+  y+=14;
+  if(earned.size===0){
+    ctx.font='11px ui-monospace,Menlo,Consolas,monospace';ctx.fillStyle='rgba(200,190,170,.35)';
+    ctx.fillText('  none earned yet — explore, fight, build!',px+14,y);
+    y+=14;
+  } else {
+    for(const a of ACHIEVEMENTS){
+      if(!earned.has(a.id)) continue;
+      ctx.font='11px ui-monospace,Menlo,Consolas,monospace';ctx.fillStyle='#f0dca0';
+      ctx.fillText('✔ '+a.title+'  —  '+a.desc,px+18,y);
+      y+=14;
+    }
   }
 }
 // HUD tracker — bottom-left, always visible while quests remain
@@ -6960,6 +7101,11 @@ const TUT_PAGES=[
     ['','blacksmith — weapons & armor'],
     ['','mage — healing potions'],
     ['','farrier — a horse! (R to mount, 2.2× speed)'],
+    ['','antiquarian (💎 map) — spend champion relics'],
+    ['','   on powerful artifacts'],
+    ['','museum curator (★ map) — fulfill artifact bounties'],
+    ['','cryptologist — decode ancient glyphs & lore'],
+    ['','grave robber — underground treasures & deals'],
     ['G','call the city guards for help'],
     ['K','skills — they level up as you use them'],
     ['',''],
@@ -6970,6 +7116,8 @@ const TUT_PAGES=[
     ['J','quest journal — the tracker (bottom-left)'],
     ['','always shows your next goal; quests teach'],
     ['','every mechanic and pay rewards'],
+    ['🏆','achievements — 15 permanent milestones'],
+    ['','  toast appears top-right when one is earned'],
     ['⛩','champion altars (purple shrines): stand close'],
     ['','to awaken them — kill waves, light candles,'],
     ['','climb tiers — the boss drops STEEL weapons'],
@@ -7281,6 +7429,10 @@ function drawInteractPrompts(){
     add(MAGE.x,MAGE.y,'[E] Mage Shop');
     add(FARRIER.x,FARRIER.y,'[E] Farrier');
     add(FLETCHER.x,FLETCHER.y,'[E] Fletcher');
+    add(ANTIQUARIAN.x,ANTIQUARIAN.y,'[E] Antiquarian');
+    add(CRYPTOLOGIST.x,CRYPTOLOGIST.y,'[E] Cryptologist');
+    add(CURATOR.x,CURATOR.y,'[E] Museum Curator');
+    add(GRAVE_ROBBER.x,GRAVE_ROBBER.y,'[E] Grave Robber');
     add(CONTRACT_BOARD.x,CONTRACT_BOARD.y,'[E] Contracts',TILE*3,58);
     { const wc=nearbyWorldChest(); if(wc) add(wc.x*TILE+TILE/2,wc.y*TILE+TILE/2,wc.hoard?'[E] 👑 Hoard':'[E] Open chest',TILE*2,40); }
     add(HEALER.x,HEALER.y,'[E] Heal',TILE*3);
@@ -7527,6 +7679,8 @@ function buildSave(){
     contracts:(G.contracts||[]).map(c=>({...c})),contractRank:G.contractRank||0,
     dungeonBest:G.dungeonBest||1,floorBossesDown:{...(G.floorBossesDown||{})},
     chestsLooted:{...(G.chestsLooted||{})},
+    totalKills:G.totalKills||0,gambitHinted:!!G.gambitHinted,
+    achiev:[...(G.achiev||[])],
     hotbar:hotbar.map(s=>s?{...s}:null),macros:macros.map(m=>({name:m.name,steps:[...m.steps]}))};
 }
 function saveGame(quiet){
@@ -7582,6 +7736,7 @@ function resetForNewCharacter(){
   G.dungeonBest=1; G.dungeonFloor=0; G.inDungeon=false;
   G.corpse=null; G.corpseLootOpen=false;
   G.antiqStock=null; G.antiqStockAt=0; G.bounty=null; G.bountyAt=0;
+  G.totalKills=0; G.gambitHinted=false; G.achiev=new Set();
   G.placedHouses=[];
   placedObjects.length=0; placedObjectsDirty=true;
   recomputeArtifactBonus();
@@ -7654,6 +7809,8 @@ function loadGame(blob){
     ensureContracts();
     if(s.antiqStock){G.antiqStock=s.antiqStock;G.antiqStockAt=s.antiqStockAt||0;}
     if(s.bounty){G.bounty=s.bounty;G.bountyAt=s.bountyAt||0;}
+    G.totalKills=s.totalKills||0; G.gambitHinted=!!s.gambitHinted;
+    G.achiev=new Set(Array.isArray(s.achiev)?s.achiev:[]);
     if(Array.isArray(s.macros))macros=s.macros.filter(m=>m&&Array.isArray(m.steps)).map(m=>({name:m.name||'Macro',steps:m.steps.filter(st=>COMBAT_ACTIONS[st])}));
     if(Array.isArray(s.hotbar)){
       hotbar=s.hotbar.slice(0,HOTBAR_SLOTS).map(sl=>{
@@ -8543,6 +8700,7 @@ function handleAntiqClick(e){
       const def=artifactDef(r.defId),price=antiqStockPrice(def.tier);
       if(inv.relics<price){addFloater(player.x,player.y-20,'need '+price+' relics!');return true;}
       inv.relics-=price;player.artifactInv.push({defId:def.id,identified:true});
+      questEvent('relic',null);
       snd.gold();addFloater(player.x,player.y-20,def.name+' purchased!');
       return true;
     }
@@ -8647,6 +8805,7 @@ function fulfillBounty(){
   player.artifactInv.splice(idx,1);
   const reward=def.value*3+200;
   inv.gold+=reward;snd.gold();
+  questEvent('bounty',null);
   addFloater(player.x,player.y-30,'🏛 bounty fulfilled! +'+reward+'g');
   G.bounty=null;G.bountyAt=G.gameTime;ensureBounty();
 }
@@ -8837,6 +8996,7 @@ function placeHouse(wx, wy) {
   applyHouseTiles(x0, y0, size);
   const newHouse = {x0, y0, size, isPublic: false, friends: [], doorOpen: false, owner: playerName()};
   G.placedHouses.push(newHouse);
+  if(G.placedHouses.length===1) grantAchiev('house');  // "Homesteader" — first house placed
   netHousePlace(newHouse);   // share it with the world (server assigns ownership)
   rebuildHouseProps();
   
@@ -10075,6 +10235,35 @@ function drawPlayerHpBar(){
     ctx.fillText(ready?'⚡ SPACE':Math.ceil(specialCd)+'s',sx2+29,BAR_Y+BAR_H-4);ctx.textAlign='left';
   }
 }
+// Boss HP bar — top-centre of screen while a named floor boss is alive.
+// A critical AAA gap: fighting a 1080-HP boss with no HP readout is disorienting.
+function drawBossHpBar(){
+  const boss=enemies.find(e=>e.floorBoss&&e.state!=='dead'&&e.state!=='respawning');
+  if(!boss||!G.inDungeon) return;
+  const ctx=G.ctx, W=G.canvas.width;
+  const BAR_W=Math.min(440,W-40), BAR_H=18;
+  const BX=Math.round(W/2-BAR_W/2), BY=64;
+  const frac=Math.max(0,Math.min(1,boss.hp/(boss.maxHp||1)));
+  const enraged=frac<=0.25;
+  const nameY=BY-5;
+  // Boss name + enrage tag
+  ctx.font='bold 12px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';
+  ctx.fillStyle='rgba(0,0,0,.8)';ctx.fillText((boss.bossName||'BOSS')+(enraged?'  ⚠ ENRAGED':''),W/2+1,nameY+1);
+  ctx.fillStyle=enraged?'#ff6060':'#f0dca0';ctx.fillText((boss.bossName||'BOSS')+(enraged?'  ⚠ ENRAGED':''),W/2,nameY);
+  // Bar background
+  ctx.fillStyle='rgba(0,0,0,.70)';ctx.fillRect(BX-2,BY,BAR_W+4,BAR_H+4);
+  // HP fill — bright red, darker when drained
+  ctx.fillStyle=enraged?'#e83030':'#c04040';
+  ctx.fillRect(BX,BY+2,Math.round(BAR_W*frac),BAR_H);
+  // HP text
+  ctx.font='bold 10px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle='rgba(255,255,255,.9)';
+  ctx.fillText(Math.ceil(boss.hp)+' / '+boss.maxHp+' HP',W/2,BY+BAR_H-2);
+  // Border
+  ctx.strokeStyle=enraged?'#ff8060':'rgba(180,60,60,.8)';ctx.lineWidth=1.5;
+  ctx.strokeRect(BX,BY+2,BAR_W,BAR_H);
+  ctx.textAlign='left';
+}
 function drawGhostHUD(){
   const ctx=G.ctx,W=G.canvas.width,H=G.canvas.height;
   ctx.fillStyle='rgba(60,0,60,.08)';ctx.fillRect(0,0,W,H);ctx.fillStyle='rgba(200,150,255,.85)';ctx.font='bold 15px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';ctx.fillText('👻 GHOST — find a healer and press E to respawn',W/2,H-70);ctx.textAlign='left';
@@ -10129,6 +10318,19 @@ function renderMinimap(){
   };
   drawHDot(HEALER.x,HEALER.y);
   for(const wh of WORLD_HEALERS) drawHDot(wh.x,wh.y);
+
+  // Hidden-system NPCs — small colored diamonds so players can find them on the map
+  const drawNpcDot=(wx,wy,col)=>{
+    const dx=toSX(wx/TILE), dy=toSY(wy/TILE);
+    if(!inView(dx,dy)) return;
+    const r=Math.max(2,Math.round(sz/70));
+    ctx.fillStyle=col;
+    ctx.beginPath();ctx.moveTo(dx,dy-r);ctx.lineTo(dx+r,dy);ctx.lineTo(dx,dy+r);ctx.lineTo(dx-r,dy);ctx.closePath();ctx.fill();
+  };
+  drawNpcDot(ANTIQUARIAN.x,   ANTIQUARIAN.y,   '#b070ff');  // purple  — relic shop
+  drawNpcDot(CURATOR.x,        CURATOR.y,        '#e0c040');  // gold    — museum
+  drawNpcDot(CRYPTOLOGIST.x,   CRYPTOLOGIST.y,  '#40c8e0');  // cyan    — cipher / lore
+  drawNpcDot(GRAVE_ROBBER.x,   GRAVE_ROBBER.y,  '#909090');  // gray    — underground dealer
 
   // Corner resize handle + hints
   ctx.fillStyle='rgba(200,162,90,.75)'; ctx.fillRect(mx+sz-5,my+sz-5,7,7);
@@ -10413,9 +10615,11 @@ function render3D(t){
   drawInteractPrompts();
   if(rmb.down&&mouse.hasPos&&(!player.dead||player.ghost)){const rdx=worldMouseX-player.x,rdy=worldMouseY-player.y,rDist=Math.hypot(rdx,rdy),td=rDist/TILE;const col=td<1.5?'rgba(100,220,100,.6)':td<3?'rgba(220,200,80,.6)':'rgba(220,100,60,.6)';const ps=worldToScreen(player.x,player.y,20),ms=worldToScreen(worldMouseX,worldMouseY,4);ctx.setLineDash([4,4]);ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(ps.x,ps.y);ctx.lineTo(ms.x,ms.y);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=col;ctx.beginPath();ctx.arc(ms.x,ms.y,4,0,Math.PI*2);ctx.fill();}
   drawPlayerHpBar();
+  drawBossHpBar();
   drawTimeClock();
   if(!G.editorOpen)drawHotbar();
   drawQuestTracker();
+  drawAchievToast();
   if(G.minimapOpen)renderMinimap();
   if(G.buildMode)renderBuildOverlay();
   if(G.housePlacementMode)renderHousePlacementOverlay();
@@ -11280,8 +11484,9 @@ function refreshFxList(){
 // low tier never downloads them) and because it needs the finished scene.
 // On low this returns a passthrough that just calls renderer.render, so the
 // mobile path costs exactly what it did before.
-// fxGroup is null for now: GTAO is Ultra-only and off by default, and the
-// additive-FX reparent it needs is a separate job — see HANDOFF.
+// fxGroup is built from additive-blending meshes by traversal (refreshFxList
+// above) and passed in so the GTAO prepass can hide effects during its depth
+// pass.  Ultra tier enables GTAO; all lower tiers skip it.
 console.log('[gfx] fx meshes excluded from the AO prepass:', refreshFxList());
 rndr = await createComposer({ THREE, renderer, scene, camera, settings: QS, fxGroup });
 rndr.setPixelRatio(Math.min(devicePixelRatio, QS.pixelRatio));

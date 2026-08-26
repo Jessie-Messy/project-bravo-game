@@ -5,3 +5,7 @@ server/data/
 models_backup_originals/
 .claude/
 VPS_INFO.md
+VPS_GIT_PULL.bat
+VPS_SETUP_AND_DEPLOY.bat
+COMMIT_AND_DEPLOY.bat
+DEPLOY.bat
