@@ -767,7 +767,29 @@ function registerCustomTile(def){
   if(def.blocking) extraBlocking.add(def.id); else extraBlocking.delete(def.id);
 }
 for(const ct of worldEdits.tiles) registerCustomTile(ct);
-const TERR_PX = 8;  // pixels per tile — higher = sharper terrain texture
+// Pixels per tile — higher = sharper terrain texture.
+//
+// ⚠ THIS IS NOT A FREE CONSTANT. The ENTIRE map is one canvas, MAP_W*TERR_PX by
+// MAP_H*TERR_PX, uploaded as a single texture. At 8 that is 3840 x 4432 and
+// ~65 MB of VRAM, and nothing ever checked it against the hardware: the limit
+// was read in _dev.gpu() and acted on nowhere. WebGL1-era GPUs and plenty of
+// phones cap MAX_TEXTURE_SIZE at 4096 — and 4432 is ALREADY over that, so on
+// those devices the upload fails and the ground comes back blank or black, with
+// no error that points at the texture.
+//
+// So it is chosen at boot instead of assumed: start at 8 and halve until the
+// canvas fits. That trades sharpness on exactly the devices that could not
+// display the sharp version at all. Everything downstream derives its
+// coordinates from TERR_PX, so nothing else has to know.
+const TERR_PX = (() => {
+  const max = renderer.capabilities.maxTextureSize || 4096;
+  let px = 8;
+  while (px > 1 && (MAP_W * px > max || MAP_H * px > max)) px >>= 1;
+  if (px !== 8)
+    console.warn('[gfx] terrain texture reduced to ' + px + 'px/tile: MAX_TEXTURE_SIZE is ' +
+                 max + ', so the full-detail ' + (MAP_W*8) + 'x' + (MAP_H*8) + ' canvas would not upload.');
+  return px;
+})();
 const terrCanvas = document.createElement('canvas');
 terrCanvas.width = MAP_W * TERR_PX; terrCanvas.height = MAP_H * TERR_PX;
 const terrCtx = terrCanvas.getContext('2d');
