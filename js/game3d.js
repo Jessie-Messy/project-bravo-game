@@ -3611,25 +3611,122 @@ const UNIT_SPH   = makeHeadGeometry(THREE);           // -1..1, was SphereGeomet
 // Limbs pivot at their TOP (shoulder/hip) so rotation.x swings them naturally
 const UNIT_LIMB  = makeLimbGeometry(THREE);           // -1..0 in Y
 
-// ── Role dressing ────────────────────────────────────────────────
-// What a role wears. Colours are picked to survive the tinting configureRig
-// does to the body underneath — a guard's steel has to read as steel whatever
-// colour their tabard is.
+// ── Who everyone in this town IS ────────────────────────────────────────────
+//
+// This table used to be outfits alone, and every figure wearing them was
+// spawned with the SAME call: configureRig(g, color, 15,48,10, 4.3, ...). One
+// height, one width, one head size, one skin tone, eleven people. Dressing a
+// blacksmith and a cryptologist differently does not help much when they are
+// the same body underneath — from across a courtyard the outfit is a colour and
+// the BUILD is the silhouette, and the silhouette is what you actually read.
+//
+// So a style now carries three things:
+//   build  {bw,bh,bd,hr}  body width / height / depth / head radius. Threaded
+//                         into configureRig AND applyProp, which must agree or
+//                         the held prop ends up beside the hand instead of in
+//                         it. Omitted = the old 15/48/10/4.3.
+//   skin   hex            face colour.
+//   ...    dressing flags consumed by render/humanoid.js. Their colours are
+//                         picked to survive the tinting configureRig does to
+//                         the body underneath — a guard's steel has to read as
+//                         steel whatever colour their tabard is.
+//
+// The builds are deliberately spread wide. A smith at 19 wide / 50 tall next to
+// a grave robber at 13 / 44 is a difference you can see before you can make out
+// either face, which is the whole point.
 const RIG_STYLES = {
-  guard:    { helm:0x8e949c, pauldron:0x9aa1aa, belt:0x4a3524, buckle:0xd8c060, cloak:0x243352 },
-  merchant: { cap:0x6b3f2a, belt:0x4a3524, satchel:0x6b4a2a, robe:0x8a4030, robeShort:true, hair:0x3a2a1a },
-  banker:   { cap:0x4a4038, belt:0x3a2a1c, robe:0xd0a020, robeShort:true, hair:0x2a2018 },
-  smith:    { apron:0x5c4028, belt:0x4a3524, hair:0x2a1c12 },
-  healer:   { hat:0x2f5c3a, hatBand:0xc8a25a, robe:0x40a060, belt:0x4a3524, beard:0xe8e4dc },
-  mage:     { hat:0x2a2f5c, hatBand:0xc8a25a, robe:0x4040a0, belt:0x4a3524, beard:0xe0dcd4 },
-  scholar:  { hood:0x4a3a6a, robe:0x6a4a9a, belt:0x3a2a1c, beard:0xd8d0c4 },
-  cipher:   { hood:0x24485e, robe:0x2a5a7a, belt:0x3a2a1c },
-  // eyes:false — the one face that should stay in shadow.
-  robber:   { hood:0x24242a, cloak:0x1e1e22, belt:0x3a2a1c, eyes:false },
-  farrier:  { apron:0x5c4028, belt:0x4a3524, cap:0x6b5a3a },
-  curator:  { cap:0x7a5a20, robe:0xb08030, robeShort:true, belt:0x4a3524, beard:0xd0c8b8 },
-  bandit:   { hood:0x3a2f28, belt:0x3a2a1c },
+  // The garrison. Tall and broad, and the only figures in livery — the tabard
+  // is what says "these two answer to someone" from any distance.
+  guard:    { build:{bw:17,bh:51,bd:11,hr:4.3}, skin:0xc39a6b,
+              helm:0x8e949c, plume:0x8c2f2f, coif:0x70757c, gorget:0x9aa1aa,
+              pauldron:0x9aa1aa, tabard:0x243352, tabardTrim:0xd8c060,
+              belt:0x4a3524, buckle:0xd8c060, cloak:0x243352 },
+
+  // Stout, and carrying stock on both hips so he is asymmetric from either side.
+  merchant: { build:{bw:16,bh:46,bd:12,hr:4.5}, skin:0xd8b48c,
+              cap:0x6b3f2a, plume:0x7a5a30, belt:0x4a3524, satchel:0x6b4a2a,
+              pouch:0x5a4020, robe:0x8a4030, robeShort:true, hair:0x3a2a1a,
+              mustache:0x3a2a1a },
+
+  // Gold chain of office and a fur collar: the two pieces that read as money.
+  banker:   { build:{bw:15,bh:47,bd:10,hr:4.4}, skin:0xe3c4a0,
+              cap:0x4a4038, belt:0x3a2a1c, robe:0xd0a020, robeShort:true,
+              collar:0x4a3a2a, medallion:0xd8c060, chain:0xd8c060, hair:0x2a2018 },
+
+  // The widest body in the game, and bare-headed — he works over a fire.
+  smith:    { build:{bw:19,bh:50,bd:13,hr:4.4}, skin:0xb07a4e,
+              apron:0x5c4028, belt:0x4a3524, toolLoop:0x4a4a50,
+              hair:0x2a1c12, beard:0x2a1c12 },
+
+  // Slight and tall. Full robe, so the legs are hidden and the whole figure is
+  // one falling line.
+  healer:   { build:{bw:13,bh:48,bd:9,hr:4.2}, skin:0xd8b48c,
+              hat:0x2f5c3a, hatBand:0xc8a25a, robe:0x40a060, belt:0x4a3524,
+              beard:0xe8e4dc, pouch:0x3a5c40 },
+
+  mage:     { build:{bw:13,bh:50,bd:9,hr:4.3}, skin:0xe3c4a0,
+              hat:0x2a2f5c, hatBand:0xc8a25a, robe:0x4040a0, belt:0x4a3524,
+              beard:0xe0dcd4, scrollCase:0x5a4a8a },
+
+  // The antiquarian. Short, stooped, spectacles — a reader, not a fighter.
+  scholar:  { build:{bw:13,bh:45,bd:9,hr:4.5}, skin:0xc9a274,
+              hood:0x4a3a6a, robe:0x6a4a9a, belt:0x3a2a1c, beard:0xd8d0c4,
+              spectacles:0xb8a878, scrollCase:0x4a3a6a },
+
+  // The cryptologist. Masked to the eyes, and carries her work on her back.
+  cipher:   { build:{bw:13,bh:46,bd:9,hr:4.2}, skin:0x8d5f3c,
+              hood:0x24485e, maskScarf:0x1e3a4a, robe:0x2a5a7a, belt:0x3a2a1c,
+              backpack:0x24485e, strap:0x3a2a1c },
+
+  // The grave robber. The smallest and the darkest: wiry, hooded, scarfed, and
+  // eyes:false — the one face in town that should stay in shadow.
+  robber:   { build:{bw:13,bh:44,bd:9,hr:4.0}, skin:0x8d5f3c,
+              hood:0x24242a, maskScarf:0x1a1a1e, cloak:0x1e1e22, belt:0x3a2a1c,
+              pouch:0x2a2a30, eyes:false },
+
+  // Broad like the smith but shorter, and the only figure with a working belt
+  // AND a pack — he travels to the horses.
+  farrier:  { build:{bw:17,bh:47,bd:12,hr:4.3}, skin:0xb07a4e,
+              apron:0x5c4028, belt:0x4a3524, cap:0x6b5a3a, toolLoop:0x4a4a50,
+              mustache:0x4a3418 },
+
+  // Short and stout, with a circlet: the museum's authority, not the crown's.
+  curator:  { build:{bw:16,bh:44,bd:11,hr:4.6}, skin:0xe3c4a0,
+              cap:0x7a5a20, plume:0xb08030, robe:0xb08030, robeShort:true,
+              belt:0x4a3524, beard:0xd0c8b8, medallion:0xb87333, chain:0xb87333,
+              circlet:0xb87333 },
+
+  // Enemies. Wiry and mean; the sash is so a bandit is not mistaken for a
+  // townsperson who wandered out of the gate.
+  //
+  // NO `build` HERE ON PURPOSE. Enemy proportions come from EVIS, which is
+  // where every other mob's size already lives; a `build` key would be a second
+  // source for the same number and the two would eventually disagree. `skin` is
+  // still read, because EVIS has no equivalent.
+  //
+  // Worth knowing: bandit is the ONLY enemy type with no entry in MOB_MODELS,
+  // so unlike every other mob it is never replaced by a GLB. This outfit is
+  // what a bandit looks like, always, on all hardware.
+  bandit:   { skin:0xb07a4e,
+              hood:0x3a2f28, maskScarf:0x2a221c, sash:0x6a2a24, belt:0x3a2a1c },
+
+  // The fletcher's stand-in. He has a GLB, but it only loads on hardware that
+  // can skin — this is what the rest see, and a bowyer with no quiver is just a
+  // man in a hat.
+  fletcher: { build:{bw:15,bh:48,bd:10,hr:4.3}, skin:0xc39a6b,
+              cap:0x4a5c34, belt:0x4a3524, quiver:0x5a3a20, fletching:0xe4e0d4,
+              hair:0x6a5030 },
+  // ⚠ There is deliberately no bracer/vambrace/glove piece in this vocabulary.
+  // Body dressing is ONE mesh parented to the group, and the arms and legs
+  // SWING — anything built here for a limb would hang in the air while the limb
+  // walked out of it. Limb-worn detail has to be baked into UNIT_LIMB's vertex
+  // colours instead, which is exactly what the boot/glove ramp in
+  // makeLimbGeometry already does.
 };
+// Fallback build, and the numbers every NPC used to share.
+const RIG_BUILD_DEFAULT = { bw:15, bh:48, bd:10, hr:4.3 };
+const rigBuild = (styleName) =>
+  (RIG_STYLES[styleName] && RIG_STYLES[styleName].build) || RIG_BUILD_DEFAULT;
 // Dressing geometry is shared: every guard is wearing the same helmet mesh, and
 // building it once per guard would be twenty identical buffers. Keyed by style
 // AND body size, because the body pieces are built in rig-local units.
@@ -3775,8 +3872,12 @@ function configureRig(g, color, bw, bh, bd, hr, shape, headSkin) {
   // torso's own neck stub fills the gap.
   ud.baseHeadY = legH+torso+r*0.88;
   head.position.set(0, ud.baseHeadY, 0);
-  if (headSkin) headMat.color.setHex(0xcaa472);
-  else          headMat.color.setHex(color).lerp(_cWhite,0.22);
+  // headSkin: `true` keeps the original single tone; a NUMBER is that skin
+  // colour. Every townsperson sharing one face colour was a quiet part of why
+  // they read as copies — the outfits differed and the people did not.
+  if (typeof headSkin === 'number') headMat.color.setHex(headSkin);
+  else if (headSkin)                headMat.color.setHex(0xcaa472);
+  else                              headMat.color.setHex(color).lerp(_cWhite,0.22);
   // az was bd*0.7 — DEEPER than the arm is wide, which turned each arm into a
   // flat panel seen edge-on from the side and wing-like from behind. An arm is
   // round: width and depth close together, and both well under the old values
@@ -3927,6 +4028,20 @@ function applyProp(g, kind, bw, bh, bd) {
   }
   g.userData.propRotX = prop.rotation.x;   // base pose for attack-swing anim
 }
+
+// Per-type outfit for enemies, parallel to PROP below.
+//
+// Only `bandit` for now, and that is not an oversight: every other enemy type
+// has a GLB in MOB_MODELS and so only ever shows its procedural rig on hardware
+// that cannot skin, or for the instant before the file lands. Bandit has no
+// model at all, so this is the one mob whose stand-in IS the mob.
+//
+// dressRig() no-ops on anything that is not shape 0, so adding a quadruped here
+// costs nothing but also does nothing — the dressing vocabulary is built in
+// humanoid rig-local space and has no meaning on a wolf.
+const ESTYLE = {
+  bandit: 'bandit',
+};
 
 // Per-type held weapon for enemies
 const PROP = {
@@ -4783,14 +4898,26 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
   //   _dev.rig()            one of every style, in a row
   //   _dev.rig('guard')     just that one
   //   _dev.rig(null)        clear them
-  rig(style, dtx=0, dty=-3){
+  //
+  // ⚠ IT SHOWS EACH ROLE AT ITS REAL BUILD, and that is the whole point. This
+  // used to hard-code 16/36/11 with a 6.5 head for everyone. Body dressing is
+  // built FROM the dimensions (`buildBodyDressing(three, S, dims)`), so the
+  // geometry on screen was a genuinely different buffer from the one the town
+  // gets — tune a tabard against a 36-tall preview and it lands somewhere else
+  // on a 52-tall guard. It also forced one skin tone across thirteen roles that
+  // now ship five. Pass `opts` to override for a deliberate close-up:
+  //   _dev.rig('guard', 0, -3, {bh:70, hr:9})
+  rig(style, dtx=0, dty=-3, opts=null){
     for(const g of (_devRigs||[])){ scene.remove(g); }
     _devRigs = [];
     if(style===null) return 'cleared';
     const list = style ? [style] : Object.keys(RIG_STYLES);
     list.forEach((s,i)=>{
       const g = makeRig();
-      configureRig(g, 0x8a8a8a, 16,36,11, 6.5, 0, true);
+      const b = Object.assign({}, rigBuild(s), opts||{});
+      const st = RIG_STYLES[s];
+      const skin = (st && typeof st.skin === 'number') ? st.skin : true;
+      configureRig(g, 0x8a8a8a, b.bw, b.bh, b.bd, b.hr, 0, skin);
       dressRig(g, s);
       const x = player.x + (dtx + (i - (list.length-1)/2) * 1.1) * TILE;
       const z = player.y + dty*TILE;
@@ -5345,13 +5472,33 @@ const plrGrp = makeRig();
 configureRig(plrGrp, PLR[0], PLR[1],PLR[2],PLR[3],PLR[4], 0, true);
 scene.add(plrGrp);
 
-// Guards pool — humanoid rigs with sword, configured once
+// Guards pool — humanoid rigs with sword, configured once.
+//
+// Twenty guards used to be twenty byte-identical figures, which is most obvious
+// exactly where guards stand: several of them together, at a gate. They now
+// vary, but within a hard budget.
+//
+// THE BUDGET IS THE INTERESTING PART. dressGeo() caches the merged dressing by
+// style AND body size, so continuous per-guard jitter would mint twenty
+// separate helmet+tabard+cloak buffers — the cache exists precisely to stop
+// that. So size varies across exactly THREE discrete builds (three cache
+// entries, shared by roughly seven guards each) while SKIN varies freely per
+// guard, because skin is a material colour and costs nothing at all. Three
+// heights and five faces read as twenty different men; twenty of each would
+// look no better and cost twenty buffers.
 const GPOOL = 20;
-const gPool = Array.from({length:GPOOL}, () => {
+const GUARD_BUILDS = [
+  { bw:16, bh:45, bd:10, hr:4.3 },   // short and stocky
+  { bw:17, bh:48, bd:11, hr:4.2 },   // the middle, and the old figure
+  { bw:18, bh:52, bd:11, hr:4.1 },   // tall, smaller head — reads as the big one
+];
+const GUARD_SKINS = [0xc39a6b, 0xd8b48c, 0xb07a4e, 0x8d5f3c, 0xe3c4a0];
+const gPool = Array.from({length:GPOOL}, (_, i) => {
   const g = makeRig();
-  configureRig(g, 0x4a5870, 15,47,10, 4.2, 0, true);
-  dressRig(g, 'guard');            // helm, pauldrons, belt, cloak
-  applyProp(g, 'sword', 15,47,10);
+  const b = GUARD_BUILDS[i % GUARD_BUILDS.length];
+  configureRig(g, 0x4a5870, b.bw, b.bh, b.bd, b.hr, 0, GUARD_SKINS[i % GUARD_SKINS.length]);
+  dressRig(g, 'guard');            // helm, coif, plume, gorget, pauldrons, tabard, belt, cloak
+  applyProp(g, 'sword', b.bw, b.bh, b.bd);
   g.visible=false; scene.add(g); return g;
 });
 const guardPool = gPool;  // alias used in syncEntities
@@ -5360,9 +5507,17 @@ const guardPool = gPool;  // alias used in syncEntities
 const npcs = [];
 function spawnNPC(color, x, y, prop, style) {
   const g = makeRig();
-  configureRig(g, color, 15,48,10, 4.3, 0, true);
+  // The build comes from the style, so a smith is actually built like a smith.
+  // configureRig and applyProp MUST be handed the same numbers: applyProp
+  // derives the hand position from bw/bh/bd itself, so feeding it the old
+  // 15/48/10 while the body is 19/50/13 leaves the hammer floating beside the
+  // arm rather than in the hand.
+  const b = rigBuild(style);
+  const st = RIG_STYLES[style];
+  const skin = (st && typeof st.skin === 'number') ? st.skin : true;
+  configureRig(g, color, b.bw, b.bh, b.bd, b.hr, 0, skin);
   if (style) dressRig(g, style);
-  if (prop) applyProp(g, prop, 15,48,10);
+  if (prop) applyProp(g, prop, b.bw, b.bh, b.bd);
   g.position.set(x,heightAt(x,y),y); scene.add(g); npcs.push(g); return g;
 }
 // Every one of these is a STAND-IN now — each has a GLB in NPC_MODELS below
@@ -5385,6 +5540,11 @@ const _robberRig   = spawnNPC(0x3a3a3a, GRAVE_ROBBER.x, GRAVE_ROBBER.y, 'dagger'
 // Decorative fletcher (bowyer) between the merchant and the smith — model
 // plus an [E] label, no shop yet.
 const FLETCHER = { x:313*48+24, y:354*48+24, r:13 };
+// ...and his stand-in. He had none: NPC_MODELS listed `fallback:null`, so on
+// hardware where SKINNING_OK is false — which is the whole reason stand-ins
+// exist — his corner of the market was simply empty, and for the first second
+// or two of every load on every device it was empty for everyone.
+const _fletcherRig = spawnNPC(0x4a5c34, FLETCHER.x, FLETCHER.y, 'bow', 'fletcher');
 
 // ── GLB town NPCs (banker, smith, fletcher) ───────────────────────
 // Static skinned character models — no animation, facing south (toward
@@ -5405,7 +5565,7 @@ const JESTER = { x:306*48+24, y:367*48+24, r:13 };
 const NPC_MODELS = {
   banker:   {file:'models/Banker.glb',   pos:BANKER,     h:116, idle:'Agree_Gesture', fallback:_bankerRig},
   smith:    {file:'models/Smithy.glb',   pos:BLACKSMITH, h:118, idle:'Alert',          fallback:_smithRig},
-  fletcher: {file:'models/Fletcher.glb', pos:FLETCHER,   h:114, idle:'Agree_Gesture', fallback:null},
+  fletcher: {file:'models/Fletcher.glb', pos:FLETCHER,   h:114, idle:'Agree_Gesture', fallback:_fletcherRig},
   mage:     {file:'models/Wizzard.glb',  pos:MAGE,       h:118, idle:'Idle_9',        fallback:_mageRig},
   jester:   {file:'models/Jester.glb',   pos:JESTER,     h:112, idle:'Step_Hip_Hop_Dance', fallback:null,
              idles:['Breakdance_1990','Hip_Hop_Dance_3','Step_Hip_Hop_Dance','Backflip_and_Rise']},
@@ -12229,7 +12389,12 @@ function syncEntities(t){
     const cache=_slotRigCache[si];
     if(!cache||cache.type!==e.type||cache.hiding!==isHiding){
       const vis=EVIS[e.type]||EVIS_DEF,col=isHiding?0x888888:vis[0];
-      configureRig(grp, col, vis[1],vis[2],vis[3],vis[4],vis[5]||0, false);
+      // A hiding mob is a grey silhouette on purpose, so it gets no outfit and
+      // no skin tone — dressing it would hand back the detail the grey removes.
+      const est=isHiding?null:(ESTYLE[e.type]||null);
+      const esk=(est&&RIG_STYLES[est]&&typeof RIG_STYLES[est].skin==='number')?RIG_STYLES[est].skin:false;
+      configureRig(grp, col, vis[1],vis[2],vis[3],vis[4],vis[5]||0, esk);
+      dressRig(grp, est);
       applyProp(grp, PROP[e.type]||null, vis[1],vis[2],vis[3]);
       _slotRigCache[si]={type:e.type,hiding:isHiding};
     }
