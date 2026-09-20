@@ -23,6 +23,100 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-19 — v0.13.0: every NPC is a different person now
+
+**The problem was the BUILD, not the outfits.** `RIG_STYLES` already dressed thirteen
+roles differently, but `spawnNPC()` handed every one of them the same
+`configureRig(g, color, 15,48,10, 4.3, …)` and the same `0xcaa472` face. One height, one
+width, one head, one skin. At the distance you actually play at the outfit is a colour
+and the silhouette is the person, so thirteen colours of the same figure still read as
+thirteen copies.
+
+A style now carries `build {bw,bh,bd,hr}` and `skin`. ⚠ **The build must go to
+`configureRig` AND `applyProp`** — applyProp derives the hand position from bw/bh/bd
+itself, so handing it the old 15/48/10 while the body is 19/50/13 leaves the hammer
+floating beside the arm. Smith 19×50×13 against grave robber 13×44×9 is a difference you
+read before you can make out a face.
+
+**Eighteen new dressing pieces** in `render/humanoid.js`, all from the existing tube/slab
+primitives, still one draw call per style: tabard, sash, mantle, collar, gorget,
+medallion, pouch, scrollCase, quiver, toolLoop, backpack · longHair, topknot, coif,
+circlet, spectacles, maskScarf, plume, mustache. `slab()` gained free-axis rotation
+(a number is still rotX, so old callers are untouched) and `oriented()` places a built
+tube at an angle.
+
+- **The fletcher had no stand-in at all** (`fallback:null`). On hardware where
+  `SKINNING_OK` is false — the whole reason stand-ins exist — his corner of the market
+  was permanently empty, and on every device it was empty for the first second of every
+  load. Fixed, with a quiver.
+- **Bandits are dressed.** `ESTYLE`, wired into the `syncEntities` rig path beside `PROP`.
+  Bandit is the **only** enemy type with no entry in `MOB_MODELS`, so unlike every other
+  mob its procedural rig *is* the mob, on all hardware.
+- **Twenty guards were twenty identical men.** Now three builds × five skins.
+  ⚠ Three and not twenty because `dressGeo()` caches the merged outfit by style AND body
+  size — continuous jitter would mint twenty helmet+tabard+cloak buffers, which is what
+  that cache exists to prevent. Skin varies freely; it is a material colour and free.
+
+#### `npm run test:dressing` — and why it had to exist
+`mergeGeometries()` returns **null** instead of throwing when parts disagree on
+attributes. A null merge is invisible: `dressRig` sets `visible=false` and the NPC stands
+there undressed, which looks exactly like "the GLB has not loaded yet" — the precise
+state stand-ins exist to cover, so nobody would look twice. `tools/test/dressing.mjs`
+builds all thirteen outfits headless and asserts the merge survived, the colour attribute
+is present and full-length, no NaN, no stray `uv`, and the three shared body geometries
+still fit their unit spaces. **29 checks.** Proven by sabotage: removing
+`slab()`'s `deleteAttribute('uv')` produced 25 failures, restoring it produced 0.
+It borrows the platform build's vendored three (there is none in `node_modules` — the
+game gets three from a CDN import map) and stages copies in a temp dir with its own
+`package.json` `{"type":"module"}`, because `three.module.js` is a `.js` file node
+otherwise parses as CommonJS.
+
+#### Six defects caught by review before commit — three were INVISIBLE GEOMETRY
+Worth reading, because the test suite could not have found any of the first three:
+1. **The coif was wider than the helm over it**, so mail swelled through the steel on all
+   twenty guards. Shrinking the crown was not enough — measuring the live buffer showed
+   the side drape still at r 1.27 against a helm flare of 0.84. It now ends **below the
+   rim**, where there is no helm at any radius. Tune the helm rings and you must retune
+   these together.
+2. **`hood` was a closed tube** whose front face sat at z −0.84, ahead of the nose
+   (−0.73) and the eyes (−0.54). It never "left the face in shadow" — it sealed the head
+   in a bag, which is why the scholar's new spectacles and the cryptologist's mask
+   rendered as *nothing*. Rebuilt open-fronted (crown cap + back/side slabs + a brow
+   overhang), the same construction `coif` and `longHair` use.
+   **⚠ THE GENERAL RULE, now written at the top of the head-dressing section: anything
+   that wraps the head is slabs at the back and sides, never a closed tube.**
+3. **The healer's pouch was inside her floor-length robe** — robe half-width ≈6.9 at that
+   height against a pouch reaching 6.2. It rides at the belt on full-robe styles now.
+4. Quiver fletchings were placed from the tube's *pre-rotation* anchor, so they sat beside
+   the mouth instead of in it (`oriented()` rotates then translates).
+5. `_dev.rig()` previewed every role at a hard-coded 16/36/11 with hr 6.5 — a genuinely
+   different dressing buffer from the shipped one, in the one tool meant for judging
+   outfits. It reads the real build and skin now; 4th arg overrides for close-ups.
+6. A superseded comment header above `RIG_STYLES`.
+
+**How the invisible ones were proven fixed:** by classifying the merged head-dressing
+buffer's vertices **by colour** in the live scene (`_dev.scene`, sRGB→linear on the hex to
+match) and asking whether any hood-coloured vertex lands inside the eyes' own footprint.
+Zero, on all three hooded roles. That technique is worth reusing — a merged single-mesh
+outfit has no other way to ask "which piece is this vertex".
+
+#### ⚠ NOT VISUALLY SIGNED OFF — one thing for Jessie
+Everything above is verified geometrically and against the live scene, but nobody has
+*looked* at it. Screenshots need the Browser pane **displayed**: a hidden pane pauses rAF
+and the game loop stops, and `#headless` did not restart it this time either (see the
+Preview-pane note under "Known gotchas"). To do the pass in one step:
+
+```
+_dev.rig()      // all thirteen in a row, at their real builds and skins
+_dev.rig(null)  // clear
+```
+
+Worth a specific look at: the guard's coif under the helm, the three hooded faces
+(scholar / cipher / robber) now that they have faces, and whether the smith reads as
+genuinely heavier than the townsfolk rather than just taller.
+
+---
+
 ### 2026-09-19 — history scrub: the origin IP is out of the branches, NOT out of the PR refs
 
 Jessie authorised a force-push over published history to remove the VPS origin IP rather
