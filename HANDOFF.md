@@ -23,6 +23,80 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-20 — v0.14.1 the Saltmere crossing, v0.15.0 housing
+
+**The ferry (v0.14.1).** A ferryman at each end and an `[E]` prompt. Until this, the
+coast was sealed on every side and the only way in was `_dev.coast()`.
+  - ⚠ **The mainland jetty is DOCK tiles all the way to the bank, including the
+    approach, and that is load-bearing.** `game3d.js` widens every river by 3 tiles
+    **after** `world.js` has run, and the widener floods GRASS and PATH. A jetty with a
+    path approach would have had its approach turn into river and left the ferryman on
+    an island. DOCK is not in the floodable set. Result after widening: water to y363,
+    planks from y364 — the head sits exactly on the new waterline.
+  - The crossing is a hard cut on purpose. The ends are ~14 000 units apart with sealed
+    rock between, so there is no route to animate and a fake voyage is a loading screen
+    with a boat on it. **Deliberately no sound** — `snd.cave()` is the enclosed-space
+    echo and firing it on an open beach tells the player something false.
+  - `FERRY_FARE` exists and is 0. A toll on a region with nothing to sell is a wall.
+
+---
+
+**Housing (v0.15.0).** It was *one* 9x9 cabin that could only stand on grass.
+
+**⚠ THE GRASS-ONLY RULE MADE THE COAST PLOTS UNBUILDABLE THE MOMENT THEY EXISTED** —
+they are SAND. A house type now declares the ground it may stand on, checked **per
+tile**, so a footprint may span sand + shallows + grass as long as every tile is
+allowed. Measured on the generated coast: **308** legal cabin footprints touching sand,
+**808** stilt footprints touching shallows — all impossible before.
+
+Four types: 7x7 Crofter's Hut · 9x9 Cabin · 13x13 Longhouse (windows set into the walls
+as STAINED_GLASS, which is blocking, so walkability is unchanged) · 9x9 Stilt House
+(builds over the shallows, plank floor). ⚠ Keep sizes within **3..15** — the world
+server rejects anything outside that range, and a rejected placement is a desync, not an
+error message. Keep `id: 'house_9x9'` — saved houses reference it.
+
+**Doors are no longer always on the south wall.** `houseDoorSide` picks a side whose
+outside tile you can actually stand on, preferring south so nothing moves for existing
+inland houses — a stilt house facing the sea would otherwise have opened into deeper
+water. `houseDoorTile`, the signpost and the hinged door mesh all follow (a doorway in
+an E/W wall runs the other way, so the pivot turns a quarter and the hinge moves to the
+north edge).
+
+#### ⚠⚠ FOUR OF THE FIVE BUGS FIXED HERE WERE PRE-EXISTING
+1. **The client never checked house-to-house adjacency.** The server rejects anything
+   within one tile of another house; the client checked only tile type — which happens
+   to prevent overlap (a built house is WALL, not GRASS) but **not adjacency**. Building
+   flush against your own cabin succeeded locally and was silently dropped by the
+   server, so the house existed on one machine only. Same numbers both sides now.
+2. **`clearHouseTiles` restored every tile to `T.GRASS`.** Demolishing a stilt house
+   left **a 9x9 lawn in the middle of the sea**; a beach hut left grass on sand. Same
+   family as the coloured-squares-under-trees bug. It now takes the majority ground from
+   the ring just outside the footprint — derived, not remembered, because server houses
+   carry no build history.
+3. **The save/load path held a SECOND COPY of `applyHouseTiles`, inline**, with the door
+   hard-coded south and the floor to PATH. Two implementations of one thing, and only
+   one got updated: a stilt house saved with a plank floor reloaded with a beaten path.
+   **If you change how a house is built, grep for every place that lays house tiles.**
+4. **`applyServerHouses` dropped `type` and `doorSide`**, and `netHousePlace` never sent
+   them, so every sync reverted a stilt house to a cabin with a south door. Both ends
+   carry them now; the server bounds them.
+5. The placement preview called `canPlaceHouseAt` without the type, greening sand for a
+   house that then refused it.
+
+⚠ **Every new house field is optional on read.** Houses saved before this release have
+no `type` and no `doorSide`, and neither does anything an older client broadcasts. All
+fallbacks are "behave exactly like the old single house type".
+
+**Dev:** `_dev.house()` reports what could be built where you stand *and why not*;
+`_dev.house(id)` builds one; `_dev.house(null)` lists the coast plots.
+
+#### Still open on the coast
+No coast NPCs (a harbourmaster and a shopkeeper are the obvious two), no coast-specific
+mobs, and `COAST_HOUSE_PLOTS` is exported and used only by `_dev.house(null)` — nothing
+steers the player to the plots or reserves them.
+
+---
+
 ### 2026-09-20 — v0.14.0: the Saltmere coast, the second surface region
 
 A 200x120 coastal region below the dungeon band — open sea, wadeable shallows, beach,
