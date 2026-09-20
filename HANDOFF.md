@@ -23,6 +23,90 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-20 — v0.14.0: the Saltmere coast, the second surface region
+
+A 200x120 coastal region below the dungeon band — open sea, wadeable shallows, beach,
+inland woods, a cliff ridge, Saltmere village with three piers, and six cleared house
+plots. Generated from a fixed seed into the same tile array the dungeon floors use, so
+nothing in the engine had to learn what a "map" is.
+
+**⚠ MAP_H AND TERRAIN_MAP_H ARE NOW TWO DIFFERENT NUMBERS. Do not collapse them.**
+`MAP_H` (680) is how many tile rows exist. `TERRAIN_MAP_H` (554) is how many rows the
+SHARED ground texture covers, and it is frozen. The overworld+dungeon ground is one
+canvas uploaded as a single texture — 3840x4432, ~65 MB, and already past the 4096
+`MAX_TEXTURE_SIZE` that older phones report. Growing `MAP_H` alone would have grown that
+texture for **every player on every device**, including the ones it already does not fit
+on, to pay for a region most of them are not standing in.
+
+So a region below `TERRAIN_MAP_H` **brings its own ground surface**. `paintTerrainRegion`
+now takes a `surface` ({ctx, tx0, ty0, tx1, ty1, tex, mesh}) and defaults to the shared
+one, so every old caller is unchanged. Saltmere's is 1600x960, about 6 MB, and **does not
+exist until somebody sails there** (`ensureCoastSurface`). Built once and kept — re-baking
+24 000 tiles every trip to reclaim 6 MB is the wrong trade.
+  - ⚠ The painter keeps GLOBAL tile-pixel coords for the noise and the warp even when the
+    destination canvas starts elsewhere. Only the destination offset is surface-relative.
+    Make them surface-local and the coast gets a different grain from the mainland at the
+    same world position.
+  - The **water surface needed nothing**. It is one camera-following quad driven by a
+    mask, so adding SHALLOWS and DOCK to `_isWaterTile` was the entire change. Worth
+    remembering for the next region: water is free, ground is not.
+
+**Four new tile types** — SAND, SHALLOWS, DOCK, CLIFF. Adding one means touching, at
+minimum: `T`, `BLOCKING`, `TILE_COLORS`, `GROUND_TILE`, `_flatSet`, `_isWaterTile`,
+`npcWalkable`, and the palette override in `_buildPalette` if it sits under water.
+
+#### ⚠⚠ TWO BUGS THIS TURNED UP THAT WOULD HAVE SHIPPED SILENTLY
+1. **The world server hardcoded `MAP_H = 554`** and clamps every player's y to
+   `MAP_H * TILE`. The coast spans world y 26880-32640, so the server would have clamped
+   every coast position back to 26592 and dragged players off the region the moment they
+   moved — **while single-player worked perfectly.** `world-data.json` already carried
+   `mapW`/`mapH` and `mobs.js` already read them from there; only `bravo-room.js` retyped
+   them. It derives them now. **Regenerate `world-data.json` after any world change:**
+   `node --experimental-default-type=module server/build-world-data.mjs`
+2. **`G.inDungeon` was `player.y >= DUNGEON_Y0*TILE` with no upper bound** — correct only
+   while the dungeon was the last band on the map. The coast is below it, so the whole
+   beach counted as dungeon: cave ambience, the floor readout, everything gated on that
+   flag, in daylight on a beach. **Any new band below an existing one will hit this class
+   of bug — grep for bare `>=` comparisons against a band's Y0.**
+
+#### Five more caught by review before commit
+- `updateTerrPx`'s null-surface guard was an early `return`, which took `buildWaterField()`
+  and the mask dirty flags with it. It skips only the paint now.
+- `_mainSurface.tex` was never assigned, so the dirty-flag branch worked purely because the
+  field stayed null. Every surface carries its texture now.
+- `wadeableAt` returned true for **any** `T.WATER` — written when all water was rivers. The
+  coast is flat (`terrainFlatAt` returns 0 below y484) so `riverDepth` never carves a bed
+  and the drowning check can never fire: you could stroll across the ocean. Deep water is
+  wadeable only above `COAST_Y0` now; SHALLOWS is the coast's wadeable water.
+- **SHALLOWS painted its own blue on the ground UNDER a blue water surface** — exactly the
+  "vivid cobalt collar" the `GROUND_WATER_RGB` comment exists to prevent, on the one
+  waterline players actually look at. It paints wet sand (`GROUND_SHALLOWS_RGB`).
+- `G.onCoast` is declared in `state.js` beside `G.inDungeon`.
+
+**Known edge, deliberately unfixed:** the warp samples neighbouring tiles without knowing
+about surface boundaries, so the coast's first row can pull a colour from the separator
+above it. Invisible today (those rows are sealed CLIFF). Revisit when a region puts
+walkable ground against a band edge. Noted at `_surfaceAt`.
+
+#### Testing
+`npm test` now runs both harnesses. **`tools/test/world.mjs` — 71 checks**: array shape;
+every tile id in the map is declared AND has a `BLOCKING` entry (a missing one reads
+`undefined`, which is falsy, so the tile is silently walkable); overworld and dungeon still
+intact after the coast generator writes into the same array; separators solid; region
+sealed; tile mix; and a flood fill from the boat landing proving the village, piers and
+every house plot are reachable and that the coast does **not** leak into the overworld.
+Proven to fail: dropping CLIFF from `BLOCKING`, and punching a hole in the separator.
+It stubs `document.createElement` because `state.js` makes an offscreen canvas at import.
+
+#### ⚠ WHAT IS NOT DONE YET — the region is not reachable in normal play
+`COAST_MAINLAND_DOCK` (150,372) is declared and **nothing uses it**. There is no boat, no
+travel UI, no arrival. Today the only way in is `_dev.coast()` / `_dev.coast('village')` /
+`_dev.coast('home')`. Also still to do: coast NPCs (a harbourmaster and a ferryman are the
+obvious two), coast-specific mobs, and wiring `COAST_HOUSE_PLOTS` into the housing tool so
+the six plots can actually be built on.
+
+---
+
 ### 2026-09-19 — v0.13.0: every NPC is a different person now
 
 **The problem was the BUILD, not the outfits.** `RIG_STYLES` already dressed thirteen
