@@ -6,7 +6,7 @@
 const { Room } = require('colyseus');
 const { Schema, MapSchema, defineTypes } = require('@colyseus/schema');
 const storage = require('./storage.js');
-const { verifyGameTicket } = require('./orion-auth.js');
+const { verifyGameTicket, devAuthClaims } = require('./orion-auth.js');
 const { MobSim, world } = require('./mobs.js');
 
 // World metrics. DERIVED from world-data.json (which build-world-data.mjs
@@ -479,12 +479,16 @@ class BravoRoom extends Room {
   // be someone else.
   onAuth(client, options) {
     const ticket = (options && typeof options.token === 'string') ? options.token : '';
-    const claims = verifyGameTicket(ticket, 'medieval');
+    // A real ticket first, always. devAuthClaims returns null on any server that
+    // has a secret configured, so this cannot weaken production — see the guard
+    // conditions in orion-auth.js.
+    const claims = verifyGameTicket(ticket, 'medieval') || devAuthClaims(options);
 
     if (!claims) {
       console.warn('[bravo] REJECTED join: invalid, expired or missing ticket');
       throw new Error('bad-ticket');
     }
+    if (claims.dev) console.warn(`[bravo] DEV AUTH join as "${claims.name}" — no ticket was checked`);
 
     // Returned from onAuth, so it arrives as client.auth in onJoin.
     return { uid: claims.uid, name: BravoRoom.cleanName(claims.name), slot: claims.slot | 0 };
