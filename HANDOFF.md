@@ -23,6 +23,72 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-19 — history scrub: the origin IP is out of the branches, NOT out of the PR refs
+
+Jessie authorised a force-push over published history to remove the VPS origin IP rather
+than leave it exposed until an IP rotation can be scheduled. Done, with one limitation
+that is **not fixable from a git client** — read to the end.
+
+⚠ **This file is tracked in the public repo, so the IP itself is not written here.** An
+earlier draft of this very entry quoted it, which would have re-published the exact string
+the scrub had just removed. Refer to it, never print it — that goes for every tracked file.
+
+**Backup first.** A `git bundle create --all` of the whole pre-scrub repo (81 MB) is at
+`Desktop\GIT_HISTORY_BACKUPravo-pre-scrub-20260919-220917ull-repo.bundle`, with
+`refs-before.txt` beside it. Everything below is recoverable from that bundle.
+
+**What carried it.** A scan of every commit on every ref found the IP in three paths across
+7 commits: `deploy_to_vps.bat`, `deploy_server_to_vps.bat`, and **`tools/vps_audit.sh`** —
+that third one lived on `claude/medieval-game-optimization-7kqbe2` and would have been
+missed by scrubbing only the two obvious scripts. **Scan, do not assume you know which
+files.** No passwords, private keys or `ORION_SECRET` values were found anywhere in history.
+
+**The rewrite.** `git filter-branch --index-filter` removing those three paths from all
+branches and tags, `--prune-empty`, then force-pushed. Every SHA in the repo changed.
+  - `claude/read-handoff-docs-mks17r` (45 commits) and `claude/snowboard-game-ski-runs-qzzygi`
+    (9 commits) came through **complete** — same commits, new SHAs.
+  - `claude/medieval-game-optimization-7kqbe2` **collapsed to the master base**, because its
+    one unique commit contained nothing but `tools/vps_audit.sh`. The script was rescued to
+    `tools/vps_audit.sh` on disk, is now gitignored, and a copy sits in the backup folder.
+    No work was lost.
+  - The two 2026-09-12 "Delete deploy_*.bat" commits vanished as empty, which is correct —
+    there is nothing left for them to delete.
+
+**Two traps in the local cleanup, both of which made the purge silently incomplete:**
+  1. **`git stash` anchors the old history.** The in-progress work was stashed across the
+     rewrite, and a stash commit's parent is the pre-rewrite HEAD — so the entire old chain
+     stayed reachable and `gc` kept every leaked blob alive. Pop the stash before pruning.
+  2. **A stale `.keep` file on a packfile defeats `gc`, `prune` and `repack` entirely.**
+     `.git/objects/pack/*.keep` marks a pack as permanently retained. `git fsck` cheerfully
+     reported the blobs as *unreachable* while every prune left them in place, which reads
+     exactly like a git bug. Delete the `.keep`, then
+     `git repack -a -d -f --unpack-unreachable=now`. Also delete `.git/ORIG_HEAD` and
+     `.git/FETCH_HEAD`, which prune treats as roots.
+  - Verify by walking **every object in the store** (`git cat-file --batch-all-objects`),
+    not with `git log`: a `rev-list --all` scan cannot see unreachable objects and reported
+    "clean" while three leaked blobs were still sitting in the pack.
+
+**⚠⚠ WHAT IS STILL EXPOSED, AND WHY GIT CANNOT FIX IT.** A fresh `--mirror` clone confirms
+all four branches are clean — and that **GitHub's pull-request refs still hold the old
+commits**: `refs/pull/1/head` and `refs/pull/4/head` (PRs #1 merged, #4 closed), plus
+`refs/pull/2/merge` and `refs/pull/3/merge` (PRs #2 and #3, both open).
+
+`refs/pull/*` is created and owned by GitHub. **No client can delete or force-push it**, so
+the IP stays fetchable from a public repo by anyone who clones those refs or knows the SHA.
+The rewrite did not finish the job and could not. Remaining options, most complete first:
+  1. **Rotate the origin IP** — Jessie's stated plan, and the only fix that does not depend
+     on GitHub. Makes every surviving copy worthless.
+  2. Ask **GitHub Support** to purge the stale refs and unreachable objects — the documented
+     route, and the only one that removes the data itself.
+  3. Make the repo **private**, which stops anonymous fetches of `refs/pull/*`.
+  4. Delete and recreate the repo — total, but loses issues, PRs and history.
+
+Until one of those happens, **treat the origin IP as public.** The Cloudflare-range lock and
+the SSH hardening from 2026-09-08 are what is actually protecting that box, and they always
+were — the scrub reduces casual discovery and nothing more.
+
+---
+
 ### Stopping point — 2026-09-19 (Phase 0: safety baseline)
 
 **~3.3k lines of source and 12 new modules were uncommitted, on one disk only.** The

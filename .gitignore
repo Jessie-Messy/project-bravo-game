@@ -20,3 +20,7 @@ DEPLOY.bat
 # not leave this machine.
 deploy_to_vps.bat
 deploy_server_to_vps.bat
+# Same reason: it hardcodes the origin IP. Rescued from commit ca4e2cf before the
+# 2026-09-19 history scrub removed it; it is a useful read-only diagnostic, so it
+# lives on disk rather than being lost.
+tools/vps_audit.sh
