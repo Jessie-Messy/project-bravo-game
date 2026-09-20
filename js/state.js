@@ -34,6 +34,10 @@ export const player = {
   equipmentItems: [],       // ARPG item instances held or equipped
   equippedItems: { weapon: null, armor: null },
   equippedArtifacts: { neck:null, ring1:null, ring2:null, brac1:null, brac2:null },  // defId per jewelry slot
+  // Permanent stat increases, from Abyssal Sigils. Unlike artifacts these are
+  // NOT worn and cannot be removed or traded — once consumed they are part of
+  // the character. Coast-only, and the reason to cross.
+  permStats: { vigour:0, might:0, precision:0, fortitude:0 },
   artifactInv: [],          // held artifacts: {defId, identified}
   artifactBonus: {},        // stat key -> summed bonus, recomputed on equip/unequip
   dollGender: 'm',          // paper doll art variant: 'm' | 'f'

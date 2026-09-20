@@ -14,4 +14,4 @@
 // So: after deploying, look at the top-left on the device. If it does not show
 // the version you just shipped, that device is on cached JS — hard-refresh
 // rather than debugging the feature.
-export const VERSION = '0.17.0';
+export const VERSION = '0.18.0';

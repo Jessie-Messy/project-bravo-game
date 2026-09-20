@@ -11,7 +11,9 @@
     "assets": "npm run bake && npm run compare && npm run verify",
     "test:dressing": "node tools/test/dressing.mjs",
     "test:world": "node tools/test/world.mjs",
-    "test": "npm run test:dressing && npm run test:world"
+    "test:jewelry": "node tools/test/jewelry.mjs",
+    "test:tiers": "node tools/test/tiers.mjs",
+    "test": "npm run test:dressing && npm run test:world && npm run test:jewelry && npm run test:tiers"
   },
   "dependencies": {
     "@gltf-transform/core": "^4.5.0",

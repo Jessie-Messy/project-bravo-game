@@ -66,6 +66,7 @@ import { createHeightField } from './render/terrain.js';
 import { animateFire } from './render/fire.js';
 import { makeTorsoGeometry, makeHeadGeometry, makeLimbGeometry,
          buildBodyDressing, buildHeadDressing } from './render/humanoid.js';
+import { buildArtifactGeometry } from './render/jewelry.js';
 
 // ── Dual-canvas setup ─────────────────────────────────────────────
 const glCanvas = document.getElementById('game3d');
@@ -4756,11 +4757,27 @@ if (SKINNING_OK) gltfLoader.load('models/Protag_animations_basic.glb', gltf=>{
   const headB =bones['Head']    || findBone(/head$/i);
   const neckB =bones['neck']    || findBone(/neck/i) || headB;
   const chestB=bones['Spine01'] || findBone(/spine01/i) || findBone(/spine/i);
+  // Jewelry needs anchors the armor never did: wrists for bracelets, hands for
+  // rings, and a SECOND neck anchor because the gorget already owns the first —
+  // a breastplate and a necklace both want the throat, and sharing one slot
+  // means equipping armor silently removes your amulet.
+  // ⚠ FOREARM, NOT ARM — and the name check has to be exact about it. The first
+  // version matched /(left|_l).*(fore)?arm/ which happily matched "LeftArm",
+  // the BICEP, so every bracelet was worn above the elbow. This rig names them
+  // LeftArm / LeftForeArm / LeftHand, so ask for ForeArm by name and fall back
+  // to the hand bone rather than to the upper arm.
+  const wristLB = bones['LeftForeArm']  || findBone(/left.*forearm/i)  || leftHandBone;
+  const wristRB = bones['RightForeArm'] || findBone(/right.*forearm/i) || handBone;
   const slots={
     head:  mkSlot(headB),
     neck:  mkSlot(neckB),
     chest: mkSlot(chestB),
     quiver:mkSlot(chestB),
+    jewelNeck: mkSlot(neckB),
+    jewelBracL: mkSlot(wristLB),
+    jewelBracR: mkSlot(wristRB),
+    jewelRingL: mkSlot(leftHandBone),
+    jewelRingR: mkSlot(handBone),
   };
 
   protag={obj,inner,mixer,actions,cur:null,busyUntil:0,lx:null,lz:null,
@@ -4768,6 +4785,7 @@ if (SKINNING_OK) gltfLoader.load('models/Protag_animations_basic.glb', gltf=>{
     propKind:null,showShield:null,showQuiver:null,wasGhost:false};
   protagTemplate=inner; protagClips=gltf.animations;   // remote players clone this
   updateArmorVisuals();                                // show already-equipped armor
+  updateArtifactVisuals();                             // ...and already-worn jewelry
 }, undefined, err=>console.warn('protag load failed',err));
 
 function protagPlay(name){
@@ -4898,7 +4916,11 @@ function updateArmorVisuals(){
   const chestMat = (player.armor&&player.armor.chest) || 0;
 
   // Material tint: steel icy, mithril cyan, runic violet (lower tiers untinted)
-  const matTint = m => m===4 ? 0x9fd0ff : m===5 ? 0x40e0ff : m===6 ? 0xdf80ff : 0;
+  // Abyssal reuses the iron art like every tier above bronze does, tinted to the
+  // sea-glass green its ARMOR_COLS entry uses — one number, two places, and they
+  // have to agree or the paper doll and the character disagree about what you
+  // are wearing.
+  const matTint = m => m===4 ? 0x9fd0ff : m===5 ? 0x40e0ff : m===6 ? 0xdf80ff : m===7 ? 0x1fd6a8 : 0;
 
   // Helm
   if(headMat>0){
@@ -4911,6 +4933,57 @@ function updateArmorVisuals(){
     showArmorPiece(chestMat<=2 ? 'bone_chest'     : 'iron_chest',     tint);
     showArmorPiece(chestMat<=2 ? 'leather_gorget' : 'iron_gorget',    tint);
   } else { hideArmorPurpose('chest'); hideArmorPurpose('neck'); }
+}
+
+// ── Worn artifacts ────────────────────────────────────────────────
+//
+// The twelve artifacts equipped into five slots, changed your numbers, and
+// showed nothing on the character. They have bodies now (render/jewelry.js);
+// this hangs them on the right bones.
+//
+// ⚠ ARTIFACT SLOT != BONE SLOT. The paper doll has neck / ring1 / ring2 /
+// brac1 / brac2. The skeleton has one throat, two wrists and two hands. The map
+// below is that translation, and it is why ring2 goes on the LEFT hand — two
+// rings on one finger is not a look.
+const ARTIFACT_BONE_SLOT = {
+  neck: 'jewelNeck',
+  ring1:'jewelRingR', ring2:'jewelRingL',
+  brac1:'jewelBracR', brac2:'jewelBracL',
+};
+// Built once per artifact id and shared: five slots but only twelve possible
+// shapes, and two people wearing the same ring should not cost two buffers.
+const _jewelGeo = new Map();
+function jewelGeometry(def){
+  if(_jewelGeo.has(def.id)) return _jewelGeo.get(def.id);
+  const g = buildArtifactGeometry(THREE, def);
+  _jewelGeo.set(def.id, g);
+  return g;
+}
+// One material for all of them — they are vertex-coloured, so a gold crown and
+// a rusted band share it. Metalness is high but not 1: a fully-metal texel with
+// this env map goes to pure mirror and reads as a hole.
+const _jewelMat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.32, metalness:0.72});
+function updateArtifactVisuals(){
+  const P=protag; if(!P||!P.slots) return;
+  for(const sk of ARTIFACT_SLOTS){
+    const boneSlot = P.slots[ARTIFACT_BONE_SLOT[sk]];
+    if(!boneSlot) continue;
+    const id = player.equippedArtifacts && player.equippedArtifacts[sk];
+    if(boneSlot._artifact === (id||null)) continue;          // no change, no rebuild
+    boneSlot._artifact = id||null;
+    while(boneSlot.children.length) boneSlot.remove(boneSlot.children[0]);
+    if(!id) continue;
+    const def = artifactDef(id); if(!def) continue;
+    const geo = jewelGeometry(def); if(!geo) continue;
+    const m = new THREE.Mesh(geo, _jewelMat);
+    m.castShadow = true;
+    // Scale is per-slot, not per-item: a bracelet and a necklace are authored in
+    // the same units and the wrist bone is simply smaller than the throat.
+    const sc = ARTIFACT_BONE_SLOT[sk]==='jewelNeck' ? 3.4
+             : ARTIFACT_BONE_SLOT[sk].startsWith('jewelRing') ? 1.9 : 2.4;
+    m.scale.setScalar(sc);
+    boneSlot.add(m);
+  }
 }
 
 // ── Interactive Gear Tuner (Press 'P' to Toggle) ────────────────────
@@ -5157,6 +5230,28 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     });
     return list.join(', ');
   },
+  // Put artifacts on, without farming twelve boss drops first.
+  //   _dev.wear()                       what is on, and what exists
+  //   _dev.wear('neck','titans_heart')  wear that one
+  //   _dev.wear('all')                  one of every slot, for looking at
+  //   _dev.wear(null)                   take everything off
+  wear(slot, id){
+    if(slot===null){ for(const sk of ARTIFACT_SLOTS) player.equippedArtifacts[sk]=null; }
+    else if(slot==='all'){
+      const pick=t=>ARTIFACT_DEFS.filter(d=>d.slot===t);
+      player.equippedArtifacts.neck  = pick('neck')[2].id;
+      player.equippedArtifacts.ring1 = pick('ring')[2].id;
+      player.equippedArtifacts.ring2 = pick('ring')[1].id;
+      player.equippedArtifacts.brac1 = pick('brac')[4].id;
+      player.equippedArtifacts.brac2 = pick('brac')[3].id;
+    } else if(slot && id){
+      if(!artifactDef(id)) return 'no such artifact: '+ARTIFACT_DEFS.map(d=>d.id).join(', ');
+      player.equippedArtifacts[slot]=id;
+    }
+    recomputeArtifactBonus();
+    return JSON.stringify({worn:player.equippedArtifacts, maxHp:player.maxHp, bonus:player.artifactBonus});
+  },
+
   // Who you may lawfully strike right now, and why not. The client's PREDICTION
   // of the rules — the server decides for real — but they read the same
   // constants, so a disagreement here is a bug worth chasing.
@@ -6937,8 +7032,18 @@ function depleteNode(tx,ty,tt,cx,cy){
 // Tier 4 = mithril (+100%), tier 5 = runic (+150%) — these MUST stay in sync
 // with the crafting recipes / blacksmith shop, which set swordTier/bowTier up
 // to 5. A short array here silently yields NaN damage on endgame weapons.
-const TIER_NAMES=['','wooden','iron','steel','mithril','runic'];
-const TIER_MULT=[0,1,1.3,1.6,2.0,2.5];
+// ⚠ EVERY ARRAY INDEXED BY A TIER MUST GROW TOGETHER. This has bitten the
+// project once already: the Mithril/Runic work added recipes, shop entries and
+// boss drops that set tiers 4-5 and called equipArmorPiece(5|6) without
+// extending the arrays those index into, and EVERY endgame weapon and armour
+// piece silently produced NaN damage and NaN damage reduction. There is now a
+// test for it — tools/test/tiers.mjs — precisely so the next tier cannot repeat
+// that quietly.
+//
+// Abyssal is tier 6, and it is the Saltmere coast's tier: it does not exist on
+// the mainland at any price, which is what makes the crossing worth making.
+const TIER_NAMES=['','wooden','iron','steel','mithril','runic','abyssal'];
+const TIER_MULT=[0,1,1.3,1.6,2.0,2.5,3.1];
 function swordTier(){return player.swordTier||1;}
 function bowTier(){return player.bowTier||1;}
 // Aggregated affix + socketed-gem bonuses from equipped ARPG gear.
@@ -6955,7 +7060,7 @@ function meleeDmg(){
   const gear = 1 + eqStat('allDmg')/100;
   const tLv = tacticsLv();
   const weaponmaster = tLv >= 10 ? 1.25 : 1.0;
-  return Math.round((TACTICS_DMG[tLv-1]+eqWeaponDmg())*TIER_MULT[swordTier()]*strMult*gear*weaponmaster*(1+artifactBonus('swordDmg')+artifactBonus('allDmg')));
+  return Math.round((TACTICS_DMG[tLv-1]+eqWeaponDmg())*TIER_MULT[swordTier()]*strMult*gear*weaponmaster*(1+artifactBonus('swordDmg')+artifactBonus('allDmg')+permBonus('might')));
 }
 function arrowDmg(){
   const raceData = RACES[player.race] || RACES.Human;
@@ -6963,7 +7068,7 @@ function arrowDmg(){
   const dexMult = 1 + (dex - 10) * 0.03 + (player.race === 'Centaur' ? 0.10 : 0);
   const gear = 1 + eqStat('allDmg')/100;
   const aLv = archeryLv();
-  return Math.round((ARCHERY_DMG[aLv-1]+eqWeaponDmg())*TIER_MULT[bowTier()]*dexMult*gear*(1+artifactBonus('arrowDmg')+artifactBonus('allDmg')));
+  return Math.round((ARCHERY_DMG[aLv-1]+eqWeaponDmg())*TIER_MULT[bowTier()]*dexMult*gear*(1+artifactBonus('arrowDmg')+artifactBonus('allDmg')+permBonus('precision')));
 }
 // Skill-gated special attacks on SPACE, 8s shared cooldown (4s at Tactics 9):
 //   sword + Tactics 2 → Power Strike (Whirlwind at Tactics 4, Whirlwind Mastery at Tactics 9)
@@ -7017,12 +7122,22 @@ function doSpecial(){
 const ARMOR_SLOTS=['head','chest','legs','boots'];
 // Mats 5/6 = mithril/runic. Kept in sync with the mithril_arm / runic_arm
 // recipes and the blacksmith's apiece entries, which call equipArmorPiece(5|6).
-const ARMOR_MATS=['—','leather','bone','bronze','steel','mithril','runic'];
-const ARMOR_DR=[0,0.03,0.05,0.07,0.10,0.14,0.18];
-const ARMOR_COLS=['#3a3630','#8a6a4a','#d8ccb8','#b0824a','#9fb6c4','#40e0ff','#df80ff'];
+// ⚠ Armour materials run 1..7 while WEAPON tiers run 1..6 — they are NOT the
+// same index space and never have been (armour has both leather and bone at the
+// bottom, weapons start at wooden). Abyssal is the top of both.
+const ARMOR_MATS=['—','leather','bone','bronze','steel','mithril','runic','abyssal'];
+const ARMOR_DR=[0,0.03,0.05,0.07,0.10,0.14,0.18,0.22];
+const ARMOR_COLS=['#3a3630','#8a6a4a','#d8ccb8','#b0824a','#9fb6c4','#40e0ff','#df80ff','#1fd6a8'];
 if(!player.armor)player.armor={head:0,chest:0,legs:0,boots:0};
 if(inv.bone===undefined)inv.bone=0;
-function armorDR(){let d=0;for(const sl of ARMOR_SLOTS)d+=ARMOR_DR[player.armor[sl]||0];return d;}
+// ⚠ Still clamped below 1. Four armour slots at abyssal (0.22 each) plus a
+// maxed fortitude sigil line is 0.94 — close enough to total immunity that the
+// clamp stops being theoretical.
+function armorDR(){
+  let d=0; for(const sl of ARMOR_SLOTS) d+=ARMOR_DR[player.armor[sl]||0];
+  d += permBonus('fortitude');
+  return Math.min(0.85, d);
+}
 hooks.playerDR=armorDR;
 function hasUpgradeSlot(mat){return ARMOR_SLOTS.some(sl=>(player.armor[sl]||0)<mat);}
 function equipArmorPiece(mat){
@@ -7062,6 +7177,43 @@ const ARTIFACT_DEFS=[
   {id:'phoenix_down',   name:'Phoenix Down',        tier:3, slot:'brac', icon:'☥', stats:{autoRevive:1},           value:400, desc:'Revives you once at 30% HP, then crumbles to dust'},
   {id:'crown_of_kings', name:'Crown of Kings',      tier:3, slot:'ring', icon:'👑', stats:{allDmg:0.09,xpMult:0.09},value:400, desc:'+9% all damage, +9% skill XP'},
 ];
+// ── Abyssal Sigils — permanent stat increases ──────────────────────
+//
+// The coast's real reward, and deliberately a different KIND of thing from an
+// artifact: a sigil is consumed, not worn. It cannot be unequipped, swapped for
+// a better one, or traded away, so it is progress rather than loadout — which
+// is what makes a dangerous map worth living on rather than raiding once.
+//
+// ⚠ CAPPED, AND THE CAP IS THE DESIGN. Permanent, uncapped, stacking stats are
+// how a PvP map turns into a whoever-farmed-longest map: a veteran becomes
+// unkillable by anyone who arrived later, and the open-PvP rules that make the
+// coast interesting stop meaning anything. Ten of each is a meaningful ceiling
+// a newer player can actually see the top of.
+const SIGIL_CAP = 10;
+const SIGIL_DEFS = {
+  vigour:    {name:'Sigil of Vigour',    icon:'❤', per:8,    desc:'+8 Max HP, permanently'},
+  might:     {name:'Sigil of Might',     icon:'⚔', per:0.02, desc:'+2% melee damage, permanently'},
+  precision: {name:'Sigil of Precision', icon:'🏹', per:0.02, desc:'+2% arrow damage, permanently'},
+  fortitude: {name:'Sigil of Fortitude', icon:'🛡', per:0.006,desc:'+0.6% damage reduction, permanently'},
+};
+function permStat(k){ return (player.permStats && player.permStats[k]) || 0; }
+function permBonus(k){ return permStat(k) * SIGIL_DEFS[k].per; }
+// Consume one. Returns a message either way — a silent no-op on a capped stat
+// reads as the item being eaten for nothing.
+function useSigil(kind){
+  const def = SIGIL_DEFS[kind]; if(!def) return null;
+  if(!player.permStats) player.permStats = {vigour:0,might:0,precision:0,fortitude:0};
+  if(player.permStats[kind] >= SIGIL_CAP){
+    addFloater(player.x,player.y-30, def.name+' — already at the cap ('+SIGIL_CAP+')');
+    return false;
+  }
+  player.permStats[kind]++;
+  recomputeArtifactBonus();        // maxHp is derived there; keep one owner of it
+  addFloater(player.x,player.y-34, def.icon+' '+def.name+'  ('+player.permStats[kind]+'/'+SIGIL_CAP+')');
+  snd.heal();
+  return true;
+}
+
 function artifactDef(id){return ARTIFACT_DEFS.find(d=>d.id===id);}
 function artifactsOfTier(tier){return ARTIFACT_DEFS.filter(d=>d.tier===tier);}
 function artifactBonus(key){return (player.artifactBonus&&player.artifactBonus[key])||0;}
@@ -7072,8 +7224,14 @@ function recomputeArtifactBonus(){
     if(def)for(const[k,v]of Object.entries(def.stats))b[k]=(b[k]||0)+v;
   }
   player.artifactBonus=b;
-  player.maxHp=BASE_MAX_HP+(b.maxHp||0);
+  // Sigils fold in here because this is the ONE place maxHp is derived. Adding a
+  // second owner of that number is how it ends up disagreeing with itself.
+  player.maxHp=BASE_MAX_HP+(b.maxHp||0)+permBonus('vigour');
   if(player.hp>player.maxHp)player.hp=player.maxHp;
+  // Hung here rather than at each of the five call sites: this function is the
+  // one thing every equip, unequip, consume and save-load already funnels
+  // through, so the models cannot drift out of step with the stats.
+  updateArtifactVisuals();
 }
 hooks.playerAutoRevive=()=>{
   const hLv = healingLv();
@@ -9925,7 +10083,8 @@ function buildSave(){
     // Saving it while online is what let each browser restore a divergent world.
     placedObjects:net.status==='online'?undefined:placedObjects.map(o=>({...o})),
     hasHorse:!!player.hasHorse,onHorse:!!player.onHorse,horseDown:!!player.horseDown,horseX:player.horseX||0,horseY:player.horseY||0,
-    artifactInv:player.artifactInv.map(it=>({...it})),equippedArtifacts:{...player.equippedArtifacts},dollGender:player.dollGender,
+    artifactInv:player.artifactInv.map(it=>({...it})),equippedArtifacts:{...player.equippedArtifacts},
+    permStats:{...(player.permStats||{})},dollGender:player.dollGender,
     name:player.name,gender:player.gender,race:player.race,stats:{...(player.stats||{str:10,dex:10,int:10,vit:10})},
     level:player.level,xp:player.xp,xpMax:player.xpMax,statPoints:player.statPoints,skillPoints:player.skillPoints,
     equipmentItems:(player.equipmentItems||[]).map(it=>({...it})),
@@ -9968,6 +10127,7 @@ function resetForNewCharacter(){
   player.equipmentItems=[]; player.equippedItems={weapon:null,armor:null};
   player.equippedArtifacts={neck:null,ring1:null,ring2:null,brac1:null,brac2:null};
   player.artifactInv=[]; player.artifactBonus={};
+  player.permStats={vigour:0,might:0,precision:0,fortitude:0};   // a new character has none
   player.armor={head:0,chest:0,legs:0,boots:0}; player.hasArmor=false;
   player.swordTier=1; player.bowTier=1; player.pickaxeTier=1;
   player.hasAxe=true; player.hasSword=false; player.hasBow=false;
@@ -10047,6 +10207,13 @@ function loadGame(blob){
       const def=artifactDef(s.equippedArtifact);
       const sk=ARTIFACT_SLOTS.find(k=>ARTIFACT_SLOT_TYPE[k]===def.slot);
       player.equippedArtifacts[sk]=s.equippedArtifact;
+    }
+    // Sigils. Clamped on the way in as well as on the way out: a save blob is
+    // client-authored, and this is a permanent stat that nothing else bounds.
+    player.permStats={vigour:0,might:0,precision:0,fortitude:0};
+    if(s.permStats) for(const k in player.permStats){
+      const v=s.permStats[k];
+      if(typeof v==='number'&&isFinite(v)) player.permStats[k]=Math.max(0,Math.min(SIGIL_CAP,v|0));
     }
     recomputeArtifactBonus();
     // ARPG progression: level/XP, unspent points, and rolled gear
