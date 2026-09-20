@@ -1,0 +1,60 @@
+{
+  "$comment": [
+    "Per-class asset budgets for Project Bravo. tools/bake.mjs targets these;",
+    "tools/verify.mjs fails the build when an output exceeds one.",
+    "",
+    "Texture sizes are chosen from how large the object actually gets on screen, not",
+    "from what Meshy happened to export. A sword occupies roughly 30 pixels in the",
+    "player's hand; a 2048px albedo for it is about 40x more texel than the screen can",
+    "ever show, and costs ~22 MB of VRAM to hold.",
+    "",
+    "maxBytes is the on-disk ceiling for the baked .glb and is deliberately generous:",
+    "it is a backstop against a runaway asset, not the primary control. Texture",
+    "resolution is the primary control."
+  ],
+
+  "classes": [
+    {
+      "name": "prop",
+      "reason": "Held in-hand or placed set dressing. Never more than a few dozen pixels tall on screen.",
+      "match": [
+        "^Sword", "^Double_Axe", "^Pickaxe", "crossbow", "Shield", "^Arrows",
+        "^torch$", "^lantern$", "^campfire$", "^Backpack"
+      ],
+      "budget": { "maxTexture": 256, "maxTriangles": 8000, "maxBytes": 262144 }
+    },
+    {
+      "name": "wearable",
+      "reason": "Armour worn on the character. Read at character distance, but only ever covers part of the body.",
+      "match": ["_Armor$", "^Iron Helm$", "Gauntlets", "Gorget", "Boots", "Gloves", "Leggings"],
+      "budget": { "maxTexture": 512, "maxTriangles": 12000, "maxBytes": 524288 }
+    },
+    {
+      "name": "character",
+      "reason": "Player, NPCs and mobs. The things players actually look at, and the only class that earns 1024px.",
+      "match": [
+        "^Protag", "^Banker$", "^Fletcher$", "^Jester$", "^Wizzard$", "^wizard$", "^Horse$",
+        "^wolf$", "^orc", "^rat$", "^spider", "^yeti$", "^slime$", "^snake$"
+      ],
+      "budget": { "maxTexture": 1024, "maxTriangles": 25000, "maxBytes": 2097152 }
+    },
+    {
+      "name": "structure",
+      "reason": "Buildings and large world geometry. Big on screen, but static and seen from a distance.",
+      "match": ["^Smithy$"],
+      "budget": { "maxTexture": 1024, "maxTriangles": 30000, "maxBytes": 1572864 }
+    }
+  ],
+
+  "default": {
+    "name": "unclassified",
+    "reason": "No rule matched. Treated as a prop so nothing ships unbudgeted by accident; add a rule above if that is wrong.",
+    "budget": { "maxTexture": 512, "maxTriangles": 10000, "maxBytes": 524288 }
+  },
+
+  "totals": {
+    "$comment": "Whole-payload ceilings, checked by verify.mjs across the baked directory.",
+    "maxTotalBytes": 8388608,
+    "maxModelCount": 80
+  }
+}

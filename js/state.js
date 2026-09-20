@@ -116,7 +116,7 @@ export const G = {
   inDungeon: false,
   smithOpen: false, mageOpen: false, farrierOpen: false,
   antiqOpen: false, cryptoOpen: false, curatorOpen: false, robberOpen: false,
-  hotbarSel: 0, hotbarEditOpen: false,
+  hotbarSel: 0,
   packScroll: 0,            // backpack grid scroll row
   packSel: null,            // selected backpack cell index
   dollPick: null,           // open jewelry picker: slotKey string or null

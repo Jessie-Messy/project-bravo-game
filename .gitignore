@@ -9,3 +9,14 @@ VPS_GIT_PULL.bat
 VPS_SETUP_AND_DEPLOY.bat
 COMMIT_AND_DEPLOY.bat
 DEPLOY.bat
+
+# ── Deploy helpers: LOCAL ONLY, never tracked ────────────────────────────────
+# This repo is PUBLIC. Every one of these carries the VPS origin IP and SSH
+# user, and two of them carry the password in plaintext. deploy_to_vps.bat and
+# deploy_server_to_vps.bat were deleted from the remote on 2026-09-12, four days
+# after the origin had to be locked to Cloudflare ranges because 82% of traffic
+# was bypassing the CDN straight to the origin. A published origin IP is how that
+# happens. They are ignored rather than deleted: they still work, they just must
+# not leave this machine.
+deploy_to_vps.bat
+deploy_server_to_vps.bat

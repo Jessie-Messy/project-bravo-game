@@ -14,7 +14,7 @@ import { TILE, MAP_W, MAP_H, T, BLOCKING, CITY,
   ENEMY_POP_CHECK_INTERVAL, WOLF_TARGET, BANDIT_TARGET,
   XP_LEVELS, TACTICS_DMG, ARCHERY_DMG, HIDING_DUR, HEAL_AMT, WRESTLE_STUN, WRESTLE_DMG,
   SKILL_PANEL_W, SKILL_PANEL_H, SKILL_PANEL_ROW,
-  PANEL_W, PANEL_PAD, BTN_H, HEADER_H, BTN_GAP,
+  PANEL_W, PANEL_PAD, BTN_H, HEADER_H, BTN_GAP, fitPanelW, fitPanelH,
   TRADE_W, TRADE_PAD, TRADE_ROW_H, TRADE_HEADER, TRADE_SECT_H,
   BANK_W, BANK_H, BANK_PAD, BANK_HEADER, BANK_BTN_W, BANK_BTN_H,
   GUARD_CALL_COOLDOWN, MINIMAP_BASE,
@@ -30,7 +30,9 @@ import { G, map, resourceHp, respawnAt, origTile, playerPlacedWalls, player,
   BLACKSMITH, MAGE, FARRIER,
   ANTIQUARIAN, CRYPTOLOGIST, CURATOR, GRAVE_ROBBER,
 } from './state.js';
-import { snd, soundMuted, setSoundMuted } from './audio.js';
+import { snd, soundMuted, setSoundMuted, setMasterVol, masterVol } from './audio.js';
+import { prefs, setPref, resetPrefs, BIND_DEFS, binds, bindOf,
+         setBind, resetBinds, keyLabel, canonKey, keyForDefault } from './settings.js';
 import { CHAMP_ALTARS, DUNGEON_PORTAL_A, DUNGEON_PORTAL_B,
   DUNGEON_ENTRY_TILE, DUNGEON_CITY_EXIT,
   DUNGEON_FLOORS, DUNGEON_STAIRS, DUNGEON_BOSS_SPAWNS, WORLD_CHESTS, floorAt } from './world.js';
@@ -44,10 +46,20 @@ import { updateEnemy, champSpawnTick, damageEnemy, damagePlayer,
 import { initQuality, getSettings, getTier, setTier, onTierChange, frameTick, TIERS } from './render/quality.js';
 import { createSky } from './render/sky.js';
 import { createWaterMaterial } from './render/water.js';
+import { buildArachnidClips } from './render/spider-gait.js';
 import { createComposer } from './render/composer.js';
+import { createLoadingScreen } from './render/loading.js';
+import { VERSION } from './build-info.js';
 import { makeBladeGeometry, makeBladeTexture, makeGrassMaterial } from './render/grass.js';
-import { makeConiferCanopy, makeTrunk } from './render/trees.js';
+import { makeConiferCanopy, makeBroadleafCanopy, makeTrunk } from './render/trees.js';
+import { buildNearForest, makeBiomeSampler } from './render/tree-lod.js';
+import { SPECIES } from './render/tree-species.js';
+import { cameraModes, DEFAULT_MODE_ID, CAM_MODE_STORE_KEY, FP_EYE_FRAC, FP_PITCH_LIMIT,
+         nearBudgetFactor, nearRadiusTiles } from './render/camera-modes.js';
 import { createHeightField } from './render/terrain.js';
+import { animateFire } from './render/fire.js';
+import { makeTorsoGeometry, makeHeadGeometry, makeLimbGeometry,
+         buildBodyDressing, buildHeadDressing } from './render/humanoid.js';
 
 // ── Dual-canvas setup ─────────────────────────────────────────────
 const glCanvas = document.getElementById('game3d');
@@ -69,11 +81,70 @@ G.ctx    = uiCtx;      // UI panels draw on the overlay
 // The full desktop hotkey legend blocks a huge chunk of a phone screen;
 // on mobile it stays hidden and players reach the same reference through
 // the existing "?" touch button / T key, which opens the How To Play panel.
+// ── Touch HUD mode ────────────────────────────────────────────────
+// Screen space is the scarcest resource on a phone, and anything that names a
+// KEY is worse than useless there: it takes room and tells you to press
+// something you do not have. This strips that chrome on touch devices.
+//
+// `(pointer: coarse)` rather than waiting for G.isTouch, which only flips on the
+// first touchstart — by then the player has already looked at a header full of
+// keyboard shortcuts. A laptop with a touchscreen still reports a fine primary
+// pointer, so it correctly keeps the full HUD.
+function isTouchPrimary(){
+  return !!G.isTouch ||
+    (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches);
+}
+// The version shown in the HUD and the tab title comes from js/build-info.js, so
+// bumping that one constant moves it everywhere. It used to be a literal in the
+// markup that nobody remembered to change, which meant a device on stale cached
+// JavaScript was indistinguishable from one running the newest build.
+const VERSION_RE = /v\d+(?:\.\d+)+/;
+function applyVersion(){
+  const row = document.querySelector('#hud div');
+  if (row) {
+    // Edit the text node in place. The row also holds a <b> and the keyboard-hints
+    // <span> that applyMobileHudMode() locates with querySelector('span'), so
+    // rebuilding its innerHTML here would quietly break that.
+    for (const node of row.childNodes) {
+      if (node.nodeType === 3 && VERSION_RE.test(node.nodeValue)) {
+        node.nodeValue = node.nodeValue.replace(VERSION_RE, 'v' + VERSION);
+        break;
+      }
+    }
+  }
+  if (VERSION_RE.test(document.title)) {
+    document.title = document.title.replace(VERSION_RE, 'v' + VERSION);
+  }
+}
+applyVersion();
+
 function applyMobileHudMode(){
-  const hint = document.getElementById('hint');
-  if (hint) hint.style.display = G.isTouch ? 'none' : '';
+  const touch = isTouchPrimary();
+
+  // The old #hint element does not exist in either page — this was a no-op for as
+  // long as it has been here. The real offender is the keyboard-shortcut span in
+  // the #hud header ("Shift+C characters · T help · O bag · ..."), which is markup
+  // the platform page owns, so it is hidden from here rather than edited there.
+  const hud = document.getElementById('hud');
+  if (hud) {
+    const titleRow = hud.querySelector('div');
+    const keyHints = titleRow && titleRow.querySelector('span');
+    if (keyHints) keyHints.style.display = touch ? 'none' : '';
+    // The version banner is for us, not the player, and on a phone it is the
+    // widest thing on screen. Keep it, shrink it out of the way.
+    if (titleRow) titleRow.style.fontSize = touch ? '11px' : '';
+  }
+
+  // Platform chrome ("← Hub"), present only on the deployed page. Crowded on a
+  // phone; nudge it down to a size that does not compete with the game HUD.
+  const bar = document.getElementById('orion-bar');
+  if (bar) bar.style.fontSize = touch ? '11px' : '';
+
+  document.body.classList.toggle('touch-mode', touch);
 }
 applyMobileHudMode();
+// A tablet can be picked up mid-session, and orientation changes re-run layout.
+window.addEventListener('resize', applyMobileHudMode);
 
 // ── Quality tier ──────────────────────────────────────────────────
 // Resolved BEFORE the renderer is constructed, because `antialias` is a
@@ -99,6 +170,29 @@ let QS = getSettings();
 const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: !QS.composer,
   powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, QS.pixelRatio));
+
+// ── Can this machine draw skinned characters at all? ──────────────
+// three r160 skins through a shader that is GLSL ES 3.00 ONLY: getBoneMatrix
+// uses textureSize(), texelFetch() and the integer % operator, none of which
+// exist in GLSL ES 1.00. On a WebGL1 context that vertex shader fails to
+// compile, so EVERY skinned mesh silently draws nothing — while static meshes
+// are unaffected. The symptom is a headless character with their sword and
+// shield still floating in mid-air, because equipment hangs off bone slots
+// whose transforms are computed on the CPU.
+//
+// Seen in the wild on a Windows VM with no GPU driver: the browser fell back to
+// the Microsoft Basic Render Driver, refused WebGL2 ("AllowWebgl2:false"), and
+// every character in the game vanished while the world rendered fine.
+//
+// The game already carries a complete non-skinned path — makeRig() builds the
+// blocky primitive avatars used before the GLBs finish loading — so the fix is
+// to never leave it. Reduced art beats no characters.
+const SKINNING_OK = renderer.capabilities.isWebGL2;
+if (!SKINNING_OK) {
+  console.warn('[gfx] WebGL1 context: three r160 cannot compile its skinning shader here, ' +
+               'so animated GLB characters are disabled and the primitive rigs are used instead.');
+}
+
 renderer.shadowMap.enabled = QS.shadows;
 renderer.shadowMap.type = QS.shadowSoft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
 // Filmic response curve. Without it, bright surfaces clip to flat white and
@@ -167,15 +261,248 @@ function applyEnvIntensity(v){
 // screen-space ambient occlusion viable later. Deliberately NOT
 // logarithmicDepthBuffer — that breaks early-Z and costs more than it saves.
 const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 10, 12000);
+// Each camera preset carries the FOV that suits it; the player's setting is an
+// OFFSET on top of that, so moving the slider keeps the relationship between the
+// presets (first person wide, top-down tight) instead of flattening them to one
+// number. Clamped either side of sanity: below ~50 the world reads as a
+// telescope, above ~120 the edges of the frame smear.
+function applyFov(m){
+  const base = (m && m.fov) || 52;
+  const want = Math.max(50, Math.min(120, base + (prefs.fov || 0)));
+  if (camera.fov !== want) { camera.fov = want; camera.updateProjectionMatrix(); camModeDirty = true; }
+}
 const CAM_H = 1100, CAM_D = 700; // height above ground, depth behind player
 const CAM_R = Math.hypot(CAM_D, CAM_H);        // orbit radius (kept constant while tilting)
 const CAM_PITCH0 = Math.atan2(CAM_H, CAM_D);   // default tilt (~57°) — matches old framing
+// Minimum air between the camera and whatever ground is under it. Has to exceed
+// the terrain mesh's own vertical error: the ground is one segment per 2 tiles,
+// so between vertices the drawn surface can sit above the sampled height field
+// by a few units on a steep face. 30 covers that with room to spare and is
+// small enough that the lift is not noticeable when it happens.
+const CAM_CLEAR = 30;
+// Six samples over a boom that is at most ~3900 units is one per ~650 — finer
+// than the terrain's own 96-unit segments would justify going.
+const CAM_BOOM_SAMPLES = 6;
+// The lowest the camera may sit at (cx,cz), accounting for everything the boom
+// passes over on the way there. heightAt() is a lookup into a baked grid, not
+// noise evaluation, so this is six array reads per frame.
+function camBoomFloor(cx, cz){
+  let floor = -Infinity;
+  for(let s = 1; s <= CAM_BOOM_SAMPLES; s++){
+    const f = s / CAM_BOOM_SAMPLES;
+    const gx = player.x + (cx - player.x) * f;
+    const gz = player.y + (cz - player.y) * f;
+    let g = heightAt(gx, gz);
+    // A riverbed is carved below the water plane, so clearing the BED still
+    // leaves the camera under the surface — the same shot with a blue tint.
+    // Keyed off the tile being water rather than off the height, so dry ground
+    // that happens to sit below WATER_SURFACE_Y is not pushed up for nothing.
+    if(!G.inDungeon){
+      const tx = Math.floor(gx/TILE), ty = Math.floor(gz/TILE);
+      if(map[ty] && map[ty][tx] === T.WATER && g < WATER_SURFACE_Y) g = WATER_SURFACE_Y;
+    }
+    if(g > floor) floor = g;
+  }
+  return floor + CAM_CLEAR;
+}
 // Closer default so the world reads big (esp. on phones); pinch / scroll /
 // Ctrl+ +/- still adjust freely within 0.3 (close) … 3.0 (far).
 let camZoom = (typeof innerWidth==='number' && innerWidth<600) ? 0.55 : 0.72;
 let camAngle = 0;
 let camPitch = CAM_PITCH0;   // 0.06 (ground level) … 1.54 (straight overhead)
 let camOrbit = null;         // middle-mouse drag state {lx,ly,dist,moved}
+
+// ── Camera presets ────────────────────────────────────────────────
+// Named stops on the same orbit, cycled with [ and ]. Middle-drag still works
+// after picking one, so a preset is a starting point, not a cage. First person
+// is the one entry that leaves the orbit entirely — see the camera block in the
+// frame update.
+const CAM_MODES = cameraModes(CAM_PITCH0);
+let camModeIdx = (() => {
+  try {
+    const i = CAM_MODES.findIndex(m => m.id === localStorage.getItem(CAM_MODE_STORE_KEY));
+    if (i >= 0) return i;
+  } catch (_) { /* private mode */ }
+  return Math.max(0, CAM_MODES.findIndex(m => m.id === DEFAULT_MODE_ID));
+})();
+let fpPitch = 0;             // first-person look elevation, 0 = horizon
+// Its own flag rather than reusing treeDirty: treeDirty is declared much later
+// in this file, and setCamMode runs once at boot to apply the stored mode.
+let camModeDirty = false;
+function camMode(){ return CAM_MODES[camModeIdx]; }
+function setCamMode(i, announce = true){
+  camModeIdx = ((i % CAM_MODES.length) + CAM_MODES.length) % CAM_MODES.length;
+  const m = camMode();
+  // Snap the orbit to the preset. First person keeps its own pitch, and
+  // leaving camPitch/camZoom untouched means stepping back out of first person
+  // returns you to the framing you had.
+  if (!m.fp) { camPitch = m.pitch; camZoom = m.zoom; }
+  // Field of view per preset: wide enough in first person to feel like eyes
+  // rather than a telescope, tightening as the camera pulls back and up, where
+  // a wide angle only adds distortion at the frame edges. The view-cone cull
+  // reads camera.fov directly, so it follows this without further work.
+  applyFov(m);
+  // The near/far split depends on the angle, so it has to be recomputed now
+  // rather than waiting for the player to walk far enough to slide the window.
+  camModeDirty = true;
+  try { localStorage.setItem(CAM_MODE_STORE_KEY, m.id); } catch (_) {}
+  if (announce && typeof addFloater === 'function') addFloater(player.x, player.y - 40, m.label);
+  updateFpChrome();
+  // Pointer lock has to be asked for from inside a user gesture, and the
+  // keypress that got us here is one. Esc gives the cursor back without
+  // leaving first person — middle-drag still aims.
+  if (m.fp) requestLook();
+}
+
+// Do we currently own the mouse? Kept in sync by the pointerlockchange listener
+// below rather than read ad hoc, so the crosshair hint and the click-to-retake
+// path can never disagree about it.
+let _lookLocked = false;
+function requestLook(){
+  if (!G.canvas || document.pointerLockElement === G.canvas) return;
+  // Returns a promise in current browsers and rejects when there is no user
+  // gesture -- notably at boot, where setCamMode() applies the stored mode. Both
+  // forms are swallowed: failing to get the lock is normal and recoverable now,
+  // and the on-screen hint tells the player how to recover it.
+  try {
+    const r = G.canvas.requestPointerLock();
+    if (r && typeof r.catch === 'function') r.catch((err) => { _lookDenied = String(err && err.message || err); });
+  } catch (err) { _lookDenied = String(err); }
+}
+// Why the last request failed, if it did. This used to be swallowed outright,
+// which meant a browser that refuses pointer lock produced a first-person view
+// you could not aim and no way at all to find out why. Read it with _dev.look().
+let _lookDenied = null;
+document.addEventListener('pointerlockerror', () => {
+  _lookDenied = _lookDenied || 'pointerlockerror (no detail)';
+  console.warn('[look] pointer lock refused — first person is using bare-mouse look instead:', _lookDenied);
+});
+document.addEventListener('pointerlockchange', () => {
+  _lookLocked = document.pointerLockElement === G.canvas;
+  updateFpChrome();
+});
+// A panel you cannot point at is worse than no panel. Whenever the UI wants the cursor,
+// give it back; the world re-takes it on the next click in the world (see mousedown).
+// Checked per frame rather than hooked into each of the ~25 panel flags, so a panel added
+// later cannot forget to do it.
+function releaseLookForUI(){
+  if (document.pointerLockElement === G.canvas && modalOpen()) document.exitPointerLock();
+}
+
+// ── First-person look without Pointer Lock ────────────────────────
+// Pointer Lock needs a user gesture to enter and can be refused outright, so it
+// cannot be the only way to look around. This turns the view from plain cursor
+// motion with no button held.
+//
+// The one thing the lock gives that this cannot is an unbounded cursor: without
+// it the pointer stops at the window edge and stops producing deltas, which
+// would cap a turn at one screen-width. Hence the margin — sit the cursor in the
+// outer band and the view keeps turning by itself, at a rate set by how deep
+// into the band it is.
+let _flX = null, _flY = null;        // last cursor position, or null if unknown
+let _flOutside = false;              // pointer has left the window (still steering)
+const FL_EDGE = 110;                 // px of window edge that keeps turning
+const FL_EDGE_RATE = 3.2;            // rad/sec at the very edge
+function fpFreeLookActive(){
+  return camMode().fp
+      && document.pointerLockElement !== G.canvas
+      && !modalOpen() && !uiDrag && !G.buildMode && !G.editorOpen && !G.housePlacementMode;
+}
+function fpFreeLookMove(e){
+  if(_flX !== null){
+    // Same 0.0022 rad/px and the same preferences as the locked path, so the
+    // two cannot feel like different games.
+    const s = 0.0022*(prefs.lookSens||1), iy = prefs.invertY?-1:1;
+    camAngle = (camAngle - (e.clientX-_flX)*s + Math.PI*2) % (Math.PI*2);
+    fpPitch  = Math.max(-FP_PITCH_LIMIT, Math.min(FP_PITCH_LIMIT, fpPitch - (e.clientY-_flY)*s*iy));
+  }
+  _flX = e.clientX; _flY = e.clientY;
+}
+let _flCursorHidden = false;
+// Vertical steering is gentler than horizontal on purpose: pitch is clamped to
+// +/-88 degrees, so the band only has to carry the cursor the last part of the
+// way rather than turn indefinitely, and a fast vertical creep reads as the view
+// sliding out from under you.
+const FL_EDGE_RATE_Y = 1.5;
+function fpFreeLookEdge(dt){
+  // Under Pointer Lock the cursor stops existing. Free-look cannot do that, but
+  // it can hide it — otherwise you get a visible arrow sliding into a corner
+  // while the world turns, which reads as a stuck UI rather than as looking
+  // around. Toggled rather than assigned every frame so it is not a style write
+  // per frame forever.
+  const want = fpFreeLookActive();
+  if(want !== _flCursorHidden){
+    G.canvas.style.cursor = want ? 'none' : '';
+    _flCursorHidden = want;
+  }
+  if(_flX === null || !want) return;
+  // Off-window is still playing -- the cursor sitting over the browser's own
+  // chrome should keep steering, or running off the top edge stops the view
+  // dead. Focus is the line: click into another tab or window and this stops,
+  // because then you are not playing.
+  if(_flOutside && !document.hasFocus()) return;
+  let r = 0;
+  if(_flX < FL_EDGE)                    r = -(FL_EDGE-_flX)/FL_EDGE;
+  else if(_flX > innerWidth-FL_EDGE)    r =  (_flX-(innerWidth-FL_EDGE))/FL_EDGE;
+  // Same sign convention as the delta above: cursor to the right turns right.
+  if(r) camAngle = (camAngle - r*FL_EDGE_RATE*dt + Math.PI*2) % (Math.PI*2);
+
+  let ry = 0;
+  if(_flY < FL_EDGE)                    ry = -(FL_EDGE-_flY)/FL_EDGE;
+  else if(_flY > innerHeight-FL_EDGE)   ry =  (_flY-(innerHeight-FL_EDGE))/FL_EDGE;
+  if(ry){
+    const iy = prefs.invertY ? -1 : 1;
+    fpPitch = Math.max(-FP_PITCH_LIMIT,
+              Math.min(FP_PITCH_LIMIT, fpPitch - ry*FL_EDGE_RATE_Y*dt*iy));
+  }
+}
+// CAPTURE on `window`, not on the canvas. The platform's own BOARDS button and
+// HUB link sit above the canvas in the top strip with pointer-events enabled, so
+// a canvas-bound listener stops receiving anything the moment the cursor crosses
+// them — the view freezes at exactly the edge of the screen you were steering
+// toward. Capture on the window sees the move first, whatever it is over.
+addEventListener('mousemove', (e) => {
+  if(!fpFreeLookActive()){ _flX = _flY = null; return; }
+  _flOutside = false;
+  fpFreeLookMove(e);
+  // Aim stays pinned to the crosshair, exactly as it is under Pointer Lock.
+  mouse.sx = innerWidth*0.5; mouse.sy = innerHeight*0.5; mouse.hasPos = true;
+}, true);
+// Left the window entirely (relatedTarget is null for the document boundary).
+// The position is DELIBERATELY kept: the edge band above needs it to keep
+// steering while the cursor is parked over the browser's chrome.
+addEventListener('mouseout', (e) => { if(!e.relatedTarget) _flOutside = true; });
+addEventListener('mouseover', () => { _flOutside = false; });
+// Coming back into the window must not apply the whole excursion as one jump,
+// so drop the delta reference — the next move re-establishes it.
+addEventListener('blur', () => { _flX = _flY = null; _flOutside = false; });
+
+// First-person chrome: a crosshair, because with the cursor locked to the
+// centre there is otherwise nothing showing where an attack will land.
+let _fpCross = null;
+function updateFpChrome(){
+  const fp = camMode().fp;
+  if (fp && !_fpCross) {
+    _fpCross = document.createElement('div');
+    _fpCross.id = 'fp-cross';
+    _fpCross.style.cssText =
+      'position:fixed;left:50%;top:50%;width:3px;height:3px;margin:-1.5px 0 0 -1.5px;' +
+      'background:#e8dcc0;border-radius:50%;opacity:.8;pointer-events:none;z-index:4;' +
+      'box-shadow:0 0 0 1px rgba(0,0,0,.55), 0 0 6px rgba(0,0,0,.4);';
+    document.body.appendChild(_fpCross);
+  }
+  if (_fpCross) _fpCross.style.display = fp ? 'block' : 'none';
+  // The "click to look around" hint used to live here. It was needed when pointer lock
+  // was requested once and never re-acquired, so losing it left you stuck with no way
+  // back. Any click in the world now re-takes the mouse, so the hint was telling you to
+  // do the thing you were already about to do.
+  if (!fp && G.canvas && document.pointerLockElement === G.canvas) document.exitPointerLock();
+}
+// Apply the stored mode once at boot: fov, crosshair and LOD all have to match
+// the mode we are actually starting in, not the default we happen to declare.
+setCamMode(camModeIdx, false);
+setMasterVol(prefs.volume);
+
 
 // The composer is created late (it's async), so everything here is guarded —
 // resize() runs once at boot before `rndr` exists.
@@ -304,10 +631,66 @@ function fitSunShadow(){
   _sFitDbg.half=half; _sFitDbg.camDist=camDist; _sFitDbg.centreZ=0;
 }
 
+// ── Surviving a lost GPU context ──────────────────────────────────
+// The browser can take the WebGL context away at any time — GPU memory
+// pressure, a driver reset, some backgrounding paths. It is routine on phones.
+// Unhandled, the canvas keeps being presented empty forever while the 2D HUD
+// draws over it, which is indistinguishable from the game crashing.
+let _ctxOverlay = null;
+function showContextLost(restoring){
+  if (!_ctxOverlay) {
+    _ctxOverlay = document.createElement('div');
+    _ctxOverlay.id = 'ctx-lost';
+    _ctxOverlay.style.cssText =
+      'position:fixed;inset:0;z-index:10000;display:flex;flex-direction:column;' +
+      'align-items:center;justify-content:center;gap:14px;background:#0d0f0e;' +
+      "color:#e8dcc0;font:14px 'Trebuchet MS',Verdana,sans-serif;text-align:center;padding:24px";
+    _ctxOverlay.innerHTML =
+      '<div style="font-size:1.1rem;letter-spacing:.14em;text-transform:uppercase;color:#d8c9a3">' +
+      'Graphics restarting</div>' +
+      '<div id="ctx-lost-msg" style="color:#8b968f;max-width:34ch;line-height:1.5"></div>' +
+      '<button id="ctx-lost-btn" style="font:inherit;color:#0d0f0e;background:#d8c9a3;' +
+      'border:0;padding:9px 18px;cursor:pointer">Reload</button>';
+    document.body.appendChild(_ctxOverlay);
+    _ctxOverlay.querySelector('#ctx-lost-btn').onclick = () => location.reload();
+  }
+  _ctxOverlay.querySelector('#ctx-lost-msg').textContent = restoring
+    ? 'The device reclaimed the graphics context. Reloading to rebuild the world.'
+    : 'The device ran out of graphics memory. Reload to continue — your progress is saved on the server.';
+  _ctxOverlay.style.display = 'flex';
+}
+G.canvas3d = renderer.domElement;
+renderer.domElement.addEventListener('webglcontextlost', (e) => {
+  // Without preventDefault the browser never fires 'webglcontextrestored' — the
+  // default action is to abandon the context for good. This single line is what
+  // makes recovery possible at all.
+  e.preventDefault();
+  console.warn('[gfx] WebGL context lost');
+  showContextLost(false);
+}, false);
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+  // Three.js can re-upload its own GL objects, but this module builds a great deal
+  // of scene state once at load that a partial restore would leave inconsistent.
+  // A reload returns to a known-good frame, which is worth more than saving a few
+  // seconds after an event this rare.
+  console.warn('[gfx] WebGL context restored — reloading for a clean scene');
+  showContextLost(true);
+  setTimeout(() => location.reload(), 1200);
+}, false);
+
 // Moon light for night cycles (shadows disabled for performance)
 const moon = new THREE.DirectionalLight(0x7799cc, 0.0);
 moon.castShadow = false;
 scene.add(moon);
+// A DirectionalLight shines from its position toward its TARGET, and an
+// unparented target sits at the world origin. The sun adds and tracks its own
+// (see scene.add(sun.target) plus the per-frame update); the moon never did —
+// so while the moon's position was moved to follow the player each frame, the
+// direction it actually lit from was still "toward 0,0,0", tens of thousands of
+// units away across the map. Moonlight therefore raked the world at a wrong,
+// near-constant angle instead of coming down from the moon, which is a large
+// part of why a full-moon night read as black rather than "navigable".
+scene.add(moon.target);
 
 // Player local light source (lantern) for caves and night cycles.
 // decay 0 — see placementLights: physical falloff kills legacy intensities.
@@ -398,12 +781,27 @@ function _terrHash32(x, y){ let n=(x*374761393+y*668265263)^((x^y)*1274126177); 
 // Flat RGB palette indexed by tile id. TILE_COLORS is a numeric-keyed object, so
 // V8 runs it in dictionary mode — fine for the odd lookup, but the bake does
 // millions. Rebuilt before each bake since custom tiles and skins can add entries.
+// The ground canvas paints the BED under water, not water. The water surface is
+// its own lit, transparent mesh drawn on top, and wherever its coverage mask
+// falls short of the painted contour -- which it always does a little, because
+// the mask is built from a blurred field that erodes inward at every bank --
+// whatever is underneath shows through. Painted the water's own blue, that
+// leftover read as a vivid cobalt collar around every pool; painted as bed, it
+// reads as the wet gravel you would expect at a waterline, and it agrees with
+// what the water shader thinks it is refracting.
+//
+// TILE_COLORS keeps its blue, so the minimap is unchanged -- the same split
+// documented above GROUND_TILE, where the minimap wants a symbol and the ground
+// wants a material.
+const GROUND_WATER_RGB = [72, 64, 52];
 let _pal=new Uint8Array(3);
 function _buildPalette(){
   let max=0; for(const k in TILE_COLORS){ const n=+k; if(n>max) max=n; }
   _pal=new Uint8Array((max+1)*3);
   for(const k in TILE_COLORS){ const n=+k, c=TILE_COLORS[k]; if(!c) continue;
     _pal[n*3]=c[0]; _pal[n*3+1]=c[1]; _pal[n*3+2]=c[2]; }
+  const w=T.WATER*3;
+  _pal[w]=GROUND_WATER_RGB[0]; _pal[w+1]=GROUND_WATER_RGB[1]; _pal[w+2]=GROUND_WATER_RGB[2];
 }
 
 // ── Organic tile boundaries (kills the "Minecraft" stair-stepping) ─────
@@ -446,6 +844,16 @@ function _isFullCover(t){
 }
 const _NO_GROUND = 65535;
 let groundUnder = null;                 // Uint16Array, one ground tile id per map tile
+// Cached for the whole map. The answer depends only on groundUnder, which
+// changes when the terrain is edited and at no other time — but the grass field
+// is re-laid every few tiles of movement, and each re-lay was asking the
+// question twice per tile over a 5x5 neighbourhood: ~5.5 million reads to
+// recompute something that had not changed since boot.
+//
+// Declared HERE, above buildGroundUnder, because that runs during module load
+// and clears this. A `let` declared further down would be in the temporal dead
+// zone at that moment and throw before the world ever drew.
+let _grassClassMap = null;
 function buildGroundUnder(){
   const N = MAP_W*MAP_H;
   const g = new Uint16Array(N).fill(_NO_GROUND);
@@ -454,7 +862,7 @@ function buildGroundUnder(){
     const t=map[y][x];
     if(_isGroundType(t)){ const i=y*MAP_W+x; g[i]=t; q[qt++]=i; }
   }
-  if(qt===0){ g.fill(T.GRASS); groundUnder=g; return; }   // no ground anywhere → grass
+  if(qt===0){ g.fill(T.GRASS); groundUnder=g; _grassClassMap=null; return; }   // no ground anywhere → grass
   while(qh<qt){                                            // multi-source BFS = nearest ground
     const i=q[qh++], x=i%MAP_W, y=(i/MAP_W)|0, v=g[i];
     if(x>0)        { const j=i-1;     if(g[j]===_NO_GROUND){ g[j]=v; q[qt++]=j; } }
@@ -463,13 +871,23 @@ function buildGroundUnder(){
     if(y<MAP_H-1)  { const j=i+MAP_W; if(g[j]===_NO_GROUND){ g[j]=v; q[qt++]=j; } }
   }
   groundUnder=g;
+  _grassClassMap = null;      // derived from groundUnder — see _grassClassAt
 }
 // Two octaves: a broad one that gives a river its lazy meander, and a tighter one
 // that keeps the bank from looking like a smooth spline. A single octave reads as
 // a uniform ripple — recognisably procedural.
-let WARP_CELL_C = 9, WARP_AMP_C = 0.55;   // broad meander:  cell size (tiles), amplitude (tiles)
-let WARP_CELL_F = 3, WARP_AMP_F = 0.34;   // fine wander
-let WARP_HASH   = 0.10;                   // per-pixel raggedness, in tiles
+// Raised from 0.55/0.34/0.10. At those values the displacement was under one
+// tile, which is not enough to disguise the grid on something as narrow and as
+// relentlessly axis-aligned as a path: the edge wandered, but in long straight
+// runs joined by right angles. These push the reach to two tiles, so a path
+// meanders rather than steps.
+//
+// The cost is the terrain bake, and it was measured rather than assumed: the
+// reach going from 1 to 2 widens the interior fast-path check from 3x3 to 5x5,
+// and a full rebake went 686ms -> 789ms. That is once, at boot.
+let WARP_CELL_C = 9, WARP_AMP_C = 0.85;   // broad meander:  cell size (tiles), amplitude (tiles)
+let WARP_CELL_F = 3, WARP_AMP_F = 0.52;   // fine wander
+let WARP_HASH   = 0.14;                   // per-pixel raggedness, in tiles
 // WARP_R is the furthest a lookup can travel, in tiles: ceil(sum of amplitudes).
 // The interior fast path checks a (2*WARP_R+1)² neighbourhood, so this MUST stay
 // >= the real reach or interiors would be misclassified and boundaries would clip.
@@ -588,7 +1006,9 @@ function paintTerrainRegion(tx0, ty0, tx1, ty1) {
         const t = _warpedTileAt(gx/TERR_PX, gy/TERR_PX, gx, gy, g0);
         if(t!==g0){ const p=t*3; cr=_pal[p]; cg=_pal[p+1]; cb=_pal[p+2]; isWater = t===T.WATER||t===T.BRIDGE; }
       }
-      const noise = isWater ? 0 : (_terrNoise(gx, gy) - 0.5) * 18;
+      // Water used to be exempt so the sheet stayed flat and read as water.
+      // It is a riverbed now, and a bed wants grain like every other surface.
+      const noise = (_terrNoise(gx, gy) - 0.5) * (isWater ? 10 : 18);
       const i = ((gy-oy)*W + (gx-ox)) * 4;
       let v;
       v=cr+noise; d[i]  = v<0?0:v>255?255:v;
@@ -1080,13 +1500,114 @@ const groundDetail = makeCanvasTex(128,128,(x,w,h)=>{
 // Both changes free budget in the same direction: the wedge stops paying for
 // the half of the circle behind the camera, and the bands stop paying full
 // density for ground that's only a few pixels tall on screen.
+// Radius is how far the field REACHES; perTile is its density in the near band
+// only (see GRASS_BANDS -- everything past ~10 tiles is a fraction of it).
+// Because the bands are keyed to absolute distance, these two numbers are now
+// independent: raising the radius appends outer rings at 8-15% density and
+// costs a small fraction of what the same increase used to.
+// low is 0 on purpose -- phones do not draw grass at all.
 const GRASS_CFG = {
   low:    { radius: 0,  perTile: 0   },
-  medium: { radius: 22, perTile: 60  },
-  high:   { radius: 30, perTile: 120 },
-  ultra:  { radius: 38, perTile: 190 },
+  medium: { radius: 30, perTile: 60  },
+  high:   { radius: 52, perTile: 105 },
+  ultra:  { radius: 64, perTile: 165 },
 };
-const _grassCfg = () => GRASS_CFG[getTier()] || GRASS_CFG.medium;
+// Density by DISTANCE IN TILES, not by fraction of the radius. Perspective
+// already thins the far field for free -- a ring at 50 tiles covers many times
+// the ground per blade that a ring at 10 does -- so these fall much more slowly
+// than they look like they should. The last entry is the open-ended tail.
+const GRASS_BANDS = [
+  [ 12, 1.00 ],   // foreground: blades read individually
+  [ 22, 0.70 ],   // midground: continuous sward
+  [ 32, 0.44 ],   // distance: still reads as grass
+  [ 44, 0.24 ],   // far: texture on the ground
+  [ 999, 0.13 ],  // horizon: a tint, carrying into the fog
+];
+function grassBand(dTiles){
+  for(let b = 0; b < GRASS_BANDS.length; b++)
+    if(dTiles < GRASS_BANDS[b][0]) return GRASS_BANDS[b][1];
+  return 0;
+}
+// _grassOverride lets a session A/B radius/perTile against the tier table
+// without a rebuild — set it from _dev.grass({radius, perTile}).
+let _grassOverride = null;
+const _grassCfg = () => Object.assign({}, GRASS_CFG[getTier()] || GRASS_CFG.medium, _grassOverride || {});
+
+// Grass gets its own view test rather than sharing tileInView().
+//
+// tileInView keeps VIEW_NEAR_TILES (11) resident around the player at every
+// angle, because an obstacle behind the camera still casts a shadow into the
+// frame. Grass does not: grassMesh.castShadow is false, deliberately and for
+// good reason (see grass.js). So a blade outside the wedge contributes exactly
+// nothing, and at full density that bubble is ~450 tiles — about a third of the
+// entire field, composed and uploaded every rebuild to be drawn nowhere.
+//
+// A small bubble stays, sized to cover the ~0.20 rad of camera turn that
+// triggers a re-window plus the blades directly underfoot, which are the ones a
+// first-person view looks straight down at.
+// How a tile relates to the grass boundary:
+//   2  every tile the warp could reach is grass  -> no per-blade test needed
+//   1  a boundary tile (either grass with a non-grass neighbour, or non-grass
+//      with a grass one) -> each blade must be tested against the warped edge
+//   0  nowhere near grass -> skip the tile entirely
+//
+// Reads groundUnder, not map, for the same reason the painter does: the ground
+// beneath a tree is still grass, and a boundary should bend through obstacles
+// rather than stop at them.
+function _grassClassAt(tx, ty){
+  if(!_grassClassMap){
+    _grassClassMap = new Int8Array(MAP_W*MAP_H);
+    for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++)
+      _grassClassMap[y*MAP_W+x] = _grassTileClass(x,y);
+  }
+  return _grassClassMap[ty*MAP_W+tx];
+}
+function _grassTileClass(tx, ty){
+  const R = WARP_R;
+  let all = true, any = false;
+  for(let oy=-R; oy<=R; oy++){
+    const yy = ty+oy; if(yy<0||yy>=MAP_H){ all=false; continue; }
+    for(let ox=-R; ox<=R; ox++){
+      const xx = tx+ox; if(xx<0||xx>=MAP_W){ all=false; continue; }
+      if(groundUnder[yy*MAP_W+xx] === T.GRASS) any = true; else all = false;
+    }
+  }
+  return all ? 2 : (any ? 1 : 0);
+}
+// Does a blade at this world position stand on grass, once the boundary has been
+// bent by the same warp field the texture uses? px/py are canvas pixel coords —
+// they only feed the per-pixel raggedness term, and using the same ones the
+// painter would use is what keeps the two edges on top of each other.
+function _bladeOnGrass(gx, gz){
+  const fx = gx/TILE, fy = gz/TILE;
+  let tx = fx|0, ty = fy|0;
+  if(tx<0) tx=0; else if(tx>=MAP_W) tx=MAP_W-1;
+  if(ty<0) ty=0; else if(ty>=MAP_H) ty=MAP_H-1;
+  const g0 = groundUnder[ty*MAP_W+tx];
+  return _warpedTileAt(fx, fy, (fx*TERR_PX)|0, (fy*TERR_PX)|0, g0) === T.GRASS;
+}
+
+// _dev.grass({warpEdge:false}) turns the warped boundary off, so its effect can
+// be measured against the old behaviour with everything else held fixed.
+let _grassWarpEdge = true;
+const GRASS_NEAR_TILES = 4;
+// VIEW_MARGIN (0.42 rad) is slack so that terrain relief cannot pop an obstacle
+// in late at the edge of frame — a tree appearing over a crest is very visible.
+// A blade of grass is a few pixels tall out there, so grass can buy the same
+// insurance far more cheaply, and the narrower wedge is ~15% of the field.
+const GRASS_MARGIN = 0.16;
+function grassTileInView(tx, ty){
+  const wx = tx*TILE + TILE/2, wz = ty*TILE + TILE/2;
+  const px = wx - _view.px, pz = wz - _view.pz;
+  const pd2 = px*px + pz*pz;
+  if(pd2 <= (GRASS_NEAR_TILES*TILE)*(GRASS_NEAR_TILES*TILE)) return true;
+  const dx = wx - _view.cx, dz = wz - _view.cz;
+  const d2 = dx*dx + dz*dz;
+  if(d2 > _view.far*_view.far) return false;
+  const d = Math.sqrt(d2);
+  if(d < 1e-3) return true;
+  return (dx*_view.fx + dz*_view.fz) / d >= _view.grassCosHalf;
+}
 // Sized empirically, NOT as radius² × perTile. That worst case assumes every
 // tile is grass, all of it in view, all at full density — with the cone and the
 // distance bands the real figure is under a fifth of it, and allocating the
@@ -1094,6 +1615,10 @@ const _grassCfg = () => GRASS_CFG[getTier()] || GRASS_CFG.medium;
 // never be filled. The placement loop hard-stops at this cap, so an
 // unusually open vista just thins slightly rather than breaking.
 const GRASS_MAX = 260000;
+// What a single re-lay may cost, in blades. Measured, not guessed: ~120k blades
+// rebuild in 12-16ms and ~228k in 36ms, and the field is re-laid every few tiles
+// of movement, so the second figure is a stutter you can feel while running.
+const GRASS_BUDGET = 130000;
 
 const grassGeo = makeBladeGeometry(THREE, { height: 1, width: 0.22, curve: 0.24 });
 const _grassMat = makeGrassMaterial(THREE, { map: makeBladeTexture(THREE), windAmount: 4.0 });
@@ -1114,6 +1639,29 @@ scene.add(grassMesh);
 // correlated, so blades piled up on top of each other and the field rendered as
 // discrete tufts on a visible lattice instead of a continuous sward.
 // Math.imul keeps the multiplies in 32-bit the whole way through.
+// Three jitter values from ONE mix. _gHash was being called three times per
+// blade for what is ultimately a scatter pattern; 10 bits each is ~1000 levels,
+// which is finer than a blade's position can be told apart at any distance.
+// Blade yaw, as a lookup rather than two transcendentals per blade. A field is
+// ~95,000 blades and each was calling Math.cos and Math.sin, so a re-lay spent
+// 190,000 trig evaluations deciding which way blades point. 256 steps is 1.4
+// degrees apart — finer than a blade's rotation can be told apart at any
+// distance, and the table is 4KB built once.
+let _grassFastH = true;   // _dev.grass({fastH:false}) -> exact per-blade heightAt
+const _GROT = 256;
+const _gCos = new Float32Array(_GROT), _gSin = new Float32Array(_GROT);
+for(let i=0;i<_GROT;i++){ const a=i/_GROT*Math.PI*2; _gCos[i]=Math.cos(a); _gSin[i]=Math.sin(a); }
+const _g3 = [0, 0, 0];
+function _gHash3(a, b, c){
+  let h = (Math.imul(a|0, 73856093) ^ Math.imul(b|0, 19349663) ^ Math.imul(c|0, 83492791)) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 2246822519);
+  h = Math.imul(h ^ (h >>> 13), 3266489917);
+  h ^= h >>> 16; h >>>= 0;
+  _g3[0] = (h & 1023) / 1024;
+  _g3[1] = ((h >>> 10) & 1023) / 1024;
+  _g3[2] = ((h >>> 20) & 1023) / 1024;
+  return _g3;
+}
 function _gHash(a, b, c){
   let h = (Math.imul(a|0, 73856093) ^ Math.imul(b|0, 19349663) ^ Math.imul(c|0, 83492791)) >>> 0;
   h = Math.imul(h ^ (h >>> 15), 2246822519);
@@ -1121,68 +1669,146 @@ function _gHash(a, b, c){
   h ^= h >>> 16;
   return (h >>> 0) / 4294967296;
 }
-const _gM4 = new THREE.Matrix4(), _gPos = new THREE.Vector3();
-const _gQ = new THREE.Quaternion(), _gScale = new THREE.Vector3(), _gCol = new THREE.Color();
+// The instance arrays, written directly — see the inner loop of rebuildGrass.
+const _gArr  = grassMesh.instanceMatrix.array;
+const _gCArr = grassMesh.instanceColor.array;
 const _gUp = new THREE.Vector3(0,1,0);
 let _grassTx = -9999, _grassTy = -9999, _grassDirty = true;
+// The view the current field was built against — see updateGrass().
+let _grassFx = 0, _grassFz = 0, _grassFar = -1;
+
+// Rolling cost of the last rebuild, in ms. The field is re-laid whenever the
+// player crosses the hysteresis below, which at a sprint is often -- so this is
+// the number that decides whether the radius above is affordable. Read it with
+// _dev.grass().
+let _grassMs = 0;
+const _gStat = {};   // last rebuild's internals, surfaced through _dev.grass()
 
 function rebuildGrass(){
+  const t0 = (typeof performance!=='undefined') ? performance.now() : 0;
   const { radius, perTile } = _grassCfg();
   if(!radius){ grassMesh.count = 0; return; }
   const ptx = Math.floor(player.x/TILE), pty = Math.floor(player.y/TILE);
-  let i = 0;
   const cap = GRASS_MAX;
+
+  // ── Pass 1: how much field is there? ──
+  // Costs one cheap loop over tiles (no per-blade work) and buys a cap that
+  // degrades by DENSITY rather than by position. The old `i < cap` break cut
+  // the loop mid-scan, and because the scan runs north to south that sliced the
+  // sward along a line of latitude — a straight edge across the world with no
+  // relation to where the player was standing. Now an unusually open vista
+  // thins evenly everywhere, which is invisible; the old failure was not.
+  let want = 0; _gStat.tiles = 0; _gStat.cls0=0; _gStat.cls1=0; _gStat.cls2=0; _gStat.warpRejected=0;
+  for(let ty = pty-radius; ty <= pty+radius; ty++){
+    const row = map[ty]; if(!row) continue;
+    for(let tx = ptx-radius; tx <= ptx+radius; tx++){
+      const c0=_grassClassAt(tx, ty);
+      if(c0===0) _gStat.cls0++; else if(c0===1) _gStat.cls1++; else _gStat.cls2++;
+      if(c0 === 0) continue;
+      if(!grassTileInView(tx, ty)) continue;
+      const dt = Math.hypot(tx-ptx, ty-pty);
+      if(dt > radius) continue;
+      want += grassBand(dt); _gStat.tiles++;
+    }
+  }
+  // Two different limits, and conflating them is what let a top-down camera cost
+  // 36ms. `cap` is the POOL — how many instances the buffers physically hold.
+  // GRASS_BUDGET is what we are willing to SPEND re-laying the field, and it is
+  // much smaller. Opening the cone to a full disc overhead quadruples the
+  // visible area, and scaling density against the pool let the blade count
+  // quadruple with it; scaling against a cost budget thins the field instead,
+  // which is invisible from that height and keeps the rebuild bounded whatever
+  // the camera is doing.
+  const budget = Math.min(cap, GRASS_BUDGET);
+  const densityScale = want*perTile > budget ? budget/(want*perTile) : 1;
+  _gStat.want = want; _gStat.scale = densityScale;
+  _gStat.cosHalf = _view.cosHalf; _gStat.far = _view.far;
+  _gStat.cam = [Math.round(_view.cx), Math.round(_view.cz)];
+  _gStat.plr = [Math.round(_view.px), Math.round(_view.pz)];
+
+  // ── Pass 2: place ──
+  let i = 0;
   for(let ty = pty-radius; ty <= pty+radius && i < cap; ty++){
     const row = map[ty]; if(!row) continue;
     for(let tx = ptx-radius; tx <= ptx+radius && i < cap; tx++){
-      if(row[tx] !== T.GRASS) continue;
-      if(!tileInView(tx, ty)) continue;          // cone-culled like the obstacles
+      const gCls = _grassClassAt(tx, ty);
+      if(gCls === 0) continue;
+      if(!grassTileInView(tx, ty)) continue;     // cone-culled, minus the shadow bubble
       const d = Math.hypot(tx-ptx, ty-pty);
       if(d > radius) continue;
       const dr = d/radius;
-      // ── Distance layering ──
-      // Blade cost is dominated by the near field, where blades are large on
-      // screen and overlap heavily. Far blades cover many more tiles for the
-      // same instance count because you only need enough to tint the ground.
-      // Banding density by distance is what lets the sward reach the horizon
-      // instead of ending in a ring a few tiles out.
-      // Bands must stay DENSE far out. A first pass used 1.0/0.55/0.28/0.14 and
-      // it rendered as a rug: past ~60% of the radius the combination of sparse
-      // blades and shortened height left nothing visible, so the field ended in
-      // a hard rim in the middle of clear view. Perspective already thins the
-      // far field for free — every band covers far more ground per blade than
-      // the one inside it — so the numbers have to fall much more slowly than
-      // intuition suggests.
-      const band = dr < 0.30 ? 1.00      // foreground: blades read individually
-                 : dr < 0.55 ? 0.78      // midground: continuous sward
-                 : dr < 0.78 ? 0.52      // distance: still reads as grass
-                 :             0.34;     // horizon: a tint, carrying to the fog
+      // Density comes from the absolute distance in tiles — see GRASS_BANDS.
+      // Keying it to dr instead is what tied the width of the foreground band
+      // to the radius, so that reaching further also made the near field more
+      // expensive for nothing.
+      const band = grassBand(d);
       // Height falloff stays out of the way until the very edge, then drops
       // fast so the last blades sink into the ground instead of ending on a
       // line. Squared for a softer knee.
       const rimT = Math.max(0, (dr - 0.86)) / 0.14;
       const rimH = 1 - rimT * rimT;
-      const n = Math.max(0, Math.round(perTile * band));
+      const n = Math.max(0, Math.round(perTile * band * densityScale));
+      // The height field is per TILE and bilinear, so the four corners of this
+      // tile determine every blade inside it. Sampling them once here replaces
+      // one heightAt() call per blade with one lerp — see the header note on
+      // why the tiny interpolation error does not matter.
+      const hx0 = tx*TILE, hz0 = ty*TILE, hx1 = hx0+TILE, hz1 = hz0+TILE;
+      const h00 = heightAt(hx0,hz0), h10 = heightAt(hx1,hz0);
+      const h01 = heightAt(hx0,hz1), h11 = heightAt(hx1,hz1);
+      // Tint is per PATCH (tx>>2), not per blade, so it is hoisted out of the
+      // inner loop — it was being recomputed identically up to 190 times a tile.
+      // ── Patch variation ──
+      // Two octaves of tile-scale noise. The broad one lays out the drifts; the
+      // fine one stops their edges being blobby. Smoothstepped so a drift has a
+      // core and a fade rather than a hard rim.
+      const dBroad = _gHash(tx>>3, ty>>3, 31);
+      const dFine  = _gHash(tx>>1, ty>>1, 37);
+      let dry = dBroad*0.72 + dFine*0.28;
+      dry = dry*dry*(3 - 2*dry);                  // smoothstep: flatten the middle
+      // A little per-patch tone on top of the dry/green axis, so two dry drifts
+      // are not the same dry.
+      const tp = _gHash(tx>>2, ty>>2, 7);
+      // Green end and straw end. The straw is NOT just brighter — its blue
+      // collapses, which is what makes it read as dead rather than as sunlit.
+      const gR = 0.74 + tp*0.22, gG = 0.90 + tp*0.16, gB = 0.66 + tp*0.18;
+      const sR = 1.42 + tp*0.18, sG = 1.16 + tp*0.14, sB = 0.42 + tp*0.10;
+      const cr = gR + (sR-gR)*dry, cg = gG + (sG-gG)*dry, cb = gB + (sB-gB)*dry;
+      // Dry drifts stand taller. Colour alone reads as paint; it is the height
+      // that makes a drift look like a different plant.
+      const patchH = 0.82 + dry*0.85;
       for(let k = 0; k < n && i < cap; k++){
-        const rx = _gHash(tx, ty, k*3+0), rz = _gHash(tx, ty, k*3+1), rr = _gHash(tx, ty, k*3+2);
+        const r3 = _gHash3(tx, ty, k);
+        const rx = r3[0], rz = r3[1], rr = r3[2];
         const gx = (tx+rx)*TILE, gz = (ty+rz)*TILE;
+        // Boundary tiles only: interior grass cannot be moved off grass by a
+        // warp that cannot reach past its own neighbourhood.
+        if(_grassWarpEdge && gCls === 1 && !_bladeOnGrass(gx, gz)){ _gStat.warpRejected++; continue; }
+        // Height variety is what stops a field reading as mown turf. The cubic
+        // bias keeps most blades short with a few tall ones standing proud.
+        const hv = (0.62 + rr*rr*rr*1.05) * patchH * Math.max(0.05, rimH);
+        const s  = TILE*0.26*hv;
+        // A blade only ever spins about Y and scales uniformly, so the whole
+        // TRS matrix is these four numbers. Matrix4.compose() solves the general
+        // case — build a quaternion, expand it to a 3x3 — and then setMatrixAt
+        // copies all sixteen elements again. At six figures of blades that
+        // arithmetic is most of the rebuild.
+        const ri = (rr*_GROT)|0, ca = _gCos[ri]*s, sa = _gSin[ri]*s;
+        const o = i*16;
+        _gArr[o   ] =  ca; _gArr[o+1 ] = 0; _gArr[o+2 ] = -sa; _gArr[o+3 ] = 0;
+        _gArr[o+4 ] =   0; _gArr[o+5 ] = s; _gArr[o+6 ] =   0; _gArr[o+7 ] = 0;
+        _gArr[o+8 ] =  sa; _gArr[o+9 ] = 0; _gArr[o+10] =  ca; _gArr[o+11] = 0;
         // Sunk very slightly so the blade's base is buried rather than resting
         // exactly on the surface — at a grazing camera angle a blade sitting
         // flush shows a hairline of ground between it and its own root.
-        _gPos.set(gx, heightAt(gx, gz) - 1.0, gz);
-        _gQ.setFromAxisAngle(_gUp, rr*Math.PI*2);
-        // Height variety is what stops a field reading as mown turf. The cubic
-        // bias keeps most blades short with a few tall ones standing proud.
-        const hv = (0.62 + rr*rr*rr*1.05) * Math.max(0.05, rimH);
-        _gScale.set(1, 1, 1).multiplyScalar(TILE*0.26*hv);
-        _gM4.compose(_gPos, _gQ, _gScale);
-        grassMesh.setMatrixAt(i, _gM4);
+        let by;
+        if(_grassFastH){ const hA = h00 + (h10-h00)*rx, hB = h01 + (h11-h01)*rx; by = hA + (hB-hA)*rz; }
+        else by = heightAt(gx, gz);
+        _gArr[o+12] =  gx; _gArr[o+13] = by - 1.0; _gArr[o+14] = gz; _gArr[o+15] = 1;
         // Tint follows the same low-frequency idea as the terrain macro noise,
         // so patches of grass agree with the ground they stand in instead of
         // floating over it as a separate green.
-        const t = _gHash(tx>>2, ty>>2, 7);
-        _gCol.setRGB(0.78 + t*0.34, 0.86 + t*0.22, 0.70 + t*0.20);
-        grassMesh.setColorAt(i, _gCol);
+        const c = i*3;
+        _gCArr[c] = cr; _gCArr[c+1] = cg; _gCArr[c+2] = cb;
         i++;
       }
     }
@@ -1191,10 +1817,33 @@ function rebuildGrass(){
   grassMesh.instanceMatrix.needsUpdate = true;
   if(grassMesh.instanceColor) grassMesh.instanceColor.needsUpdate = true;
   _grassTx = ptx; _grassTy = pty; _grassDirty = false;
+  _grassFx = _view.fx; _grassFz = _view.fz; _grassFar = _view.far;
+  if(t0) _grassMs = performance.now() - t0;
 }
+// Re-lay only after the player has crossed GRASS_HYST tiles, not every single
+// one. At a sprint (2800 units/s, a 48-unit tile) one tile per rebuild is ~58
+// rebuilds a second, and the field is now several times larger than it was. The
+// field is deterministic per tile, so a window that is a few tiles stale is not
+// visible — the blades that would be added are at the far rim, 52 tiles out,
+// where the density is 13% and the height taper has already sunk them. This
+// number is the direct lever on how often the rebuild cost is paid at all.
+const GRASS_HYST = 4;
+// Grass watches the view cone ITSELF rather than trusting the shared obstacle
+// re-window flags. It has to: the first rebuild can land on a frame where
+// _view is still its initial all-zero state (far = 0), which passes nothing but
+// the near bubble — and with the hysteresis above, a player who spawns and does
+// not immediately walk two tiles would stand in a bald world until they did.
+// The old code hid that by re-laying the whole field on every single tile
+// crossed, which is exactly the cost this pass set out to remove. Comparing the
+// heading and reach the field was actually built against fixes the class of
+// bug rather than that one instance of it.
 function updateGrass(){
   const ptx = Math.floor(player.x/TILE), pty = Math.floor(player.y/TILE);
-  if(_grassDirty || ptx !== _grassTx || pty !== _grassTy) rebuildGrass();
+  const turned = (_grassFx*_view.fx + _grassFz*_view.fz) < 0.985;   // ~10 degrees
+  const reach  = Math.abs(_view.far - _grassFar) > _grassFar*0.05 + 1;
+  if(_grassDirty || turned || reach
+     || Math.abs(ptx - _grassTx) >= GRASS_HYST
+     || Math.abs(pty - _grassTy) >= GRASS_HYST) rebuildGrass();
 }
 
 // ── Windows ───────────────────────────────────────────────────────
@@ -1323,7 +1972,19 @@ const wallMesh  = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardM
 const _canopyGeo = makeConiferCanopy(THREE, { height:TOPH, radius:TILE*0.72, tiers:4, seed:20260801 });
 const _trunkGeo  = makeTrunk(THREE, { height:TRUNKH, top:9, bottom:12, seed:4242 });
 const trunkMesh = makeMesh(_trunkGeo,  new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0}), nTree+4000);
-const topMesh   = makeMesh(_canopyGeo, new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0}), nTree+4000);
+const _canopyMat = new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0});
+const topMesh   = makeMesh(_canopyGeo, _canopyMat, nTree+4000);
+// A broadleaf crown for the species that are not conifers. SHARES the material
+// with the cone above on purpose: the canopy wind patch and the leaf texture
+// live there, so sharing is what stops the two halves of the forest drifting
+// apart in everything except the shape they are supposed to differ in.
+const _canopyBroadGeo = makeBroadleafCanopy(THREE, { height:TOPH, radius:TILE*0.80, lobes:5, seed:20260902 });
+const topBroadMesh = makeMesh(_canopyBroadGeo, _canopyMat, nTree+4000);
+// three defines USE_INSTANCING_COLOR from the presence of this buffer alone and
+// multiplies it into the diffuse — no material flag needed. Same mechanism the
+// grass field uses for its per-patch tint.
+topMesh.instanceColor      = new THREE.InstancedBufferAttribute(new Float32Array((nTree+4000)*3), 3);
+topBroadMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array((nTree+4000)*3), 3);
 // ── Canopy wind ───────────────────────────────────────────────────
 // A forest of perfectly still cones reads as scenery, not as a place. This is
 // the cheapest possible fix: a vertex-shader sway, no CPU cost per tree and no
@@ -1360,6 +2021,124 @@ topMesh.material.onBeforeCompile = (shader) => {
         transformed.z += sway * w * 0.6;
       }`);
 };
+
+// ── Near-LOD forest (procedural branch geometry) ──────────────────
+// The cone canopy above is the FAR LOD and still draws most of the forest.
+// This is the near half: real branches and foliage cards, one mesh pair per
+// species, spent on the closest `QS.nearTrees` trees only. On the low tier
+// that budget is 0, none of this is built, and the forest is exactly what it
+// was before — which is the point of doing it as a budget rather than a radius.
+const NEAR_TREES_CAP = 128;          // per-species instance capacity
+const nearForest = QS.nearTrees > 0
+  ? buildNearForest(THREE, {
+      makeMesh,
+      targetHeight: TREE_H,          // near and far MUST match, or trees pop
+      capacity: NEAR_TREES_CAP,
+      windUniform: _windU,
+      anisotropy: QS.anisotropy || 4,
+    })
+  : null;
+
+// Is there open water within a couple of tiles? Cheap enough to call per tree
+// during a window rebuild, and it is what puts birch on the riverbanks.
+function _waterNear(tx, ty){
+  for(let dy=-2; dy<=2; dy++){
+    const row = map[ty+dy];
+    if(!row) continue;
+    for(let dx=-2; dx<=2; dx++){
+      if(row[tx+dx] === T.WATER) return true;
+    }
+  }
+  return false;
+}
+const biomeAt = makeBiomeSampler({
+  heightAt,
+  isWaterNear: _waterNear,
+  noise: _terrNoise,
+  TILE,
+  amplitude: terrain.amplitude,
+});
+// Which species stands on this tile. Hashed from the TILE so it survives window
+// rebuilds unchanged — a forest that reshuffled its species as you walked would
+// be far worse than one with no species at all.
+// Biome → the species indices available in it, built ONCE. The first version
+// of this called .filter() per tree per window rebuild, which is exactly the
+// per-frame allocation churn the rest of this file goes out of its way to
+// avoid.
+const _speciesByBiome = (() => {
+  if(!nearForest) return null;
+  const m = Object.create(null);
+  nearForest.species.forEach((s, i) => {
+    (m[s.def.biome] || (m[s.def.biome] = [])).push(i);
+  });
+  // Every index, as the fallback for a biome no species claims.
+  m.__all = nearForest.species.map((_, i) => i);
+  return m;
+})();
+function speciesIndexFor(tx, ty, biome){
+  if(!_speciesByBiome) return -1;
+  const list = _speciesByBiome[biome] || _speciesByBiome.__all;
+  return list[Math.floor(_gHash(tx, ty, 21) * list.length) % list.length];
+}
+
+// ── Far-canopy tint ───────────────────────────────────────────────
+// The far LOD is ONE geometry in ONE green for the whole world, so a hillside
+// of it reads as a repeated stamp however much the per-tile jitter varies size
+// and position. Tinting each instance toward the leaf colour of the species it
+// would be if it were near costs one instanceColor buffer and no draw calls.
+//
+// Built from SPECIES directly rather than from nearForest, which is null on the
+// low tier — the tier that most needs distant forest to carry itself, since it
+// never draws branch geometry at all. Same grouping and the same hash 21 as
+// speciesIndexFor above, so near and far agree on which tree is which and a
+// tree crossing the budget while you walk toward it does not change colour.
+const _farTint = (() => {
+  let mr=0, mg=0, mb=0;
+  for(const s of SPECIES){
+    mr += (s.leafColor>>16)&255; mg += (s.leafColor>>8)&255; mb += s.leafColor&255;
+  }
+  mr/=SPECIES.length; mg/=SPECIES.length; mb/=SPECIES.length;
+  // Normalised against the mean, so the tints redistribute hue without moving
+  // the forest's overall brightness — the leaf TEXTURE already carries that.
+  return SPECIES.map(s => [ ((s.leafColor>>16)&255)/mr, ((s.leafColor>>8)&255)/mg, (s.leafColor&255)/mb ]);
+})();
+const _farByBiome = (() => {
+  const m = Object.create(null);
+  SPECIES.forEach((s, i) => { (m[s.biome] || (m[s.biome] = [])).push(i); });
+  m.__all = SPECIES.map((_, i) => i);
+  return m;
+})();
+// Which SPECIES a far tree is. Hash 21 and the same biome grouping the near
+// LOD uses, so a tree that is an oak up close is an oak at distance — that
+// agreement is the entire point of both this and the tint below.
+function farSpeciesIdx(tx, ty){
+  const list = _farByBiome[biomeAt(tx, ty)] || _farByBiome.__all;
+  return list[Math.floor(_gHash(tx, ty, 21) * list.length) % list.length];
+}
+// Needle species get the cone, everything else the broadleaf crown.
+function farIsBroadleaf(tx, ty){
+  const sp = SPECIES[farSpeciesIdx(tx, ty)];
+  return !!sp && sp.leafKind !== 'needle';
+}
+function farTintFor(tx, ty, out){
+  const t = _farTint[farSpeciesIdx(tx, ty)];
+  // Per-tree jitter on top, so two of the same species side by side are still
+  // not identical — which matters, because biomeAt returns ONE biome over a
+  // wide area and a lowland stand is therefore entirely oak. Species tint is
+  // what separates a highland ridge from a riverbank; this is what stops the
+  // trees inside one stand reading as a repeated stamp.
+  //
+  // Value alone was not enough. The terrain macro noise a few hundred lines up
+  // found the same thing and says so: "Pure value variation still reads as
+  // noise laid over flat paint; pushing the lit patches warm and the dips cool
+  // reads as dry grass against damp ground." Opposing red and blue does the
+  // same job here for the price of one more hash.
+  const v = 0.86 + _gHash(tx, ty, 22) * 0.28;
+  const w = (_gHash(tx, ty, 23) - 0.5) * 0.16;
+  out[0] = t[0]*v*(1+w); out[1] = t[1]*v; out[2] = t[2]*v*(1-w);
+  return out;
+}
+const _farTintTmp = [1,1,1];
 
 const treeInstTile = [];   // instance index → packed ty*MAP_W+tx, so a canopy raycast maps back to a tile
 const wallInstTile = [];   // same idea for walls, so clicking a wall FACE finds its tile
@@ -1452,6 +2231,10 @@ const placedFlameMesh = makeMesh(new THREE.SphereGeometry(4, 7, 6), new THREE.Me
 // not a hack.
 // Only ever apply to ADDITIVE emitters — doing it to a lit surface would just
 // blow the surface out.
+// Shared clock for the flame shader. One uniform object handed to every fire
+// material, so they all advance together and there is a single place to stop
+// them from.
+const _fireU = { value: 0 };
 const FLAME_GAIN = 2.6, PORTAL_GAIN = 1.9;
 function hdrGlow(m, gain){
   if(m && m.color && !m.userData._hdrBoosted){
@@ -1461,6 +2244,11 @@ function hdrGlow(m, gain){
   return m;
 }
 hdrGlow(placedFlameMesh.material, FLAME_GAIN);
+// This blob is deliberately STEADY. It briefly pulsed and lifted in the vertex
+// shader, which made every torch and campfire throb — the fire looked like it
+// was breathing rather than burning. A flame's apparent brightness barely moves;
+// what moves is the light it throws on everything around it, and that is what
+// flameFlicker() drives on the PointLight instead.
 
 // ── Boss ability telegraphs ───────────────────────────────────────
 // The danger zone a boss is winding up into, painted flat on the ground. It
@@ -1615,23 +2403,69 @@ let _obsAngle=1e12, _obsZoom=-1;   // camera heading/zoom at last re-window
 // — and things directly behind you still cast shadows into the frame.
 const VIEW_MARGIN = 0.42;        // radians of slack either side of the frustum
 const VIEW_NEAR_TILES = 11;      // always-resident bubble around the player
-const _view = { cx:0, cz:0, px:0, pz:0, fx:0, fz:1, cosHalf:-1, far:0, nearR:0 };
+const _view = { cx:0, cz:0, px:0, pz:0, fx:0, fz:1, cosHalf:-1, grassCosHalf:-1, far:0, nearR:0 };
 function updateViewCone(){
-  _view.cx = camera.position.x; _view.cz = camera.position.z;
+  // The cone's apex is the camera — but the camera is repositioned LATER in the
+  // frame, after the obstacle and grass windows have already been rebuilt from
+  // it. In every ordinary frame the player moves a few units and one frame of
+  // lag is invisible. When the player jumps — a teleport, a portal, a respawn,
+  // the first frame out of character select — camera.position still holds a
+  // point that can be a hundred tiles away, and then EVERY tile fails the
+  // `d2 > far*far` test below. The window collapses to the near bubble: bald
+  // ground with the player standing in a small patch of grass.
+  //
+  // Clamping the apex to a physically possible boom length fixes it exactly and
+  // is a no-op the rest of the time, because the camera never legitimately sits
+  // further from the player than its own orbit radius. The heading is still one
+  // frame stale on that frame; updateGrass()'s turn check re-lays the field on
+  // the next one, by which point the camera has caught up.
+  const _boom = CAM_R * camZoom + TILE * 2;
+  let _ax = camera.position.x - player.x, _az = camera.position.z - player.y;
+  const _al = Math.hypot(_ax, _az);
+  if(_al > _boom){ const k = _boom / _al; _ax *= k; _az *= k; }
+  _view.cx = player.x + _ax;    _view.cz = player.y + _az;
   _view.px = player.x;          _view.pz = player.y;
-  let fx = player.x - camera.position.x, fz = player.y - camera.position.z;
-  const l = Math.hypot(fx, fz);
-  if(l > 1e-3){ _view.fx = fx/l; _view.fz = fz/l; }   // else keep last heading
+  if(camMode().fp){
+    // In first person the camera IS the player, so player - camera is the zero
+    // vector and the code below would silently keep whatever heading it last
+    // had — culling the world to the direction you were facing when you entered
+    // first person. Take the heading from camAngle instead; -(sin, cos) is the
+    // same forward the camera looks along and the same one W moves you in.
+    _view.fx = -Math.sin(camAngle); _view.fz = -Math.cos(camAngle);
+  } else {
+    let fx = player.x - camera.position.x, fz = player.y - camera.position.z;
+    const l = Math.hypot(fx, fz);
+    if(l > 1e-3){ _view.fx = fx/l; _view.fz = fz/l; }   // else keep last heading
+  }
   // Horizontal half-FOV. camera.fov is VERTICAL, so it has to go through the
   // aspect ratio — using it directly gives a wedge far too narrow on a wide
   // window and clips scenery at the screen edges.
   const vHalf = camera.fov * 0.5 * Math.PI / 180;
   const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
-  _view.cosHalf = Math.cos(Math.min(Math.PI * 0.98, hHalf + VIEW_MARGIN));
+  // A CONE IS THE WRONG SHAPE WHEN THE CAMERA IS OVERHEAD. The wedge is built
+  // from the horizontal direction camera->player, and as the camera tilts toward
+  // straight down that direction shrinks to nothing and its angle becomes
+  // meaningless — so top-down culled the world to a narrow strip pointing in
+  // some arbitrary compass direction while the player could plainly see a disc
+  // all around themselves. That is the missing grass in a top-down screenshot.
+  //
+  // `overhead` is the honest measure of it: how the camera's horizontal offset
+  // compares with its height above the player. Level with the player it is 0 and
+  // nothing changes; directly above it is 1 and the half-angle opens to a full
+  // circle, which is exactly what that camera can see.
+  const _camH = Math.max(1, camera.position.y - heightAt(player.x, player.y));
+  const _overhead = 1 - Math.min(1, _al / _camH);
+  const _open = (m) => {
+    const half = hHalf + m;
+    return Math.cos(Math.min(Math.PI * 0.999, half + _overhead * (Math.PI - half)));
+  };
+  _view.cosHalf      = _open(VIEW_MARGIN);
+  _view.grassCosHalf = _open(GRASS_MARGIN);
   // Reach scales with zoom: pulling the camera back shows more ground, and the
   // wedge has the budget to cover it because it isn't paying for the half
   // behind you.
-  const farTiles = Math.min(96, (QS.obsWindow || 32) * (1.35 + camZoom * 0.75));
+  const _reachZoom = camMode().fp ? 1.0 : camZoom;   // fp keeps a stale camZoom
+  const farTiles = Math.min(96, (QS.obsWindow || 32) * (1.35 + _reachZoom * 0.75));
   _view.far   = farTiles * TILE;
   _view.nearR = VIEW_NEAR_TILES * TILE;
 }
@@ -1648,8 +2482,12 @@ function tileInView(tx, ty){
 }
 // Tile AABB enclosing the wedge plus the near bubble. Only the loop bounds —
 // tileInView still rejects the corners this leaves in.
-function _obsBounds(){
+// farOverride lets one caller reach further than the shared window. Only cave
+// walls use it, and only because they are the one thing with no far-LOD behind
+// the window -- see the note on rebuildCave.
+function _obsBounds(farOverride){
   const pad = TILE * 2;
+  const far = farOverride || _view.far;
   const ang = Math.acos(Math.max(-1, Math.min(1, _view.cosHalf)));
   let minX = Math.min(_view.cx, _view.px - _view.nearR);
   let maxX = Math.max(_view.cx, _view.px + _view.nearR);
@@ -1659,8 +2497,8 @@ function _obsBounds(){
   // can bulge past the chord, which `pad` absorbs.
   for(const a of [-ang, 0, ang]){
     const ca = Math.cos(a), sa = Math.sin(a);
-    const ex = _view.cx + (_view.fx*ca - _view.fz*sa) * _view.far;
-    const ez = _view.cz + (_view.fx*sa + _view.fz*ca) * _view.far;
+    const ex = _view.cx + (_view.fx*ca - _view.fz*sa) * far;
+    const ez = _view.cz + (_view.fx*sa + _view.fz*ca) * far;
     if(ex < minX) minX = ex; if(ex > maxX) maxX = ex;
     if(ez < minZ) minZ = ez; if(ez > maxZ) maxZ = ez;
   }
@@ -1733,60 +2571,167 @@ function rebuildWalls() {
   markInst(wallMesh,i);
   wallMesh.computeBoundingSphere();   // raycast early-outs on this; stale = missed clicks
 }
+// ── Tree placement ────────────────────────────────────────────────
+// Two levels of detail, split by a BUDGET rather than a radius. The closest
+// QS.nearTrees trees draw full procedural branch geometry; everything else
+// draws the merged cone canopy, exactly as the whole forest used to. Cost is
+// therefore bounded by a number in the tier table instead of by how much forest
+// happens to be on screen, and on the low tier the budget is 0 so none of the
+// near path is built or run.
+//
+// Both paths share the same per-tile hashes, so a tree keeps its jitter, girth,
+// height and spin when it crosses between them — only its geometry changes.
+
+// Selection scratch, allocated once. rebuildTrees runs on every window slide
+// and this file deliberately avoids per-rebuild allocation.
+const _nearCandT = new Int32Array(2048);
+const _nearCandD = new Float32Array(2048);
+const _nearOrder = [];
+
+function _treePlace(tx, ty, atBase){
+  // Shared transform for both LODs. `atBase` is true for the generated trees,
+  // whose origin is the foot of the trunk; the cone canopy needs its trunk and
+  // canopy placed separately by the caller.
+  const hp=(resourceHp[ty]&&resourceHp[ty][tx])||TREE_HP;
+  const leanFrac=1 - hp/TREE_HP;
+  const jx=(_gHash(tx,ty,11)-0.5)*TILE*0.34;
+  const jz=(_gHash(tx,ty,12)-0.5)*TILE*0.34;
+  const cx=tx*TILE+TILE/2+jx, cz=ty*TILE+TILE/2+jz;
+  const gy=heightAt(cx,cz);
+  const sw=0.80+_gHash(tx,ty,13)*0.46;
+  const sh=0.76+_gHash(tx,ty,14)*0.58;
+  _sc1.set(sw,sh,sw);
+  _yQ.setFromAxisAngle(_gUp, _gHash(tx,ty,15)*Math.PI*2);
+  return { cx, cz, gy, sw, sh, leanFrac };
+}
+
+// Per-canopy fill counters, reset by rebuildTrees. The trunk index and the
+// canopy index are no longer the same number: a trunk always goes to trunkMesh,
+// but its canopy goes to whichever of the two meshes its species calls for.
+let _farNeedleN = 0, _farBroadN = 0;
+function _placeFarTree(tx, ty, i){
+  const P=_treePlace(tx,ty,false);
+  const th=TRUNKH*P.sh, oh=TOPH*P.sh;
+  const broad = farIsBroadleaf(tx,ty);
+  const top = broad ? topBroadMesh : topMesh;
+  const ti  = broad ? _farBroadN++ : _farNeedleN++;
+  if(ti >= top.instanceMatrix.count){ if(broad) _farBroadN--; else _farNeedleN--; return; }
+  if(P.leanFrac>0.001){
+    treeLeanAxis(tx,ty,_leanAxis);
+    _leanQ.setFromAxisAngle(_leanAxis, P.leanFrac*TREE_MAX_LEAN);
+    _leanQ.multiply(_yQ);                  // spin first, then topple
+    _leanOff.set(0,th/2,0).applyQuaternion(_leanQ);
+    _pos.set(P.cx+_leanOff.x,P.gy+_leanOff.y,P.cz+_leanOff.z);
+    _m4.compose(_pos,_leanQ,_sc1); trunkMesh.setMatrixAt(i,_m4);
+    _leanOff.set(0,th+oh/2,0).applyQuaternion(_leanQ);
+    _pos.set(P.cx+_leanOff.x,P.gy+_leanOff.y,P.cz+_leanOff.z);
+    _m4.compose(_pos,_leanQ,_sc1); top.setMatrixAt(ti,_m4);
+  } else {
+    // Sunk a little: the flared trunk base must bury itself in the slope or
+    // an uphill tree shows daylight under its upper side.
+    _pos.set(P.cx,P.gy+th/2-3,P.cz);
+    _m4.compose(_pos,_yQ,_sc1); trunkMesh.setMatrixAt(i,_m4);
+    _pos.set(P.cx,P.gy+th+oh/2-3,P.cz);
+    _m4.compose(_pos,_yQ,_sc1); top.setMatrixAt(ti,_m4);
+  }
+  const c=farTintFor(tx,ty,_farTintTmp), ci=ti*3;
+  top.instanceColor.array[ci]=c[0];
+  top.instanceColor.array[ci+1]=c[1];
+  top.instanceColor.array[ci+2]=c[2];
+  const packed=ty*MAP_W+tx;
+  top.userData.instTile[ti]=packed;   // chopping maps a canopy hit back to a tile
+  treeInstTile[i]=packed;             // packed int: no per-rebuild object churn
+}
+
+function _placeNearTree(tx, ty){
+  const sp=nearForest.species[speciesIndexFor(tx,ty,biomeAt(tx,ty))];
+  const n=sp._n|0;
+  if(n>=NEAR_TREES_CAP) return false;
+  const P=_treePlace(tx,ty,true);
+  // The generated tree's origin IS its base, so a lean about the origin is
+  // already a lean about the stump — no offset to keep in sync.
+  if(P.leanFrac>0.001){
+    treeLeanAxis(tx,ty,_leanAxis);
+    _leanQ.setFromAxisAngle(_leanAxis, P.leanFrac*TREE_MAX_LEAN);
+    _leanQ.multiply(_yQ);
+    _pos.set(P.cx,P.gy-3,P.cz);
+    _m4.compose(_pos,_leanQ,_sc1);
+  } else {
+    _pos.set(P.cx,P.gy-3,P.cz);
+    _m4.compose(_pos,_yQ,_sc1);
+  }
+  sp.bark.setMatrixAt(n,_m4); sp.leaf.setMatrixAt(n,_m4);
+  const packed=ty*MAP_W+tx;
+  sp.bark.userData.instTile[n]=packed;
+  sp.leaf.userData.instTile[n]=packed;
+  sp._n=n+1;
+  return true;
+}
+
 function rebuildTrees() {
-  let i=0; const cap=trunkMesh.instanceMatrix.count, b=_obsBounds();
-  for(let ty=b.ty0;ty<=b.ty1&&i<cap;ty++) for(let tx=b.tx0;tx<=b.tx1&&i<cap;tx++) {
+  const b=_obsBounds();
+  const farCap=trunkMesh.instanceMatrix.count;
+  // Budget and radius both scale with where the camera actually is, not with
+  // which preset is selected — middle-drag moves you off a preset without
+  // changing the mode. Overhead views get almost nothing, because from directly
+  // above a canopy the branch structure underneath it is not visible at all.
+  const _fp=camMode().fp;
+  const nearBudget=nearForest
+    ? Math.min(NEAR_TREES_CAP, Math.round((QS.nearTrees|0) * nearBudgetFactor(_fp, camPitch, camZoom)))
+    : 0;
+  // Only trees inside this radius are even considered for branch geometry, so
+  // the candidate list stays short enough to sort cheaply.
+  const NEAR_R=TILE*nearRadiusTiles(_fp, camPitch), NEAR_R2=NEAR_R*NEAR_R;
+
+  let far=0, nCand=0;
+  _farNeedleN = 0; _farBroadN = 0;
+  if(nearForest) for(const sp of nearForest.species) sp._n=0;
+
+  // Pass 1 — anything beyond the near radius goes straight to the far meshes.
+  for(let ty=b.ty0;ty<=b.ty1;ty++) for(let tx=b.tx0;tx<=b.tx1;tx++) {
     if(map[ty][tx]!==T.TREE) continue;
     if(!tileInView(tx,ty)) continue;
-    const hp=(resourceHp[ty]&&resourceHp[ty][tx])||TREE_HP;
-    // Full size always; each chop leans it further toward its fall direction
-    // (about the base), foreshadowing the topple. hp=TREE_HP → upright.
-    const leanFrac=1 - hp/TREE_HP;
-    // Per-tree variation. Trees sit one per tile, so without this a forest is a
-    // rectangular lattice of identical clones — the single most artificial thing
-    // left in the landscape once the ground stopped being flat.
-    // All four values are hashed from the TILE, not random: rebuildTrees runs
-    // every time the window slides, and anything non-deterministic would make
-    // the whole forest twitch as you walk.
-    // Jitter stays inside ~a third of a tile so the trunk still sits in the tile
-    // that blocks movement — collision is tile-based and is NOT jittered here.
-    const jx=(_gHash(tx,ty,11)-0.5)*TILE*0.34;
-    const jz=(_gHash(tx,ty,12)-0.5)*TILE*0.34;
-    const cx=tx*TILE+TILE/2+jx, cz=ty*TILE+TILE/2+jz;
-    const gy=heightAt(cx,cz);        // ground under this tree
-    const sw=0.80+_gHash(tx,ty,13)*0.46;     // girth
-    const sh=0.76+_gHash(tx,ty,14)*0.58;     // height, varied independently
-    const th=TRUNKH*sh, oh=TOPH*sh;
-    _sc1.set(sw,sh,sw);
-    // Spin about Y: the canopy cone is 9-sided and the bark wraps twice, so a
-    // rotation genuinely changes the silhouette rather than just the texture.
-    _yQ.setFromAxisAngle(_gUp, _gHash(tx,ty,15)*Math.PI*2);
-    if(leanFrac>0.001){
-      treeLeanAxis(tx,ty,_leanAxis);
-      _leanQ.setFromAxisAngle(_leanAxis, leanFrac*TREE_MAX_LEAN);
-      _leanQ.multiply(_yQ);                  // spin first, then topple
-      _leanOff.set(0,th/2,0).applyQuaternion(_leanQ);
-      _pos.set(cx+_leanOff.x,gy+_leanOff.y,cz+_leanOff.z);
-      _m4.compose(_pos,_leanQ,_sc1); trunkMesh.setMatrixAt(i,_m4);
-      _leanOff.set(0,th+oh/2,0).applyQuaternion(_leanQ);
-      _pos.set(cx+_leanOff.x,gy+_leanOff.y,cz+_leanOff.z);
-      _m4.compose(_pos,_leanQ,_sc1); topMesh.setMatrixAt(i,_m4);
-    } else {
-      // Sunk a little: the flared trunk base must bury itself in the slope or
-      // an uphill tree shows daylight under its upper side.
-      _pos.set(cx,gy+th/2-3,cz);
-      _m4.compose(_pos,_yQ,_sc1); trunkMesh.setMatrixAt(i,_m4);
-      _pos.set(cx,gy+th+oh/2-3,cz);
-      _m4.compose(_pos,_yQ,_sc1); topMesh.setMatrixAt(i,_m4);
+    if(nearBudget>0 && nCand<_nearCandT.length){
+      const ccx=tx*TILE+TILE/2, ccz=ty*TILE+TILE/2;
+      const dx=ccx-player.x, dz=ccz-player.y;
+      const d2=dx*dx+dz*dz;
+      if(d2<NEAR_R2){ _nearCandT[nCand]=ty*MAP_W+tx; _nearCandD[nCand]=d2; nCand++; continue; }
     }
-    treeInstTile[i]=ty*MAP_W+tx;   // packed int: no per-rebuild object churn
-    i++;
+    if(far<farCap){ _placeFarTree(tx,ty,far); far++; }
   }
-  treeInstTile.length=i;
-  markInst(trunkMesh,i); markInst(topMesh,i);
+
+  // Pass 2 — spend the branch budget on the closest candidates, and demote the
+  // rest to the cone canopy.
+  if(nCand){
+    _nearOrder.length=nCand;
+    for(let k=0;k<nCand;k++) _nearOrder[k]=k;
+    _nearOrder.sort((a,c)=>_nearCandD[a]-_nearCandD[c]);
+    for(let k=0;k<nCand;k++){
+      const packed=_nearCandT[_nearOrder[k]];
+      const tx=packed%MAP_W, ty=(packed/MAP_W)|0;
+      let placed=false;
+      if(k<nearBudget) placed=_placeNearTree(tx,ty);
+      if(!placed && far<farCap){ _placeFarTree(tx,ty,far); far++; }
+    }
+  }
+
+  treeInstTile.length=far;
+  markInst(trunkMesh,far);
+  markInst(topMesh,_farNeedleN); markInst(topBroadMesh,_farBroadN);
+  topMesh.instanceColor.needsUpdate=true;
+  topBroadMesh.instanceColor.needsUpdate=true;
+  topMesh.userData.instTile.length=_farNeedleN;
+  topBroadMesh.userData.instTile.length=_farBroadN;
   // canopy-chop raycast early-outs on the bounding sphere — refresh it so it
   // matches the new windowed instances (else chopping misses after moving).
-  trunkMesh.computeBoundingSphere(); topMesh.computeBoundingSphere();
+  trunkMesh.computeBoundingSphere();
+  topMesh.computeBoundingSphere(); topBroadMesh.computeBoundingSphere();
+  if(nearForest) for(const sp of nearForest.species){
+    markInst(sp.bark,sp._n); markInst(sp.leaf,sp._n);
+    sp.bark.userData.instTile.length=sp._n;
+    sp.leaf.userData.instTile.length=sp._n;
+    sp.bark.computeBoundingSphere(); sp.leaf.computeBoundingSphere();
+  }
 }
 function rebuildStones() {
   let i=0; const cap=stoneMesh.instanceMatrix.count, b=_obsBounds();
@@ -1897,11 +2842,36 @@ function rebuildWorldChests(){
   }
   markInst(lootChestMesh,n); markInst(lootChestLidMesh,n);
 }
+// Every CAVE_WALL tile on the map, packed, built once. Cave walls are static --
+// only the editor ever paints one -- so rescanning the window for them each
+// rebuild was work that could be done a single time instead.
+//
+// This is what makes the fog-reach window below affordable. Scanning a
+// fog-sized rectangle would be ~131k tile reads per re-window against ~11k for
+// the old short one; walking a known list is O(number of walls) and does not
+// care how far the window reaches at all.
+let _caveTiles = null;
+function _buildCaveList(){
+  const out=[];
+  for(let ty=0;ty<MAP_H;ty++){ const row=map[ty];
+    for(let tx=0;tx<MAP_W;tx++) if(row[tx]===T.CAVE_WALL) out.push(ty*MAP_W+tx); }
+  _caveTiles = Int32Array.from(out);
+}
 function rebuildCave() {
-  let i=0; const cap=caveMesh.instanceMatrix.count, b=_obsBounds();
+  if(!_caveTiles) _buildCaveList();
+  let i=0; const cap=caveMesh.instanceMatrix.count;
+  // REACH THE FOG, not the shared obstacle window. A cave wall has no far-LOD
+  // standing behind the window the way distant terrain and blocky far trees do
+  // outdoors, so if it is culled while still unfogged it just disappears and
+  // leaves open sky. Measured before this: walls ended at 4793 units with fog
+  // only starting at 4578 -- a 5% fade, i.e. none. Reading fog.far live rather
+  // than copying the number is the point: the two cannot drift apart again.
+  const _fogFar = scene.fog ? scene.fog.far : 0;
+  const b=_obsBounds(Math.max(_view.far, _fogFar));
   const q=new THREE.Quaternion(), eul=new THREE.Euler();
-  for(let ty=b.ty0;ty<=b.ty1&&i<cap;ty++) for(let tx=b.tx0;tx<=b.tx1&&i<cap;tx++) {
-    if(map[ty][tx]!==T.CAVE_WALL) continue;
+  for(let k=0;k<_caveTiles.length && i<cap;k++){
+    const packed=_caveTiles[k], ty=(packed/MAP_W)|0, tx=packed-ty*MAP_W;
+    if(tx<b.tx0||tx>b.tx1||ty<b.ty0||ty>b.ty1) continue;
     const n1=_terrNoise(tx*11, ty*19), n2=_terrNoise(tx*23, ty*7);
     const varH = CAVEH + (n1 - 0.5) * 8;
     eul.set((n1-0.5)*0.05, n2*Math.PI*2, (n2-0.5)*0.05);
@@ -1909,7 +2879,7 @@ function rebuildCave() {
     _pos.set(tx*TILE+TILE/2 + (n1-0.5)*3, heightAt(tx*TILE+TILE/2, ty*TILE+TILE/2) + varH/2, ty*TILE+TILE/2 + (n2-0.5)*3);
     _sc1.set(TILE*(0.96+n1*0.08), varH, TILE*(0.96+n2*0.08));
     _m4.compose(_pos, q, _sc1); caveMesh.setMatrixAt(i, _m4);
-    caveInstTile[i]=ty*MAP_W+tx;
+    caveInstTile[i]=packed;
     i++;
   }
   caveInstTile.length=i;
@@ -1929,7 +2899,8 @@ function updateObstacles() {
   const camMoved = Math.abs(player.x-_obsCx)>TILE*4 || Math.abs(player.y-_obsCy)>TILE*4;
   const camTurned = Math.abs(((camAngle-_obsAngle+Math.PI*3)%(Math.PI*2))-Math.PI) > 0.20;
   const camZoomed = Math.abs(camZoom-_obsZoom) > 0.18;
-  if(camMoved || camTurned || camZoomed){
+  if(camMoved || camTurned || camZoomed || camModeDirty){
+    camModeDirty=false;
     _obsCx=player.x; _obsCy=player.y; _obsAngle=camAngle; _obsZoom=camZoom;
     wallDirty=treeDirty=stoneDirty=ironDirty=caveDirty=customDirty=waterDirty=bridgeDirty=placedObjectsDirty=true;
     _grassDirty=true;
@@ -1953,6 +2924,25 @@ function updateObstacles() {
 // decay 0: three r155+ uses physical (1/d^decay) falloff where legacy
 // intensities vanish within a few units — decay 0 gives a full-strength
 // pool that fades smoothly to zero at the light's `distance` cutoff.
+// How a flame's brightness actually behaves, as a function of TIME rather than
+// of frames. Three sines whose frequencies share no common factor never line up
+// into an audible-looking beat, and summing them costs a few multiplies.
+//
+// `ph` is derived from the light's own position, so a given torch flickers the
+// same way from frame to frame and two torches side by side are out of step —
+// which is what stops a lit corridor pulsing as one object.
+function flameFlicker(t, ph){
+  const base = 0.80
+             + 0.11 * Math.sin(t *  7.3 + ph)
+             + 0.07 * Math.sin(t * 11.9 + ph * 1.7)
+             + 0.05 * Math.sin(t * 19.1 + ph * 0.6);
+  // The gutter: a slow term that mostly sits at zero and occasionally dips the
+  // flame hard, as though a draught caught it. This is the part that reads as
+  // fire rather than as a dimmer being wobbled.
+  const g = Math.sin(t * 1.7 + ph * 2.3) * Math.sin(t * 0.9 + ph);
+  const gutter = g > 0.62 ? (g - 0.62) / 0.38 : 0;
+  return base * (1 - 0.34 * gutter);
+}
 const placementLights = [];
 const MAX_PLACEMENT_LIGHTS = 16;
 for (let i = 0; i < MAX_PLACEMENT_LIGHTS; i++) {
@@ -2070,6 +3060,10 @@ function updateEnvironmentCycle(dt) {
   sun.target.position.set(player.x, heightAt(player.x,player.y), player.y);
   sun.target.updateMatrixWorld();
   moon.position.set(player.x - Math.cos(angle) * 2000, -Math.sin(angle) * 2000 + 1000, player.y - Math.sin(angle) * 1000);
+  // Aim it at the player, exactly as the sun does above. Without this the target
+  // stays at the world origin and the moon lights from the wrong direction.
+  moon.target.position.set(player.x, heightAt(player.x, player.y), player.y);
+  moon.target.updateMatrixWorld();
 
   // Drive the sky from the same angle the sun light uses, so the sun disc is
   // never somewhere the shadows disagree with.
@@ -2107,7 +3101,11 @@ function updateEnvironmentCycle(dt) {
     playerLight.color.setHex(0xffeedd);
     playerLight.distance = TILE * 14;
   } else if (hasTorch) {
-    const flicker = 0.85 + Math.random() * 0.3;
+    // Was `0.85 + Math.random() * 0.3`, re-rolled every frame. The placed-light
+    // pool was moved off that; this one was missed, so the torch in your own
+    // hand — the light you spend the whole night looking at — was the only one
+    // still flickering at the frame rate, which is to say not visibly at all.
+    const flicker = flameFlicker(_fireU.value, 11.7);
     playerLight.intensity = 0.9 * flicker;
     playerLight.color.setHex(0xffaa44);
     playerLight.distance = TILE * 9;
@@ -2176,8 +3174,11 @@ function updateEnvironmentCycle(dt) {
       pl.color.setHex(colorHex);
       pl.distance = dist;
 
-      if (isTorch || isHearth) {
-        const flicker = 0.85 + Math.random() * 0.3;
+      if (isTorch || isHearth || type === 'campfire') {
+        // Was `0.85 + Math.random() * 0.3`, re-rolled every frame — see
+        // flameFlicker's note. Phase comes from the source position so it is
+        // stable per torch and different between neighbours.
+        const flicker = flameFlicker(_fireU.value, (src.x * 0.013 + src.y * 0.021));
         if (inCave || inHouse || isHearth || type === 'arch') {
           pl.intensity = baseInt * flicker;
         } else {
@@ -2259,6 +3260,54 @@ const WIDEN = 1.10;         // slight, just softens the bank; width comes from R
 const WFIELD_KEEP = 0.52;   // floor for real water tiles — just above the contour
 const WEDGE = 0.16;         // contour softness → antialiased bank
 let _wField = null;
+// Distance from each water tile to the nearest dry tile, in tiles. Chamfer
+// transform: two sweeps, forward then backward, propagating a running minimum
+// through the eight neighbours. Exact Euclidean distance would need a much more
+// elaborate algorithm for a result that differs by a few percent on the
+// diagonals -- and this feeds a smoothstep, so a few percent is nothing.
+//
+// Dry tiles seed at 0 and water starts at infinity. Map-edge water never gets
+// seeded from outside the map, so it stays large and reads as deep, which is
+// the right answer for a river running off the edge of the world.
+let _wShore = null;
+const SHORE_TILES = 3.0;   // distance over which "at the bank" becomes "deep"
+function buildShoreDist(bin){
+  const N = MAP_W*MAP_H, D = new Float32Array(N), BIG = 1e9;
+  for(let i=0;i<N;i++) D[i] = bin[i] ? BIG : 0;
+  const A = 1.0, B = 1.4142136;   // orthogonal and diagonal step costs
+  for(let y=0;y<MAP_H;y++){ const r=y*MAP_W, rm=r-MAP_W;
+    for(let x=0;x<MAP_W;x++){ const i=r+x; let v=D[i]; if(v===0) continue;
+      if(x>0) v=Math.min(v, D[i-1]+A);
+      if(y>0){ v=Math.min(v, D[rm+x]+A);
+        if(x>0)       v=Math.min(v, D[rm+x-1]+B);
+        if(x<MAP_W-1) v=Math.min(v, D[rm+x+1]+B); }
+      D[i]=v; } }
+  for(let y=MAP_H-1;y>=0;y--){ const r=y*MAP_W, rp=r+MAP_W;
+    for(let x=MAP_W-1;x>=0;x--){ const i=r+x; let v=D[i]; if(v===0) continue;
+      if(x<MAP_W-1) v=Math.min(v, D[i+1]+A);
+      if(y<MAP_H-1){ v=Math.min(v, D[rp+x]+A);
+        if(x>0)       v=Math.min(v, D[rp+x-1]+B);
+        if(x<MAP_W-1) v=Math.min(v, D[rp+x+1]+B); }
+      D[i]=v; } }
+  _wShore = D;
+}
+// Bilinear, tile centres at +0.5 -- the same convention as _sampleWField, so
+// depth and coverage are read off the same grid alignment.
+function _sampleShore(fx, fy){
+  const x=fx-0.5, y=fy-0.5;
+  let x0=Math.floor(x), y0=Math.floor(y);
+  const ax=x-x0, ay=y-y0;
+  let x1=x0+1, y1=y0+1;
+  if(x0<0)x0=0; else if(x0>MAP_W-1)x0=MAP_W-1;
+  if(x1<0)x1=0; else if(x1>MAP_W-1)x1=MAP_W-1;
+  if(y0<0)y0=0; else if(y0>MAP_H-1)y0=MAP_H-1;
+  if(y1<0)y1=0; else if(y1>MAP_H-1)y1=MAP_H-1;
+  const f=_wShore, r0=y0*MAP_W, r1=y1*MAP_W;
+  const v0=f[r0+x0]+(f[r0+x1]-f[r0+x0])*ax;
+  const v1=f[r1+x0]+(f[r1+x1]-f[r1+x0])*ax;
+  const d=v0+(v1-v0)*ay;
+  return d >= SHORE_TILES ? 1 : d/SHORE_TILES;
+}
 function buildWaterField(){
   const N=MAP_W*MAP_H;
   const bin=new Float32Array(N), tmp=new Float32Array(N), out=new Float32Array(N);
@@ -2277,6 +3326,9 @@ function buildWaterField(){
     out[i] = bin[i] ? Math.max(s/n * WIDEN, WFIELD_KEEP) : s/n * WIDEN;
   }
   _wField=out;
+  // Same binary field, so depth and coverage can never disagree about which
+  // tiles are water.
+  buildShoreDist(bin);
 }
 function _sampleWField(fx, fy){          // bilinear; tile centres sit at +0.5
   const x=fx-0.5, y=fy-0.5;
@@ -2316,17 +3368,28 @@ function paintWaterMask(tx0, ty0, tx1, ty1){
     const interior = _maskInterior(tx,ty);
     for(let py=0;py<WMASK_PX;py++) for(let px=0;px<WMASK_PX;px++){
       const gx = tx*WMASK_PX+px, gy = ty*WMASK_PX+py;      // global — keeps noise stable
-      let a;
-      if(interior) a = w0?255:0;
-      else{
+      let a, sh;
+      if(interior){
+        a = w0?255:0;
+        // Provably saturated -- see the note on SHORE_TILES. Skipping the warp
+        // here is what keeps the interior fast path fast, and it cannot open a
+        // seam because both branches land on the same 1.0.
+        sh = w0?255:0;
+      } else{
         const fx=(gx+0.5)/WMASK_PX, fy=(gy+0.5)/WMASK_PX;
         const o=_warpOffset(fx,fy,gx,gy);
         const cov=_sampleWField(fx+o[0], fy+o[1]);
         let v=(cov-0.5)/WEDGE+0.5;                        // soften the contour
         a = v<=0 ? 0 : v>=1 ? 255 : v*255;
+        // Depth is sampled through the SAME warp offset as coverage, so the
+        // shore ramp stays registered with the ragged bank it belongs to.
+        sh = _sampleShore(fx+o[0], fy+o[1])*255;
       }
       const i=((gy-ty0*WMASK_PX)*w + (gx-tx0*WMASK_PX))*4;
-      d[i]=d[i+1]=d[i+2]=a; d[i+3]=255;   // alphaMap samples the GREEN channel
+      // RED   = distance from the bank: 0 at the contour, 1 three tiles in.
+      // GREEN = coverage, the silhouette. Unchanged, and it must stay that way:
+      //         the painted bank and the wading test both read this channel.
+      d[i]=sh; d[i+1]=d[i+2]=a; d[i+3]=255;
     }
   }
   wMaskCtx.putImageData(img, tx0*WMASK_PX, ty0*WMASK_PX);
@@ -2501,7 +3564,10 @@ function bakeStaticTile(tx, ty, oldT) {
   if(t===T.TREE||ot===T.TREE)   treeDirty=true;
   if(t===T.STONE||ot===T.STONE) stoneDirty=true;
   if(t===T.ORE_IRON||ot===T.ORE_IRON) ironDirty=true;
-  if(t===T.CAVE_WALL||ot===T.CAVE_WALL) caveDirty=true;
+  // The packed cave list is a cache of the map, so an edit has to drop it or
+  // the editor can paint a wall that never appears (or erase one that never
+  // leaves) until the next reload.
+  if(t===T.CAVE_WALL||ot===T.CAVE_WALL){ caveDirty=true; _caveTiles=null; }
   // customMesh draws ids >=100 AND stained glass (12) — both have to mark it dirty,
   // or painting glass leaves it invisible until the window happens to re-centre.
   if(t>=100||ot>=100||t===T.STAINED_GLASS||ot===T.STAINED_GLASS) customDirty=true;
@@ -2535,10 +3601,50 @@ const EVIS = {
 const EVIS_DEF = [0x555555, 14,30,10, 6, 0];
 
 // Shared unit geometries — every rig scales these per-frame (cheap, GPU-friendly)
-const UNIT_BOX  = new THREE.BoxGeometry(1,1,1);
-const UNIT_SPH  = new THREE.SphereGeometry(1,8,6);
+const UNIT_BOX  = new THREE.BoxGeometry(1,1,1);      // still the weapon prop
+// The body parts were a box, a sphere and three more boxes. They are now shaped
+// like a person — same unit spaces to the millimetre, so every scale() and
+// position() in configureRig/applyProp/animateRig means exactly what it did.
+// See render/humanoid.js for why the spaces are load-bearing.
+const UNIT_TORSO = makeTorsoGeometry(THREE);          // -0.5..0.5 on every axis
+const UNIT_SPH   = makeHeadGeometry(THREE);           // -1..1, was SphereGeometry(1,8,6)
 // Limbs pivot at their TOP (shoulder/hip) so rotation.x swings them naturally
-const UNIT_LIMB = new THREE.BoxGeometry(1,1,1); UNIT_LIMB.translate(0,-0.5,0);
+const UNIT_LIMB  = makeLimbGeometry(THREE);           // -1..0 in Y
+
+// ── Role dressing ────────────────────────────────────────────────
+// What a role wears. Colours are picked to survive the tinting configureRig
+// does to the body underneath — a guard's steel has to read as steel whatever
+// colour their tabard is.
+const RIG_STYLES = {
+  guard:    { helm:0x8e949c, pauldron:0x9aa1aa, belt:0x4a3524, buckle:0xd8c060, cloak:0x243352 },
+  merchant: { cap:0x6b3f2a, belt:0x4a3524, satchel:0x6b4a2a, robe:0x8a4030, robeShort:true, hair:0x3a2a1a },
+  banker:   { cap:0x4a4038, belt:0x3a2a1c, robe:0xd0a020, robeShort:true, hair:0x2a2018 },
+  smith:    { apron:0x5c4028, belt:0x4a3524, hair:0x2a1c12 },
+  healer:   { hat:0x2f5c3a, hatBand:0xc8a25a, robe:0x40a060, belt:0x4a3524, beard:0xe8e4dc },
+  mage:     { hat:0x2a2f5c, hatBand:0xc8a25a, robe:0x4040a0, belt:0x4a3524, beard:0xe0dcd4 },
+  scholar:  { hood:0x4a3a6a, robe:0x6a4a9a, belt:0x3a2a1c, beard:0xd8d0c4 },
+  cipher:   { hood:0x24485e, robe:0x2a5a7a, belt:0x3a2a1c },
+  // eyes:false — the one face that should stay in shadow.
+  robber:   { hood:0x24242a, cloak:0x1e1e22, belt:0x3a2a1c, eyes:false },
+  farrier:  { apron:0x5c4028, belt:0x4a3524, cap:0x6b5a3a },
+  curator:  { cap:0x7a5a20, robe:0xb08030, robeShort:true, belt:0x4a3524, beard:0xd0c8b8 },
+  bandit:   { hood:0x3a2f28, belt:0x3a2a1c },
+};
+// Dressing geometry is shared: every guard is wearing the same helmet mesh, and
+// building it once per guard would be twenty identical buffers. Keyed by style
+// AND body size, because the body pieces are built in rig-local units.
+const _dressCache = new Map();
+let _devRigs = [];   // rigs parked by _dev.rig(), so the next call can clear them
+function dressGeo(styleName, which, dims){
+  const key = styleName+'|'+which+'|'+(which==='head' ? '' : dims.bw+','+dims.bh+','+dims.bd);
+  if(_dressCache.has(key)) return _dressCache.get(key);
+  const S = RIG_STYLES[styleName];
+  const g = !S ? null
+          : which==='head' ? buildHeadDressing(THREE, S)
+                           : buildBodyDressing(THREE, S, dims);
+  _dressCache.set(key, g);
+  return g;
+}
 const _cWhite  = new THREE.Color(0xffffff);
 
 // A rig: [0]body [1]head [2]armL [3]armR [4]legL [5]legR [6]prop(weapon)
@@ -2548,31 +3654,90 @@ function makeRig() {
   // characters standing next to them. On Lambert they ignored the env map
   // entirely and read noticeably flatter than a modelled NPC in the same frame.
   // Roughness is high across the board — cloth and skin, no gloss.
-  const bodyMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.85, metalness:0.0, transparent:true});
-  const headMat = new THREE.MeshStandardMaterial({color:0xcaa472, roughness:0.80, metalness:0.0, transparent:true});
-  const limbMat = new THREE.MeshStandardMaterial({color:0x888888, roughness:0.85, metalness:0.0, transparent:true});
-  const propMat = new THREE.MeshStandardMaterial({color:0xc8c8a0, roughness:0.70, metalness:0.0, transparent:true});
-  const body = new THREE.Mesh(UNIT_BOX, bodyMat); body.castShadow = true;
+  const bodyMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.85, metalness:0.0, transparent:false});
+  const headMat = new THREE.MeshStandardMaterial({color:0xcaa472, roughness:0.80, metalness:0.0, transparent:false});
+  // vertexColors so the boot/glove ramp baked into UNIT_LIMB multiplies through
+  // — material.color still drives the overall tint.
+  const limbMat = new THREE.MeshStandardMaterial({color:0x888888, roughness:0.85, metalness:0.0, transparent:false, vertexColors:true});
+  // Legs get their OWN material. Arms and legs sharing one colour is most of
+  // why an undressed rig reads as a single flat slab: there is no line anywhere
+  // between the shoulder and the floor for the eye to catch on. Four limb
+  // meshes either way, so this is a second material and not a second draw call.
+  const legMat  = new THREE.MeshStandardMaterial({color:0x666666, roughness:0.88, metalness:0.0, transparent:false, vertexColors:true});
+  const propMat = new THREE.MeshStandardMaterial({color:0xc8c8a0, roughness:0.70, metalness:0.0, transparent:false});
+  // vertexColors, so one mesh and one material can carry a steel helmet, a
+  // leather belt and a brass buckle at once.
+  const dressMat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.82, metalness:0.0, transparent:false});
+  const body = new THREE.Mesh(UNIT_TORSO, bodyMat); body.castShadow = true;
   const head = new THREE.Mesh(UNIT_SPH, headMat); head.castShadow = true;
   const armL = new THREE.Mesh(UNIT_LIMB, limbMat); armL.castShadow = true;
   const armR = new THREE.Mesh(UNIT_LIMB, limbMat); armR.castShadow = true;
-  const legL = new THREE.Mesh(UNIT_LIMB, limbMat);
-  const legR = new THREE.Mesh(UNIT_LIMB, limbMat);
+  const legL = new THREE.Mesh(UNIT_LIMB, legMat);
+  const legR = new THREE.Mesh(UNIT_LIMB, legMat);
   const prop = new THREE.Mesh(UNIT_BOX, propMat); prop.visible = false;
-  g.add(body, head, armL, armR, legL, legR, prop);
-  g.userData.mats = [bodyMat, headMat, limbMat, propMat];
+  // Index 7. animateRig destructures the first SEVEN children and ignores the
+  // rest, so the body dressing can live here without touching the contract.
+  const dress = new THREE.Mesh(UNIT_BOX, dressMat); dress.visible = false; dress.castShadow = true;
+  // The head's dressing is a child of the HEAD, not of the group — that is what
+  // makes a hat bob and turn with the head it is on instead of hovering beside
+  // it. It inherits the head's scale too, so it is authored in head-local units.
+  const hdress = new THREE.Mesh(UNIT_BOX, dressMat); hdress.visible = false; hdress.castShadow = true;
+  head.add(hdress);
+  g.add(body, head, armL, armR, legL, legR, prop, dress);
+  g.userData.mats = [bodyMat, headMat, limbMat, propMat, dressMat, legMat];
   return g;
 }
+// Put a role's outfit on a rig. Call AFTER configureRig — it needs the body
+// dimensions that call worked out.
+function dressRig(g, styleName){
+  const dress = g.children[7], head = g.children[1], hdress = head.children[0];
+  const ud = g.userData;
+  if(!styleName || ud.shape !== 0){ dress.visible = hdress.visible = false; return; }
+  const dims = { bw:ud.dw, bh:ud.dh, bd:ud.dd, legH:ud.dlegH, torso:ud.dtorso };
+  // A floor-length robe covers the legs completely, so drawing them inside it
+  // is two draw calls spent on geometry nobody can see — and any z-fighting or
+  // sorting mistake shows up as legs walking through the cloth. Short robes and
+  // tunics keep theirs.
+  const S = RIG_STYLES[styleName];
+  const hideLegs = !!(S && S.robe && !S.robeShort);
+  g.children[4].visible = g.children[5].visible = !hideLegs;
+  const bg = dressGeo(styleName, 'body', dims);
+  const hg = dressGeo(styleName, 'head', dims);
+  if(bg){ dress.geometry = bg; dress.visible = true; } else dress.visible = false;
+  if(hg){ hdress.geometry = hg; hdress.visible = true; } else hdress.visible = false;
+  ud.style = styleName;
+}
+
+// Fade a rig, for the hiding skill and for remote-player ghosting. Flipping
+// `transparent` with the opacity is the point: see the note in makeRig.
+function setRigOpacity(mats, op){
+  const t = op < 0.999;
+  for(const m of mats){
+    m.opacity = op;
+    if(m.transparent !== t){ m.transparent = t; m.needsUpdate = true; }
+  }
+}
+
+// Where the legs stop and the torso starts, as a fraction of body height. Was
+// 0.42 written out twice — here and in applyProp, which derives the hand height
+// from it. A human is closer to half legs; 0.46 lengthens the stance without
+// making the torso look stunted, and having ONE constant means the held weapon
+// cannot drift away from the hand that holds it.
+const RIG_LEG_FRAC = 0.46;
 
 // Position/scale a rig's parts for a given size + shape
 function configureRig(g, color, bw, bh, bd, hr, shape, headSkin) {
   const [body,head,armL,armR,legL,legR] = g.children;
-  const [bodyMat,headMat,limbMat] = g.userData.mats;
+  const [bodyMat,headMat,limbMat,,,legMat] = g.userData.mats;
   const ud = g.userData;
   bw*=OBJ_SCALE; bh*=OBJ_SCALE; bd*=OBJ_SCALE; hr*=OBJ_SCALE;   // global object scale
   ud.shape = shape; ud.bh = bh;
   bodyMat.color.setHex(color);
   limbMat.color.setHex(color).multiplyScalar(0.62);
+  // Darker again than the arms, so trousers separate from sleeves and the two
+  // legs separate from each other. 0.62 vs 0.40 is a visible step at any
+  // distance where the figure is more than a few pixels tall.
+  if(legMat) legMat.color.setHex(color).multiplyScalar(0.40);
   if (shape === 2) {                       // blob — body only
     body.scale.set(bw,bh,bd); body.position.set(0,bh*0.5,0);
     head.visible=armL.visible=armR.visible=legL.visible=legR.visible=false;
@@ -2596,35 +3761,112 @@ function configureRig(g, color, bw, bh, bd, hr, shape, headSkin) {
     return;
   }
   // humanoid (shape 0)
-  const legH=bh*0.42, torso=bh-legH;
+  const legH=bh*RIG_LEG_FRAC, torso=bh-legH;
+  // Kept for dressRig, which is built in these same units and cannot recompute
+  // them without repeating this arithmetic and eventually disagreeing with it.
+  ud.dw=bw; ud.dh=bh; ud.dd=bd; ud.dlegH=legH; ud.dtorso=torso;
   body.scale.set(bw,torso,bd); body.position.set(0, legH+torso*0.5, 0);
   ud.baseBodyY = legH+torso*0.5;
   const r=Math.max(3,hr);
   head.visible=true; head.scale.setScalar(r);
-  ud.baseHeadY = legH+torso+r*0.55;
+  // 0.55 put the head's chin BELOW the top of the torso — the head sat inside
+  // the shoulders with no neck at all, which is why a beard was mostly buried
+  // in the chest and why the jaw never read. 0.88 lifts the chin clear; the
+  // torso's own neck stub fills the gap.
+  ud.baseHeadY = legH+torso+r*0.88;
   head.position.set(0, ud.baseHeadY, 0);
   if (headSkin) headMat.color.setHex(0xcaa472);
   else          headMat.color.setHex(color).lerp(_cWhite,0.22);
-  const at=Math.max(2,bw*0.26), az=Math.max(2,bd*0.7), ah=torso*0.92;
+  // az was bd*0.7 — DEEPER than the arm is wide, which turned each arm into a
+  // flat panel seen edge-on from the side and wing-like from behind. An arm is
+  // round: width and depth close together, and both well under the old values
+  // now that the geometry has a taper of its own to show.
+  const at=Math.max(2,bw*0.21), az=Math.max(2,bd*0.34), ah=torso*0.92;
   // Arms hang from the shoulders, legs from the hips (top-pivot geometry)
   armL.scale.set(at,ah,az); armL.position.set(-(bw*0.5+at*0.5), legH+torso*0.96, 0);
   armR.scale.set(at,ah,az); armR.position.set( (bw*0.5+at*0.5), legH+torso*0.96, 0);
-  const lt=Math.max(2,bw*0.34), lz=Math.max(2,bd*0.7);
+  const lt=Math.max(2,bw*0.27), lz=Math.max(2,bd*0.42);
   legL.scale.set(lt,legH,lz); legL.position.set(-bw*0.22, legH, 0);
   legR.scale.set(lt,legH,lz); legR.position.set( bw*0.22, legH, 0);
   armL.visible=armR.visible=legL.visible=legR.visible=true;
+  // Pool slots are reused across types, so anything dressRig hid for a previous
+  // occupant is restored here — dressRig runs after this and hides them again
+  // if the new outfit calls for it.
+  g.children[7].visible = false;
+  if(head.children[0]) head.children[0].visible = false;
+  ud.style = null;
 }
 
 // ── Procedural rig animation ──────────────────────────────────────
 // Distance-driven walk cycles (stride matches ground speed), idle
 // breathing, blob squash-and-stretch, attack swings, and smooth turning
 // toward the movement direction. Runs after configureRig/applyProp.
+// ── How anything in this game turns ─────────────────────────────────────────
+// Two properties, and the old code had neither.
+//
+// FRAME-RATE INDEPENDENT. The step is 1 - exp(-k*dt), so it converges on the
+// same curve in the same wall-clock time at 30Hz and at 144Hz. Every site this
+// replaces took a flat fraction of the error per FRAME, which made turn speed a
+// function of the machine.
+//
+// RATE-CAPPED. An exponential still steps proportionally to the error, so a
+// target that jumps 60 degrees still snaps. The cap is what removes the smear:
+// measured on a spider before this, peak yaw was 1806 deg/s -- five rotations a
+// second -- and a wide silhouette spun that hard does not read as turning, it
+// reads as a blur.
+const TURN_RATES = {
+  mob:    { k: 9,  max: 4.5 },   // ~258 deg/s — an animal turning
+  player: { k: 16, max: 12  },   // ~690 deg/s — snappy under the cursor, bounded
+  npc:    { k: 5,  max: 3   },   // ~170 deg/s — noticing you, not snapping to it
+  remote: { k: 10, max: 6   },   // ~345 deg/s — tracking a server-synced heading
+};
+// Hysteresis on "is this thing moving". One threshold cannot work: the per-frame
+// step of a wandering mob straddles any single value — measured median 0.35 and
+// p90 0.69 against the old 0.6 gate — so the heading flipped between "the way I
+// am walking" and "face the player" 3.2 times a second.
+const MOVE_ON = 18, MOVE_OFF = 8;
+// Long deltas are CLAMPED, and that is not the same as clamping the frame time.
+// A mob that has been outside animation range has a stale clock, so its first
+// delta back can be a tenth of a second; integrating the ceiling over that
+// permits a 26-degree step in a single frame, which pops. Measured on a bandit
+// coming back into range: 465 deg/s against a 258 deg/s ceiling.
+//
+// Capping the integration step at 1/30s bounds any single frame to max/30 — about
+// 8.6 degrees for a mob — and the turn simply finishes over the next few frames.
+// Below 30fps this makes things turn slightly slower than the nominal rate, which
+// is the right way round: a slideshow should not also be a place where models
+// snap through 26 degrees between frames.
+const TURN_DT_MAX = 1 / 30;
+function turnToward(obj, tgt, adt, cls){
+  if(!(adt > 0)) return;
+  const dt = adt > TURN_DT_MAX ? TURN_DT_MAX : adt;
+  const r = TURN_RATES[cls] || TURN_RATES.mob;
+  let d = tgt - obj.rotation.y;
+  d = ((d + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+  const step = d * (1 - Math.exp(-r.k * dt));
+  const lim = r.max * dt;
+  obj.rotation.y += step < -lim ? -lim : step > lim ? lim : step;
+}
 function animateRig(g, wx, wz, t, opts={}) {
   const ud=g.userData;
   const dx=wx-(ud.lx??wx), dz=wz-(ud.lz??wz);
   ud.lx=wx; ud.lz=wz;
   const dist=Math.hypot(dx,dz);
   const moving = dist>0.3 && dist<TILE*3;          // ignore teleports
+  // Own frame delta: this function is handed a clock, not a delta.
+  const _adt = ud.lt==null ? 0 : Math.min(0.1, Math.max(0, t-ud.lt));
+  ud.lt = t;
+  // Smoothed velocity, for the same reason animModel needs one: a heading taken
+  // from a single frame's delta is a heading taken from pathing noise.
+  if(_adt>0 && dist<TILE*3){
+    const sp=dist/_adt;
+    ud.spd = ud.spd==null ? sp : ud.spd + (sp-ud.spd)*0.25;
+    const vx=dx/_adt, vz=dz/_adt;
+    ud.vx = ud.vx==null ? vx : ud.vx + (vx-ud.vx)*0.25;
+    ud.vz = ud.vz==null ? vz : ud.vz + (vz-ud.vz)*0.25;
+  }
+  if(ud.mv){ if((ud.spd??0) < MOVE_OFF) ud.mv=false; }
+  else     { if((ud.spd??0) > MOVE_ON)  ud.mv=true;  }
   if(ud.amp===undefined){ud.amp=0;ud.phase=Math.random()*7;}
   ud.amp+=((moving?1:0)-ud.amp)*0.18;              // ease swing in/out
   ud.phase+=dist*0.11;                             // stride tied to distance
@@ -2633,12 +3875,10 @@ function animateRig(g, wx, wz, t, opts={}) {
   // Turn smoothly toward movement; face the given target when idle
   if(opts.turn){
     let tgt=null;
-    if(moving&&dist>0.6) tgt=Math.atan2(-dx,-dz);
+    if(ud.mv && (ud.vx*ud.vx + ud.vz*ud.vz) > 1) tgt=Math.atan2(-ud.vx,-ud.vz);
     else if(opts.faceX!=null){const fx=opts.faceX-wx,fz=opts.faceZ-wz;
       if(Math.hypot(fx,fz)<TILE*7) tgt=Math.atan2(-fx,-fz);}
-    if(tgt!==null){let d=tgt-g.rotation.y;
-      d=((d+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI;
-      g.rotation.y+=d*0.22;}
+    if(tgt!==null) turnToward(g, tgt, _adt, 'mob');
   }
   if(ud.shape===2){                                // blob: squash & stretch
     const f=1+0.11*Math.sin(t*5+ud.phase)*(0.35+0.65*a);
@@ -2669,7 +3909,7 @@ function applyProp(g, kind, bw, bh, bd) {
   if (!kind) { prop.visible=false; return; }
   bw*=OBJ_SCALE; bh*=OBJ_SCALE; bd*=OBJ_SCALE;   // match the scaled rig
   prop.visible = true; prop.rotation.set(0,0,0);
-  const legH=bh*0.42, torso=bh-legH, handY=legH+torso*0.55;
+  const legH=bh*RIG_LEG_FRAC, torso=bh-legH, handY=legH+torso*0.55;
   const handX = bw*0.5 + Math.max(2,bw*0.26);
   switch (kind) {
     case 'sword':   mat.color.setHex(0xd8d8e0); prop.scale.set(3,bh*0.55,3); prop.position.set(handX,handY,-bd*0.3); prop.rotation.x=0.5; break;
@@ -2701,8 +3941,10 @@ const PROP = {
 const MOB_MODELS = {
   wolf:          {file:'wolf.glb',      h:34},
   hellhound:     {file:'wolf.glb',      h:36, tint:0xff5540},
-  spider:        {file:'spider.glb',    h:24},
-  spider_q:      {file:'spider.glb',    h:38, tint:0xcc66ee},
+  spider:        {file:'spider_rigged.glb',  h:24},
+  // The queen wears the second skin rather than a tint of the first. Both are
+  // the same creature rigged the same way, so they share every generated clip.
+  spider_q:      {file:'spider_rigged2.glb', h:38},
   giant_rat:     {file:'rat.glb',       h:24},
   goblin:        {file:'orc_enemy.glb', h:32},
   goblin_k:      {file:'orc_enemy.glb', h:46, tint:0x99ffaa},
@@ -2724,13 +3966,42 @@ dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5
 const ktx2Loader = new KTX2Loader();
 ktx2Loader.setTranscoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/basis/');
 ktx2Loader.detectSupport(renderer);
-const gltfLoader = new GLTFLoader();
+// The boot screen holds the first frame until the protagonist is in hand, and lets
+// everything else stream in behind it. Its manager is wired into the GLTFLoader below
+// so progress covers every model request without any call site having to report in.
+// On a WebGL1 context none of the skinned models are downloaded at all, so there is
+// nothing to wait for -- dismissed immediately just below.
+const bootScreen = createLoadingScreen({
+  bootFiles: ['Protag_animations_basic.glb'],
+  LoadingManager: THREE.LoadingManager,
+});
+
+const gltfLoader = new GLTFLoader(bootScreen.manager);
 gltfLoader.setDRACOLoader(dracoLoader);
 gltfLoader.setKTX2Loader(ktx2Loader);
 gltfLoader.setMeshoptDecoder(MeshoptDecoder);
 
+if (!SKINNING_OK) bootScreen.dismiss();
+
+// Models that arrive RIGGED BUT UNANIMATED, and the generator that fills in for
+// them. Deliberately a per-file table and not a blanket "no clips? generate
+// something": a humanoid whose clips failed to export should fall through to the
+// primitive fallback that already exists, not be handed a spider's gait. Listing
+// the file here is the decision to treat it as an arachnid.
+const SYNTH_CLIPS = {
+  'spider_rigged.glb':  buildArachnidClips,
+  'spider_rigged2.glb': buildArachnidClips,
+};
+// Live tuning for the generated gait, so it can be iterated in the running game
+// the way authored clips would be iterated in Blender — _dev.spiderGait({...}).
+const _gaitTune = {};
 const loadedModels = {};   // file → {template, clips, natH, yOff}
-{
+// SKIPPED ENTIRELY on a WebGL1 context: these are skinned, three r160 cannot
+// compile a skinning shader there, and every consumer below already falls back
+// to a primitive rig when the template is missing. Not downloading them is a
+// second win — the machines that land here are the ones least able to afford
+// megabytes of character models they could never draw.
+if (SKINNING_OK) {
   const gl = gltfLoader;
   const files = [...new Set(Object.values(MOB_MODELS).map(m=>m.file))];
   for (const f of files) {
@@ -2755,7 +4026,15 @@ const loadedModels = {};   // file → {template, clips, natH, yOff}
         const box = new THREE.Box3().setFromObject(gltf.scene);
         minY=box.min.y; maxY=box.max.y;
       }
-      loadedModels[f] = { template:gltf.scene, clips:gltf.animations,
+      let clips = gltf.animations;
+      // Generated AFTER the natH measurement above, which reads the bind pose.
+      // The generator poses the skeleton while solving and restores it when it
+      // is done, but measuring first means that guarantee is never load-bearing.
+      if (!clips.length && SYNTH_CLIPS[f]) {
+        try { clips = SYNTH_CLIPS[f](THREE, gltf.scene, _gaitTune) || []; }
+        catch (err) { console.warn('gait synthesis failed for', f, err); clips = []; }
+      }
+      loadedModels[f] = { template:gltf.scene, clips,
         natH:Math.max(0.01, maxY-minY), yOff:-minY };
     }, undefined, err => console.warn('model load failed', f, err));
   }
@@ -2828,11 +4107,30 @@ function swapPlacedArt(inst, file, opts){
     inst.geometry.dispose(); inst.geometry=geo;
     if(Array.isArray(inst.material)) inst.material.forEach(m=>m.dispose()); else inst.material.dispose();
     inst.material=mat;
+    // The taper needs to know how tall this particular model is, and the only
+    // place that is known is right here, after loadPropGeometry has normalised
+    // and scaled it. Passing a constant would make the flame move correctly on
+    // one model and wrongly on the next.
+    if(opts.fire){
+      geo.computeBoundingBox();
+      animateFire(mat, { uFireTime:_fireU, topY:geo.boundingBox.max.y, sway:opts.fire.sway });
+    }
   });
 }
-swapPlacedArt(campfireMesh,      'models/campfire.glb', {w:36, baseY:-3});
-swapPlacedArt(torchMesh,         'models/torch.glb',    {h:36, baseY:-14});
-swapPlacedArt(placedLanternMesh, 'models/lantern.glb',  {h:18, baseY:-4});
+// sway is in the model's own local units, so it scales with the model: a
+// campfire's flame is a foot across and a lantern's is an inch.
+// How far the flame LICKS, in each model's own local units. Only the shape
+// moves — brightness is the PointLight's job, see flameFlicker().
+//
+// Tuned conservatively on purpose. These were raised hard in one pass on the
+// reasoning that 0.9 units on a ~7-unit flame is invisible, but that was never
+// actually watched: the browser they were checked in was running at about a
+// frame a second, where no amount of motion looks like anything. These sit
+// between the original timid values and that unverified bump — a flame that
+// licks rather than one that waves. One number each if it wants more or less.
+swapPlacedArt(campfireMesh,      'models/campfire.glb', {w:36, baseY:-3,  fire:{sway:2.0}});
+swapPlacedArt(torchMesh,         'models/torch.glb',    {h:36, baseY:-14, fire:{sway:1.6}});
+swapPlacedArt(placedLanternMesh, 'models/lantern.glb',  {h:18, baseY:-4,  fire:{sway:0.45}});
 
 // Shared template cache for armor pieces / quiver (cloned per attachment)
 const propModelCache={};   // file → {tpl, waiters[]}
@@ -3024,6 +4322,16 @@ loadPropGeometry('models/torch.glb', {h:26, baseY:0}, (geo, mat)=>{
   const grp=new THREE.Group();
   const m=new THREE.Mesh(geo, mat); m.castShadow=true;
   m.rotation.z=-Math.PI/2; m.position.x=-13;   // lay along +X, grip at the middle
+  // The HELD torch was the one fire in the game that never moved. Placed fires
+  // get animateFire through swapPlacedArt, but this loads through
+  // loadPropGeometry, which has no such hook — so the torch you actually carry
+  // and look at all night was a photograph while every torch on a wall licked.
+  //
+  // The sway is in MODEL space, and the model's own +Y is up the shaft, so it
+  // stays correct through the -90 degrees of Z above and through whatever the
+  // hand bone does with it afterwards.
+  geo.computeBoundingBox();
+  animateFire(mat, { uFireTime:_fireU, topY:geo.boundingBox.max.y, sway:1.5 });
   grp.add(m);
   const flame=new THREE.Mesh(new THREE.SphereGeometry(3.2,7,6),
     new THREE.MeshBasicMaterial({color:0xffa040, transparent:true, opacity:0.85,
@@ -3045,7 +4353,10 @@ loadPropGeometry('models/lantern.glb', {h:12, baseY:0}, (geo, mat)=>{
   weaponTemplates['lantern']=grp; refreshHeldProp(true);
 });
 
-gltfLoader.load('models/Protag_animations_basic.glb', gltf=>{
+if (SKINNING_OK) gltfLoader.load('models/Protag_animations_basic.glb', gltf=>{
+  // Boot set satisfied: the player has a body. Everything still in flight keeps
+  // loading behind the game rather than in front of it.
+  bootScreen.settle('models/Protag_animations_basic.glb');
   const inner=gltf.scene;
   inner.updateMatrixWorld(true);
   let minY=1e9,maxY=-1e9; const v=new THREE.Vector3();
@@ -3142,7 +4453,20 @@ function protagProp(kind,tier){
       wModel.traverse(o=>{
         if(o.isMesh){
           o.castShadow=true; o.frustumCulled=false;
-          o.material=o.material.clone(); o.material.transparent=true;
+          const src=o.material;
+          o.material=src.clone(); o.material.transparent=true;
+          // Material.clone() copies a FIXED LIST of material parameters, and
+          // onBeforeCompile / customProgramCacheKey are not on it — three has no
+          // way to know a patch exists. So every shader patch on a weapon
+          // material was silently discarded the moment the prop was built, which
+          // is why the held torch stayed a photograph while the animateFire call
+          // on its template looked perfectly correct. Carry them across.
+          if(Object.prototype.hasOwnProperty.call(src,'onBeforeCompile')){
+            o.material.onBeforeCompile = src.onBeforeCompile;
+            if(Object.prototype.hasOwnProperty.call(src,'customProgramCacheKey'))
+              o.material.customProgramCacheKey = src.customProgramCacheKey;
+            o.material.needsUpdate = true;
+          }
         }
       });
       P.weaponSlot.add(wModel);
@@ -3432,13 +4756,74 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     return JSON.stringify({ h:+heightAt(x,z).toFixed(1), amplitude:terrain.amplitude,
       slope:terrain.slopeAt(x,z) }); },
   fx(){ return JSON.stringify({ excluded:refreshFxList(), visible:fxGroup.visible }); },
+  // Which look path is live, and why. Pointer lock failing used to be entirely
+  // invisible from inside the game; this makes "the mouse does not turn the
+  // view" answerable in one call instead of an afternoon.
+  look(){
+    return JSON.stringify({
+      fp: camMode().fp,
+      pointerLock: document.pointerLockElement === G.canvas,
+      deniedReason: _lookDenied,
+      path: camMode().fp ? (document.pointerLockElement===G.canvas ? 'pointer-lock' : 'free-look') : 'n/a',
+      freeLookActive: fpFreeLookActive(),
+      cursor: _flX===null ? null : [_flX,_flY],
+      pointerOutsideWindow: _flOutside, windowFocused: document.hasFocus(),
+      sens: prefs.lookSens, invertY: !!prefs.invertY,
+      runModeEngaged: keyboardRunning(), actuallyRunning: !!player.running,
+      dtapLatched: _dtapRun, dtap: _dtapDbg, dtapWindowMs: DTAP_MS,
+      fireClock: +_fireU.value.toFixed(3),
+      flickerNow: +flameFlicker(_fireU.value, 0).toFixed(3),
+      sprintKeyHeld: !!keys['shift'], speedMult: (touchSprinting()||keyboardRunning())?SPRINT_MULT:1,
+      camAngle:+camAngle.toFixed(3), fpPitch:+fpPitch.toFixed(3),
+    });
+  },
+  // Stand a dressed stand-in rig in front of the player, for looking at.
+  // Outfits are the kind of thing that can only be judged by eye, and hunting
+  // down a wandering guard every time you move a belt is not a workflow.
+  //   _dev.rig()            one of every style, in a row
+  //   _dev.rig('guard')     just that one
+  //   _dev.rig(null)        clear them
+  rig(style, dtx=0, dty=-3){
+    for(const g of (_devRigs||[])){ scene.remove(g); }
+    _devRigs = [];
+    if(style===null) return 'cleared';
+    const list = style ? [style] : Object.keys(RIG_STYLES);
+    list.forEach((s,i)=>{
+      const g = makeRig();
+      configureRig(g, 0x8a8a8a, 16,36,11, 6.5, 0, true);
+      dressRig(g, s);
+      const x = player.x + (dtx + (i - (list.length-1)/2) * 1.1) * TILE;
+      const z = player.y + dty*TILE;
+      g.position.set(x, heightAt(x,z), z);
+      // The default camera sits at +Z and looks toward -Z, and the rig's own
+      // front is -Z, so an unrotated rig faces AWAY. PI turns it around.
+      g.rotation.y = Math.PI;
+      scene.add(g); _devRigs.push(g);
+    });
+    return list.join(', ');
+  },
   grass(o){
     if(o){
       if(o.wind!==undefined) _grassMat.uniforms.uWindAmt.value=o.wind;
       if(o.gust!==undefined) _grassMat.uniforms.uGustFreq.value=o.gust;
+      if(o.radius!==undefined || o.perTile!==undefined){
+        _grassOverride = Object.assign({}, _grassOverride);
+        if(o.radius!==undefined)  _grassOverride.radius  = o.radius;
+        if(o.perTile!==undefined) _grassOverride.perTile = o.perTile;
+        _grassDirty = true;
+      }
+      if(o.warpEdge!==undefined){ _grassWarpEdge = !!o.warpEdge; _grassDirty = true; }
+      if(o.fastH!==undefined){ _grassFastH = !!o.fastH; _grassDirty = true; }
+      if(o.reset){ _grassOverride = null; _grassWarpEdge = true; _grassDirty = true; }
       if(o.rebuild) _grassDirty=true;
     }
     return JSON.stringify({ blades:grassMesh.count, pool:GRASS_MAX, cfg:_grassCfg(),
+      rebuildMs:+_grassMs.toFixed(2), warpEdge:_grassWarpEdge,
+      stat:_gStat,
+      builtFar:+(_grassFar/TILE).toFixed(1), viewFar:+(_view.far/TILE).toFixed(1),
+      builtHeading:[+_grassFx.toFixed(3),+_grassFz.toFixed(3)],
+      viewHeading:[+_view.fx.toFixed(3),+_view.fz.toFixed(3)],
+      builtAt:[_grassTx,_grassTy], playerAt:[Math.floor(player.x/TILE),Math.floor(player.y/TILE)],
       wind:_grassMat.uniforms.uWindAmt.value, gust:_grassMat.uniforms.uGustFreq.value });
   },
   // Which GPU are we ACTUALLY on? On a hybrid laptop this is the difference
@@ -3751,6 +5136,50 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     return JSON.stringify({ampC:WARP_AMP_C, ampF:WARP_AMP_F, cellC:WARP_CELL_C,
       cellF:WARP_CELL_F, hash:WARP_HASH, reachTiles:WARP_R, rebakeMs:+(performance.now()-t0).toFixed(0)});
   },
+  // Regenerate a synthesised gait with new parameters and rebuild every model
+  // instance using it, without a reload. The clips are procedural, so the tuning
+  // loop that an authored animation gets in Blender has to live here instead.
+  //   _dev.spiderGait()                    report the current tuning
+  //   _dev.spiderGait({stride:0.55})       change it and re-bake the clips
+  //   _dev.spiderGait(null)                back to defaults
+  spiderGait(tune){
+    if(tune !== undefined){
+      if(tune === null) for(const k of Object.keys(_gaitTune)) delete _gaitTune[k];
+      else Object.assign(_gaitTune, tune);
+      for(const [file, gen] of Object.entries(SYNTH_CLIPS)){
+        const asset = loadedModels[file]; if(!asset) continue;
+        asset.clips = gen(THREE, asset.template, _gaitTune) || [];
+      }
+      // Slot models cached an AnimationMixer bound to the old clips, so they
+      // have to be dropped or the change is invisible until a mob changes type.
+      for(let i=0;i<slotModel.length;i++){
+        const inst = slotModel[i]; if(!inst) continue;
+        if(!SYNTH_CLIPS[(MOB_MODELS[inst.type]||{}).file]) continue;
+        scene.remove(inst.obj); inst.mixer.stopAllAction(); slotModel[i]=null;
+      }
+    }
+    const out = {};
+    for(const file of Object.keys(SYNTH_CLIPS)){
+      const asset = loadedModels[file];
+      out[file] = asset ? asset.clips.map(c=>c.name+' '+c.duration.toFixed(2)+'s') : 'not loaded';
+    }
+    return JSON.stringify({ tune:_gaitTune, generated:out });
+  },
+  // Mob turning. _dev.turn({k:9, max:4.5}) tunes the convergence rate and the
+  // angular-velocity ceiling live; _dev.turn() just reports.
+  //   _dev.turn()                          report every class
+  //   _dev.turn({mob:{k:9, max:4.5}})       retune one
+  turn(v){
+    if(v) for(const cls of Object.keys(v)){
+      if(!TURN_RATES[cls]) continue;
+      if(v[cls].k != null) TURN_RATES[cls].k = v[cls].k;
+      if(v[cls].max != null) TURN_RATES[cls].max = v[cls].max;
+    }
+    const out = {};
+    for(const [cls, r] of Object.entries(TURN_RATES))
+      out[cls] = { k:r.k, maxRadPerSec:r.max, maxDegPerSec:+(r.max*180/Math.PI).toFixed(0) };
+    return JSON.stringify({ rates:out, moveOn:MOVE_ON, moveOff:MOVE_OFF });
+  },
   // Walk-clip rate matching: _dev.gait(110) raises the speed that plays at 1.0x
   // (slower legs); _dev.gait() just reports. Live per-mob readout for eyeballing it.
   gait(ref){
@@ -3829,7 +5258,11 @@ function buildSlotModel(i, type){
     attack: mk(pickClip(asset.clips, /attack|punch|bite/i)),
   };
   if (actions.attack) { actions.attack.setLoop(THREE.LoopOnce); actions.attack.clampWhenFinished=false; }
-  const inst = { type, obj, mixer, actions, cur:null, atkUntil:0, lx:null, lz:null };
+  // A new Group starts at yaw 0, which is not where the mob is facing. That was
+  // invisible while turning snapped in ~25ms; with an angular-velocity ceiling it
+  // becomes a visible spin every time a mob spawns, respawns or is re-slotted.
+  // `fresh` makes the first frame snap instead of turn.
+  const inst = { type, obj, mixer, actions, cur:null, atkUntil:0, lx:null, lz:null, fresh:true };
   slotModel[i]=inst; return inst;
 }
 function setModelAnim(inst, name){
@@ -3841,6 +5274,9 @@ function setModelAnim(inst, name){
 // Ground speed (world units/sec) at which a walk/gallop clip plays at 1.0x and the
 // feet look planted. Raise it if legs still outrun the ground. _dev.gait() tunes live.
 let GAIT_REF = 80;
+// Turning lives in turnToward() / TURN_RATES, declared above animateRig so every
+// yaw in the game — mobs, the player, NPCs and remote players — shares one
+// implementation instead of five copies that drifted apart.
 // Drive one model instance from its enemy: position, smooth turn, clips.
 // animate=false (distant mob) keeps it placed but freezes the skinning mixer.
 function animModel(inst, e, t, adt, animate){
@@ -3848,22 +5284,38 @@ function animModel(inst, e, t, adt, animate){
   inst.obj.position.set(e.x,heightAt(e.x,e.y),e.y);
   const dx = e.x - (e._lx ?? e.x), dz = e.y - (e._lz ?? e.y);
   e._lx = e.x; e._lz = e.y;
-  const dist = Math.hypot(dx,dz), moving = dist > 0.3 && dist < TILE * 3;
+  const dist = Math.hypot(dx,dz);
   // Actual ground speed (world units/sec), smoothed. The walk clip is rate-matched
   // to this so the feet keep up with the ground — scaling off e.speed alone (a
   // constant max) made a wandering mob sprint its legs while barely moving.
   // Skip the frame after a cull/teleport (dist >= TILE*3) so it can't read as a sprint.
+  //
+  // The VELOCITY is smoothed the same way and for a stronger reason: a heading
+  // taken from one frame's delta is a heading taken from pathing noise. At 144Hz
+  // a wandering mob moves ~0.35 units a frame, so atan2 of that delta swings
+  // wildly while the mob is plainly walking in a straight line.
   if(adt > 0 && dist < TILE * 3){
     const spdNow = dist / adt;
     e._spd = e._spd == null ? spdNow : e._spd + (spdNow - e._spd) * 0.25;
+    const vxNow = dx / adt, vzNow = dz / adt;
+    e._vx = e._vx == null ? vxNow : e._vx + (vxNow - e._vx) * 0.25;
+    e._vz = e._vz == null ? vzNow : e._vz + (vzNow - e._vz) * 0.25;
   }
+  // Latched, not thresholded. Measured per-frame movement for a wanderer is
+  // median 0.35 / p90 0.69 against the old 0.6 gate, so it sat exactly where it
+  // would chatter — 69% of frames on one side, 31% on the other, flipping the
+  // heading 3.2 times a second. Two thresholds with a gap cannot do that.
+  const _spd = e._spd ?? 0;
+  if(e._mv) { if(_spd < MOVE_OFF) e._mv = false; }
+  else      { if(_spd > MOVE_ON)  e._mv = true;  }
+  const moving = !!e._mv && dist < TILE * 3;
+
   let tgt = null;
-  if(moving && dist > 0.6) tgt = Math.atan2(-dx,-dz);
+  if(moving && (e._vx * e._vx + e._vz * e._vz) > 1) tgt = Math.atan2(-e._vx, -e._vz);
   else { const fx = player.x - e.x, fz = player.y - e.y;
     if(Math.hypot(fx,fz) < TILE * 7) tgt = Math.atan2(-fx,-fz); }
-  if(tgt !== null){ let d = tgt - inst.obj.rotation.y;
-    d = ((d + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-    inst.obj.rotation.y += d * 0.22; }
+  if(tgt !== null && inst.fresh){ inst.obj.rotation.y = tgt; inst.fresh = false; }
+  else if(tgt !== null) turnToward(inst.obj, tgt, adt, 'mob');
   if(!animate) return;                 // animation-LOD: skip clips + skinning when far
   const isAttacking = e.attackTimer > (e.attackCooldown - 0.5);
   if(isAttacking && t > (e._atkUntil || 0) && inst.actions.attack){
@@ -3897,31 +5349,38 @@ scene.add(plrGrp);
 const GPOOL = 20;
 const gPool = Array.from({length:GPOOL}, () => {
   const g = makeRig();
-  configureRig(g, 0x4a5870, 16,34,10, 6, 0, true);
-  applyProp(g, 'sword', 16,34,10);
+  configureRig(g, 0x4a5870, 15,47,10, 4.2, 0, true);
+  dressRig(g, 'guard');            // helm, pauldrons, belt, cloak
+  applyProp(g, 'sword', 15,47,10);
   g.visible=false; scene.add(g); return g;
 });
 const guardPool = gPool;  // alias used in syncEntities
 
 // NPC builder — humanoid rig with optional tool/weapon
 const npcs = [];
-function spawnNPC(color, x, y, prop) {
+function spawnNPC(color, x, y, prop, style) {
   const g = makeRig();
-  configureRig(g, color, 16,36,11, 6.5, 0, true);
-  if (prop) applyProp(g, prop, 16,36,11);
+  configureRig(g, color, 15,48,10, 4.3, 0, true);
+  if (style) dressRig(g, style);
+  if (prop) applyProp(g, prop, 15,48,10);
   g.position.set(x,heightAt(x,y),y); scene.add(g); npcs.push(g); return g;
 }
-spawnNPC(0x8a4030, MERCHANT.x,   MERCHANT.y);              // merchant
-const _bankerRig = spawnNPC(0xd0a020, BANKER.x, BANKER.y); // banker (GLB below hides this)
-spawnNPC(0x40a060, HEALER.x,     HEALER.y,   'staff');     // healer
-const _smithRig  = spawnNPC(0x703020, BLACKSMITH.x, BLACKSMITH.y, 'hammer'); // smith (GLB below)
-const _mageRig = spawnNPC(0x4040a0, MAGE.x, MAGE.y, 'staff'); // mage (GLB below)
-spawnNPC(0x907040, FARRIER.x,    FARRIER.y,  'hammer');    // farrier
-WORLD_HEALERS.forEach(wh => spawnNPC(0x40a060, wh.x, wh.y, 'staff'));
-spawnNPC(0x6a4a9a, ANTIQUARIAN.x,  ANTIQUARIAN.y,  'staff');   // antiquarian
-spawnNPC(0x2a5a7a, CRYPTOLOGIST.x, CRYPTOLOGIST.y, 'dagger');  // cryptologist
-spawnNPC(0xb08030, CURATOR.x,      CURATOR.y);                 // museum curator
-spawnNPC(0x3a3a3a, GRAVE_ROBBER.x, GRAVE_ROBBER.y, 'dagger');  // grave robber
+// Every one of these is a STAND-IN now — each has a GLB in NPC_MODELS below
+// that hides it once the file has loaded. They still exist because loading is
+// async and a town with nobody in it for two seconds is worse than a town with
+// blocks in it, and because SKINNING_OK is false on hardware that cannot skin,
+// where the stand-in is all there is.
+const _merchantRig = spawnNPC(0x8a4030, MERCHANT.x,   MERCHANT.y,   null,     'merchant');
+const _bankerRig   = spawnNPC(0xd0a020, BANKER.x,     BANKER.y,     null,     'banker');
+const _healerRig   = spawnNPC(0x40a060, HEALER.x,     HEALER.y,     'staff',  'healer');
+const _smithRig    = spawnNPC(0x703020, BLACKSMITH.x, BLACKSMITH.y, 'hammer', 'smith');
+const _mageRig     = spawnNPC(0x4040a0, MAGE.x,       MAGE.y,       'staff',  'mage');
+const _farrierRig  = spawnNPC(0x907040, FARRIER.x,    FARRIER.y,    'hammer', 'farrier');
+const _worldHealerRigs = WORLD_HEALERS.map(wh => spawnNPC(0x40a060, wh.x, wh.y, 'staff', 'healer'));
+const _antiqRig    = spawnNPC(0x6a4a9a, ANTIQUARIAN.x,  ANTIQUARIAN.y,  'staff',  'scholar');
+const _cryptRig    = spawnNPC(0x2a5a7a, CRYPTOLOGIST.x, CRYPTOLOGIST.y, 'dagger', 'cipher');
+const _curatorRig  = spawnNPC(0xb08030, CURATOR.x,      CURATOR.y,      null,     'curator');
+const _robberRig   = spawnNPC(0x3a3a3a, GRAVE_ROBBER.x, GRAVE_ROBBER.y, 'dagger', 'robber');
 
 // Decorative fletcher (bowyer) between the merchant and the smith — model
 // plus an [E] label, no shop yet.
@@ -3939,6 +5398,10 @@ const NPC_YAW = Math.PI;
 // The jester busks in the courtyard just west of the bank's south doors,
 // cycling dance clips while he waits for an audience.
 const JESTER = { x:306*48+24, y:367*48+24, r:13 };
+// ONLY roles that have a model OF THEIR OWN. Dressing a merchant in the
+// banker's model was borrowing, not modelling: it put the same three faces on
+// eleven people and it meant the procedural figures never had to be good.
+// Everyone not listed here is built by render/humanoid.js and has to earn it.
 const NPC_MODELS = {
   banker:   {file:'models/Banker.glb',   pos:BANKER,     h:116, idle:'Agree_Gesture', fallback:_bankerRig},
   smith:    {file:'models/Smithy.glb',   pos:BLACKSMITH, h:118, idle:'Alert',          fallback:_smithRig},
@@ -3958,45 +5421,102 @@ function npcWalkable(x,y){
   const tt=map[ty][tx];
   return tt===T.GRASS||tt===T.PATH||tt===T.BRIDGE||tt===T.CAVE_FLOOR;
 }
-{
-  const gl = gltfLoader;
+// Measure the true rendered height of a skinned model. A Box3 is wrong here:
+// it measures the BIND pose, and these characters are posed by their skeleton,
+// so the box can be a head taller than what actually draws.
+function measureSkinned(inner){
+  inner.updateMatrixWorld(true);
+  let minY=1e9,maxY=-1e9; const v=new THREE.Vector3();
+  inner.traverse(o=>{ if(!o.isSkinnedMesh)return;
+    const p=o.geometry.attributes.position, step=Math.max(1,Math.floor(p.count/400));
+    for(let i=0;i<p.count;i+=step){ v.fromBufferAttribute(p,i); o.applyBoneTransform(i,v); o.localToWorld(v);
+      if(v.y<minY)minY=v.y; if(v.y>maxY)maxY=v.y; } });
+  if(!(maxY-minY>0.05)){ const b=new THREE.Box3().setFromObject(inner); minY=b.min.y; maxY=b.max.y; }
+  return { minY, natH: Math.max(0.01, maxY-minY) };
+}
+// SkeletonUtils.clone shares MATERIALS with the original, which is what makes
+// it cheap and also what makes an untreated tint colour every NPC wearing the
+// same file. Give this one its own copies before touching any colour.
+function tintNpc(inner, hex){
+  const c = new THREE.Color(hex);
+  inner.traverse(o=>{
+    if(!o.isMesh || !o.material) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    const copies = mats.map(m=>{
+      const n = m.clone();
+      // 0.34, not a multiply. These textures carry the face and hands in the
+      // same map as the cloth: multiplying by a dark colour makes a shadow
+      // puppet, and lerping keeps the shading while moving the hue.
+      if(n.color) n.color.lerp(c, 0.34);
+      return n;
+    });
+    o.material = Array.isArray(o.material) ? copies : copies[0];
+  });
+}
+function buildGlbNpc(key, cfg, inner, animations, measured){
+  const sc = cfg.h / measured.natH;
+  inner.scale.setScalar(sc); inner.position.y = -measured.minY*sc; inner.rotation.y = NPC_YAW;
+  inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false; } });
+  if(cfg.tint) tintNpc(inner, cfg.tint);
+  const obj=new THREE.Group(); obj.add(inner);
+  obj.position.set(cfg.pos.x,0,cfg.pos.y); obj.rotation.y=Math.PI;   // rest: face south
+  scene.add(obj);
+  const mixer=new THREE.AnimationMixer(inner);
+  const find=nm=>animations.find(c=>c.name===nm);
+  const mk=c=>c?mixer.clipAction(c):null;
+  const actions={ idle:mk(find(cfg.idle))||mk(find('Walking')), walk:mk(find('Walking')) };
+  // Optional idle variety pool (the jester's dances): each wander pause
+  // picks a random clip from this list instead of the single idle.
+  let idleNames=null;
+  if(cfg.idles){ idleNames=[];
+    for(const nm of cfg.idles){ const a=mk(find(nm)); if(a){ actions[nm]=a; idleNames.push(nm); } }
+    if(!idleNames.length) idleNames=null; }
+  // Stagger the start so a shared clip does not play in lockstep across every
+  // NPC wearing the same model — ten wizards breathing in unison is worse than
+  // ten wizards.
+  if(actions.idle){ actions.idle.play(); actions.idle.time = Math.random()*actions.idle.getClip().duration; }
+  glbNpcs.push({obj,mixer,actions,cur:actions.idle?'idle':null,idleNames,curIdle:null,
+    hx:cfg.pos.x,hz:cfg.pos.y,tx:null,tz:null,pause:1+Math.random()*3});
+  // RETIRE the stand-in, do not merely hide it. The rig-NPC loop sets
+  // `n.visible = true` for everything within render distance on every frame, so
+  // a hidden rig reappears next frame and stands inside the model that replaced
+  // it. Taking it out of the scene and out of `npcs` is the only thing that
+  // makes it stay gone — and it stops costing a draw call too.
+  if(cfg.fallback){
+    cfg.fallback.visible=false;
+    scene.remove(cfg.fallback);
+    const i=npcs.indexOf(cfg.fallback); if(i>=0) npcs.splice(i,1);
+  }
+}
+if (SKINNING_OK) {
+  // Grouped by FILE, not by NPC. Wizzard.glb dresses ten of these; ten separate
+  // loads would fetch, parse and hold ten copies of the same skinned mesh.
+  // Load each file once and clone per NPC — SkeletonUtils.clone shares the
+  // geometry, so the tenth wizard costs a node tree and a skeleton, not a mesh.
+  const byFile = new Map();
   for(const [key,cfg] of Object.entries(NPC_MODELS)){
-    gl.load(cfg.file, gltf=>{
-      const inner=gltf.scene; inner.updateMatrixWorld(true);
-      // true rendered height from skinned verts (Box3 is wrong for skinning)
-      let minY=1e9,maxY=-1e9; const v=new THREE.Vector3();
-      inner.traverse(o=>{ if(!o.isSkinnedMesh)return;
-        const p=o.geometry.attributes.position, step=Math.max(1,Math.floor(p.count/400));
-        for(let i=0;i<p.count;i+=step){ v.fromBufferAttribute(p,i); o.applyBoneTransform(i,v); o.localToWorld(v);
-          if(v.y<minY)minY=v.y; if(v.y>maxY)maxY=v.y; } });
-      if(!(maxY-minY>0.05)){ const b=new THREE.Box3().setFromObject(inner); minY=b.min.y; maxY=b.max.y; }
-      const natH=Math.max(0.01,maxY-minY), sc=cfg.h/natH;
-      inner.scale.setScalar(sc); inner.position.y=-minY*sc; inner.rotation.y=NPC_YAW;
-      inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false; } });
-      const obj=new THREE.Group(); obj.add(inner);
-      obj.position.set(cfg.pos.x,0,cfg.pos.y); obj.rotation.y=Math.PI;   // rest: face south
-      scene.add(obj);
-      const mixer=new THREE.AnimationMixer(inner);
-      const find=nm=>gltf.animations.find(c=>c.name===nm);
-      const mk=c=>c?mixer.clipAction(c):null;
-      const actions={ idle:mk(find(cfg.idle))||mk(find('Walking')), walk:mk(find('Walking')) };
-      // Optional idle variety pool (the jester's dances): each wander pause
-      // picks a random clip from this list instead of the single idle.
-      let idleNames=null;
-      if(cfg.idles){ idleNames=[];
-        for(const nm of cfg.idles){ const a=mk(find(nm)); if(a){ actions[nm]=a; idleNames.push(nm); } }
-        if(!idleNames.length) idleNames=null; }
-      if(actions.idle){ actions.idle.play(); }
-      glbNpcs.push({obj,mixer,actions,cur:actions.idle?'idle':null,idleNames,curIdle:null,
-        hx:cfg.pos.x,hz:cfg.pos.y,tx:null,tz:null,pause:1+Math.random()*3});
-      if(cfg.fallback) cfg.fallback.visible=false;   // hide the procedural stand-in
-    }, undefined, err=>console.warn('NPC model load failed:',key,err));
+    if(!byFile.has(cfg.file)) byFile.set(cfg.file, []);
+    byFile.get(cfg.file).push([key,cfg]);
+  }
+  for(const [file, entries] of byFile){
+    gltfLoader.load(file, gltf=>{
+      // Measured once off the source. Every clone is the same mesh in the same
+      // bind pose, so re-walking the vertices per NPC would buy nothing.
+      const measured = measureSkinned(gltf.scene);
+      for(const [key,cfg] of entries){
+        try {
+          // Cloned even for the first user, so there is one code path and the
+          // loaded scene is never mutated by whoever happens to be first.
+          buildGlbNpc(key, cfg, SkeletonUtils.clone(gltf.scene), gltf.animations, measured);
+        } catch(err){ console.warn('NPC build failed:', key, err); }
+      }
+    }, undefined, err=>console.warn('NPC model load failed:',file,err));
   }
 }
 
 // ── Mount: horse rendered under the player while riding ───────────
 let horse=null;
-gltfLoader.load('models/Horse.glb', gltf=>{
+if (SKINNING_OK) gltfLoader.load('models/Horse.glb', gltf=>{
   const inner=gltf.scene; inner.updateMatrixWorld(true);
   let minY=1e9,maxY=-1e9; const v=new THREE.Vector3();
   inner.traverse(o=>{ if(!o.isSkinnedMesh)return;
@@ -4353,14 +5873,29 @@ function worldToScreen(wx, wy, wh=20) {
 // Which tree is the pointer actually over? Raycasts the trunk+canopy meshes
 // so tapping the tall leafy top counts as hitting that tree, not the empty
 // ground its silhouette overlaps. Returns {tx,ty} or null.
-const _treeRayMeshes = [topMesh, trunkMesh];
+// One instTile array PER MESH. instanceId is an index into the mesh it came
+// from, so with a mesh pair per species a single shared array would be read
+// with another mesh's index and chopping would fell the wrong tree.
+trunkMesh.userData.instTile = treeInstTile;
+// The two canopies fill independently, so their instance indices are their own
+// and they cannot share the trunk's map — a chop would otherwise read one
+// mesh's index into another mesh's array and fell the wrong tree.
+topMesh.userData.instTile      = [];
+topBroadMesh.userData.instTile = [];
+// Every mesh a tree can be hit on. topBroadMesh has to be here too — leave it
+// out and clicking the crown of any broadleaf does nothing, because the ray
+// never tests the mesh that is actually drawing it.
+const _treeRayMeshes = [topMesh, topBroadMesh, trunkMesh]
+  .concat(nearForest ? nearForest.meshes : []);
 function pickTreeTile(sx, sy) {
   _ndc.set((sx/innerWidth)*2-1, -(sy/innerHeight)*2+1);
   _ray.setFromCamera(_ndc, camera);
   const hits = _ray.intersectObjects(_treeRayMeshes, false);
   for (const h of hits) {
     if (h.instanceId==null) continue;
-    const packed = treeInstTile[h.instanceId];
+    const tileMap = h.object.userData && h.object.userData.instTile;
+    if (!tileMap) continue;
+    const packed = tileMap[h.instanceId];
     if (packed==null) continue;
     const tx=packed%MAP_W, ty=(packed/MAP_W)|0;   // unpack int → tile
     if (map[ty] && map[ty][tx]===T.TREE) return {tx,ty};
@@ -4442,6 +5977,15 @@ function wrestlingLv(){return skillLv(skills.wrestling);}
 
 // ── Utilities ─────────────────────────────────────────────────────
 function addFloater(x,y,text){floaters.push({x,y,text,life:0.9});}
+// A one-second rolling frame counter. It lives in the status line rather than as
+// its own canvas overlay because that corner of the screen is already spoken for
+// (BOARDS / ? / HUB) and the status line is the place transient readouts go.
+let _fpsN=0, _fpsT=0, _fpsVal=0;
+function fpsSample(t){
+  _fpsN++;
+  if(!_fpsT){_fpsT=t;return;}
+  if(t-_fpsT>=1000){ _fpsVal=Math.round(_fpsN*1000/(t-_fpsT)); _fpsN=0; _fpsT=t; }
+}
 function tileAt(px,py){
   const tx=Math.floor(px/TILE),ty=Math.floor(py/TILE);
   if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return T.STONE;
@@ -4509,7 +6053,10 @@ const RECIPES=[
   {id:'anvil',    top:'5 iron ingots → anvil',        adv:true,sub:()=>nearbyObject('workbench',3)&&nearbyObject('forge',3)?'have: '+(inv.iron_ingot||0)+' ingots':'need: workbench & forge'},
   {id:'lantern',  top:'2 iron ingots + 1 hide → lantern',adv:true,sub:()=>nearbyObject('workbench',3)?'have: '+(inv.iron_ingot||0)+'i  '+inv.hide+'h':'need: workbench'},
 ];
-const PANEL_H=HEADER_H+PANEL_PAD+Math.ceil(RECIPES.length/2)*(BTN_H+BTN_GAP)-BTN_GAP+PANEL_PAD;
+// 35 recipes over two columns is 18 rows = 700px, taller than the usable height on a
+// phone once the HUD is accounted for. Clamped so the panel cannot run off the bottom;
+// the rows that no longer fit need scrolling, which the backpack already implements.
+const PANEL_H=fitPanelH(HEADER_H+PANEL_PAD+Math.ceil(RECIPES.length/2)*(BTN_H+BTN_GAP)-BTN_GAP+PANEL_PAD);
 // ── Draggable panels ──────────────────────────────────────────────
 // Every panel position runs through panelAt(): default spot + a saved
 // per-panel offset. Grab any panel by its header (top strip) to move it;
@@ -4526,6 +6073,13 @@ function panelAt(name, bx, by, w, h){
   const py=Math.round(Math.max(0,Math.min(G.canvas.height-40, by+o.y)));
   panelRects[name]={x:px,y:py,w,h,t:G.gameTime};
   return {px,py};
+}
+// Panels remember where they were dragged and how far they were resized. That is
+// a good default until a window resize or a device change strands one half off
+// screen, so the settings menu offers a way back to centre.
+function resetPanelPositions(){
+  for(const k in panelOfs) delete panelOfs[k];
+  try{ localStorage.removeItem(PANEL_POS_KEY); }catch(_){}
 }
 function panelDragStart(x,y){
   for(const [name,r] of Object.entries(panelRects)){
@@ -4550,17 +6104,56 @@ function panelDragEnd(){
 }
 
 function panelXY(){return panelAt('craft', G.canvas.width-PANEL_W-12, Math.round(G.canvas.height/2-PANEL_H/2), PANEL_W, PANEL_H);}
+// Two columns need ~290px each for the longest recipe strings. Below this the panel
+// goes single-column instead of overlapping its own text.
+const CRAFT_MIN_2COL = 420;
+function craftCols(){ return PANEL_W < CRAFT_MIN_2COL ? 1 : 2; }
+function craftRowsVisible(){
+  // The 34px is the scroll-arrow strip below the header; subtract it unconditionally so
+  // this and craftMaxScroll() cannot disagree (craftMaxScroll calls this, so it must not
+  // call craftMaxScroll back).
+  return Math.max(1, Math.floor((PANEL_H - HEADER_H - PANEL_PAD*2 - 34) / (BTN_H + BTN_GAP)));
+}
+function craftMaxScroll(){
+  return Math.max(0, Math.ceil(RECIPES.length / craftCols()) - craftRowsVisible());
+}
+// 30px targets, comfortably over the 24px WCAG minimum and close to the 44px that
+// halves mis-taps in practice. Two of them, in the header, out of the recipe rows.
+function craftScrollBtns(){
+  const {px,py}=panelXY(), s=30, gap=4;
+  // BELOW the header, not in it. panelDragStart() owns the top PANEL_GRIP (26px) of
+  // every panel and is tested before any panel's own handler, so a control placed in
+  // the header can never be clicked — the click begins a drag instead. Sitting them
+  // just under the divider keeps them reachable and still out of the recipe rows.
+  const y=py+HEADER_H+2;
+  return {
+    up:   {x:px+PANEL_W-PANEL_PAD-s*2-gap, y, w:s, h:s},
+    down: {x:px+PANEL_W-PANEL_PAD-s,       y, w:s, h:s},
+  };
+}
 function recipeRects(){
-  const {px,py}=panelXY(),top=py+HEADER_H+PANEL_PAD;
-  const colW = (PANEL_W - PANEL_PAD*2 - 8) / 2;
+  const {px,py}=panelXY();
+  // Leave room for the scroll strip when there is one to show.
+  const top=py+HEADER_H+PANEL_PAD+(craftMaxScroll()>0?34:0);
+  const cols=craftCols();
+  const colW = (PANEL_W - PANEL_PAD*2 - (cols-1)*8) / cols;
+  const maxS=craftMaxScroll();
+  if(G.craftScroll===undefined) G.craftScroll=0;
+  if(G.craftScroll>maxS) G.craftScroll=maxS;
+  if(G.craftScroll<0) G.craftScroll=0;
+  const rowsVis=craftRowsVisible();
   return RECIPES.map((r,i)=>{
-    const col = i % 2;
-    const row = Math.floor(i / 2);
+    const col = i % cols;
+    const row = Math.floor(i / cols) - G.craftScroll;
     return {
       x: px + PANEL_PAD + col * (colW + 8),
       y: top + row * (BTN_H + BTN_GAP),
       w: colW,
       h: BTN_H,
+      // Scrolled out of view: still returned so the two consumers can stay index-free,
+      // but never drawn and never clickable.
+      vis: row >= 0 && row < rowsVis,
+      rec: r,
       id: r.id
     };
   });
@@ -5573,14 +7166,16 @@ function drawHotbar(){
     // slot content
     if(s){
       const def=hotbarSlotDef(s);
-      if(def){
-        const owned=s.k==='weapon'?!!player[HOTBAR_WEAPONS[s.id].pkey]:s.k==='item'?(inv[s.id]||0)>0:true;
+      // An unowned binding renders as an EMPTY slot rather than a ghosted icon.
+      // Showing a pickaxe you have never found is just clutter that has to be
+      // visually filtered every time you glance down. The binding is kept, so the
+      // icon reappears on its own the moment you pick one up.
+      const owned=!s?false:s.k==='weapon'?!!player[HOTBAR_WEAPONS[s.id].pkey]:s.k==='item'?(inv[s.id]||0)>0:true;
+      if(def&&owned){
         const sprName=s.k==='weapon'?WEAPON_SPR[s.id]:s.k==='act'?ACTION_SPR[s.id]:s.k==='item'?(BAG_BY_KEY[s.id]||{}).spr:s.k==='macro'?'scroll':null;
-        if(!(sprName&&drawSprite(sprName,x+4,r.y+4,HOTBAR_SZ-8,HOTBAR_SZ-8,owned?1:0.3))){
-          ctx.globalAlpha=owned?1:0.3;
+        if(!(sprName&&drawSprite(sprName,x+4,r.y+4,HOTBAR_SZ-8,HOTBAR_SZ-8,1))){
           ctx.font='20px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';
           ctx.fillText(def.icon,x+HOTBAR_SZ/2,r.y+HOTBAR_SZ/2+7);
-          ctx.globalAlpha=1;
         }
         // count badge (potions / bandages / arrows / bound items)
         const badge=s.k==='item'?()=>inv[s.id]||0:s.k==='act'?HOTBAR_BADGE[s.id]:s.k==='weapon'?HOTBAR_BADGE[s.id]:null;
@@ -5612,77 +7207,6 @@ function drawHotbar(){
   ctx.textAlign='left';
 }
 
-// ── Hotbar loadout editor (U) ─────────────────────────────────────
-// A palette of weapons/actions/macros; each row has 1-8 buttons that
-// assign the row to that slot. Macros are built inline from the same
-// combat-action registry the gambit engine uses.
-let hbHit=[];
-const HB_EDIT_W=440;
-function hotbarEditPanelXY(){
-  const rows=Object.keys(HOTBAR_WEAPONS).length+Object.keys(COMBAT_ACTIONS).length;
-  const H=46+rows*21+26+macros.length*46+30+24+14;
-  return {...panelAt('hbedit', Math.round(G.canvas.width/2-HB_EDIT_W/2), Math.max(8,Math.round(G.canvas.height/2-H/2)), HB_EDIT_W, H), H};
-}
-function renderHotbarEdit(){
-  hbHit=[];
-  const ctx=G.ctx,{px,py,H}=hotbarEditPanelXY();
-  const btn=(x,y,w,h,label,hot,fn,col)=>{
-    ctx.fillStyle=hot?'rgba(90,70,25,.95)':'rgba(40,30,14,.9)';ctx.fillRect(x,y,w,h);
-    ctx.strokeStyle=hot?'#f0d060':'rgba(200,162,90,.4)';ctx.lineWidth=1;ctx.strokeRect(x,y,w,h);
-    ctx.fillStyle=col||(hot?'#f0d060':'#d8c8a0');ctx.font='10px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';
-    ctx.fillText(label,x+w/2,y+h/2+3.5);
-    hbHit.push({x,y,w,h,fn});
-  };
-  ctx.fillStyle='rgba(18,13,8,.96)';ctx.fillRect(px,py,HB_EDIT_W,H);
-  ctx.strokeStyle='#c8a25a';ctx.lineWidth=2;ctx.strokeRect(px,py,HB_EDIT_W,H);
-  ctx.fillStyle='#c8a25a';ctx.font='bold 13px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';
-  ctx.fillText('🎛 HOTBAR LOADOUT  ·  U to close',px+HB_EDIT_W/2,py+20);
-  ctx.font='10px ui-monospace,Menlo,Consolas,monospace';ctx.fillStyle='rgba(200,180,140,.6)';
-  ctx.fillText('click a numbered button to put that item in slot 1-8',px+HB_EDIT_W/2,py+34);
-  let y=py+50;
-  const slotBtns=(item)=>{ for(let i=0;i<HOTBAR_SLOTS;i++){const cur=hotbar[i]&&hotbar[i].k===item.k&&hotbar[i].id===item.id;btn(px+HB_EDIT_W-14-(HOTBAR_SLOTS-i)*22,y-12,20,16,String(i+1),cur,()=>{hotbar[i]=cur?null:{k:item.k,id:item.id};});} };
-  ctx.textAlign='left';
-  for(const [id,w] of Object.entries(HOTBAR_WEAPONS)){
-    ctx.fillStyle=player[w.pkey]?'#e0c890':'rgba(200,180,140,.4)';ctx.font='11px ui-monospace,Menlo,Consolas,monospace';
-    ctx.fillText(w.icon+' '+w.label,px+14,y);
-    slotBtns({k:'weapon',id});
-    y+=21;
-  }
-  for(const [id,a] of Object.entries(COMBAT_ACTIONS)){
-    ctx.fillStyle='#a8c8e0';ctx.font='11px ui-monospace,Menlo,Consolas,monospace';
-    ctx.fillText(a.icon+' '+a.label,px+14,y);
-    slotBtns({k:'act',id});
-    y+=21;
-  }
-  y+=5;
-  ctx.fillStyle='#c8a25a';ctx.font='bold 11px ui-monospace,Menlo,Consolas,monospace';
-  ctx.fillText('MACROS  (steps fire in order, 0.35s apart)',px+14,y);
-  y+=16;
-  macros.forEach((m,mi)=>{
-    ctx.fillStyle='#e0c890';ctx.font='11px ui-monospace,Menlo,Consolas,monospace';
-    ctx.fillText('📜 '+m.name,px+14,y);
-    slotBtns({k:'macro',id:mi});
-    btn(px+118,y-12,16,16,'✕',false,()=>{macros.splice(mi,1);hotbar=hotbar.map(s=>s&&s.k==='macro'?(s.id===mi?null:{k:'macro',id:s.id>mi?s.id-1:s.id}):s);},'#ff9090');
-    y+=20;
-    // steps: click a step to remove it; the icon row on the right appends
-    let sx=px+22;
-    ctx.font='12px ui-monospace,Menlo,Consolas,monospace';
-    m.steps.forEach((st,si)=>{ const a=COMBAT_ACTIONS[st]; btn(sx,y-12,18,16,a?a.icon:'?',false,()=>m.steps.splice(si,1)); sx+=20; });
-    if(!m.steps.length){ctx.fillStyle='rgba(200,180,140,.4)';ctx.font='10px ui-monospace,Menlo,Consolas,monospace';ctx.fillText('(empty — add steps →)',sx,y);}
-    let ax=px+HB_EDIT_W-14-Object.keys(COMBAT_ACTIONS).length*20;
-    for(const [id,a] of Object.entries(COMBAT_ACTIONS)){ btn(ax,y-12,18,16,a.icon,true,()=>{if(m.steps.length<8)m.steps.push(id);}); ax+=20; }
-    y+=26;
-  });
-  btn(px+14,y-10,110,20,'+ New Macro',false,()=>macros.push({name:'Macro '+(macros.length+1),steps:[]}));
-  ctx.textAlign='left';
-}
-function handleHotbarEditClick(e){
-  for(const h of hbHit){
-    if(e.clientX>=h.x&&e.clientX<=h.x+h.w&&e.clientY>=h.y&&e.clientY<=h.y+h.h){h.fn();return true;}
-  }
-  const r=panelRects['hbedit'];
-  return !!(r&&e.clientX>=r.x&&e.clientX<=r.x+r.w&&e.clientY>=r.y&&e.clientY<=r.y+r.h);
-}
 
 // Close every shop/trade panel (used before opening one, so only one is ever up).
 function closeShopPanels(){
@@ -5694,8 +7218,8 @@ function uiBlocking(){
   return G.charSelectOpen||G.charCreatorOpen||G.craftOpen||G.tradeOpen||G.bankOpen||G.smithOpen||G.mageOpen||G.farrierOpen||
     G.skillOpen||G.questOpen||G.editorOpen||G.dollOpen||G.tutorialOpen||G.corpseLootOpen||G.charOpen||G.contractsOpen||G.worldChestOpen||
     G.gambitOpen||G.buildMode||G.housePlacementMode||G.houseMenuOpen||G.houseSettingsOpen||G.devGuiOpen||
-    G.backpackOpen||!!G.trade||G.chestOpen||
-    G.antiqOpen||G.cryptoOpen||G.curatorOpen||G.robberOpen||G.hotbarEditOpen;
+    G.settingsOpen||G.backpackOpen||!!G.trade||G.chestOpen||
+    G.antiqOpen||G.cryptoOpen||G.curatorOpen||G.robberOpen;
 }
 // A tappable/clickable modal panel is open (routes touch taps → mouse
 // handlers so every panel button works on mobile). Excludes build/place
@@ -5703,8 +7227,8 @@ function uiBlocking(){
 function modalOpen(){
   return G.charSelectOpen||G.charCreatorOpen||G.craftOpen||G.tradeOpen||G.bankOpen||G.smithOpen||G.mageOpen||G.farrierOpen||
     G.skillOpen||G.questOpen||G.editorOpen||G.dollOpen||G.tutorialOpen||G.corpseLootOpen||G.charOpen||G.contractsOpen||G.worldChestOpen||
-    G.gambitOpen||G.houseMenuOpen||G.houseSettingsOpen||G.devGuiOpen||G.backpackOpen||!!G.trade||!!G.tradeInvite||
-    G.antiqOpen||G.cryptoOpen||G.curatorOpen||G.robberOpen||G.hotbarEditOpen;
+    G.gambitOpen||G.houseMenuOpen||G.houseSettingsOpen||G.devGuiOpen||G.settingsOpen||G.backpackOpen||!!G.trade||!!G.tradeInvite||
+    G.antiqOpen||G.cryptoOpen||G.curatorOpen||G.robberOpen;
 }
 
 // ── Gambit engine (rule-based conditional actions) ────────────────
@@ -5754,7 +7278,10 @@ const radial={open:false, cx:0, cy:0, sel:-1, r:118, id:null};
 // screen. It can now be long-pressed and dragged anywhere, or hidden
 // outright (handy once controller support lands). Position persists.
 const RADIAL_POS_KEY='bravoRadialPos_v1';
-let radialCfg={x:null, y:null, hidden:false};
+// `hidden` starts as null = "not chosen yet", which resolves to hidden on a mouse and
+// shown on a touch device. It is a thumb control and was being drawn on desktop, where it
+// sits over the play area doing nothing. An explicit choice from the settings menu wins.
+let radialCfg={x:null, y:null, hidden:null};
 try{ radialCfg={...radialCfg, ...(JSON.parse(localStorage.getItem(RADIAL_POS_KEY)||'{}')||{})}; }catch(_){}
 function saveRadialCfg(){ try{ localStorage.setItem(RADIAL_POS_KEY,JSON.stringify(radialCfg)); }catch(_){} }
 function radialBtn(){
@@ -5763,7 +7290,10 @@ function radialBtn(){
   const clamp=(v,d,max)=> v==null ? d : Math.max(r+4, Math.min(max-r-4, v));
   return { x:clamp(radialCfg.x,defX,G.canvas.width), y:clamp(radialCfg.y,defY,G.canvas.height), r };
 }
-function radialHidden(){ return !!radialCfg.hidden; }
+function radialHidden(){
+  if(radialCfg.hidden===null||radialCfg.hidden===undefined) return !isTouchPrimary();
+  return !!radialCfg.hidden;
+}
 function setRadialHidden(v){ radialCfg.hidden=!!v; saveRadialCfg(); }
 function resetRadialPos(){ radialCfg.x=null; radialCfg.y=null; saveRadialCfg(); }
 // Long-press on the button switches from "cast" to "reposition".
@@ -6258,7 +7788,7 @@ function takeAllChest(){
   snd.gold(); questEvent('chest');          // feeds "loot N chests" contracts
   if(typeof saveGame==='function')saveGame(true);
 }
-const WCHEST_W=300;
+const WCHEST_W=fitPanelW(300);
 function worldChestXY(){
   const l=G.activeWorldChest?rollChestLoot(G.activeWorldChest):null;
   const rows=l?(1+Object.keys(l.res).length+l.gear.length+l.arpg.length):0;
@@ -6416,7 +7946,7 @@ function rerollContract(i){
   G.contracts[i]=makeDistinctContract(contractTier(), live);
   snd.pickup();
 }
-const CONTRACT_W=430, CONTRACT_ROW_H=74, CONTRACT_HEADER=52;
+const CONTRACT_W=fitPanelW(430), CONTRACT_ROW_H=74, CONTRACT_HEADER=52;
 function contractPanelXY(){
   const H=CONTRACT_HEADER+3*CONTRACT_ROW_H+20;
   return {...panelAt('contracts', Math.round(G.canvas.width/2-CONTRACT_W/2), Math.round(G.canvas.height/2-H/2), CONTRACT_W, H), H};
@@ -6491,7 +8021,7 @@ function handleContractClick(e){
 ensureContracts();   // fresh games start with three jobs already posted
 
 // Journal panel
-const QUEST_W=320;
+const QUEST_W=fitPanelW(320);
 function renderQuestPanel(){
   ensureContracts();
   const ctx=G.ctx,rowH=30,headH=34;
@@ -7064,16 +8594,28 @@ const TUT_PAGES=[
     ['scroll','zoom the camera (pinch on phone)'],
     ['MMB drag','orbit the camera — spin left/right, tilt'],
     ['','from ground level up to straight overhead'],
+    [', / .','spin the camera left / right from the keyboard'],
+    ['[ / ]','camera: first person · over the shoulder ·'],
+    ['','third person · isometric · far · top down'],
+    ['','(first person locks the mouse to look; Esc frees it)'],
     ['drag','pull bag items onto the hotbar, another'],
     ['','cell to rearrange, or the world to drop them'],
     ['','(Shift = drop whole stack; drag a hotbar'],
     ['','slot off the bar to unbind it)'],
     ['M','map — drag its corner to resize, scroll to zoom'],
+    ['Shift','hold to run'],
+    ['W W / S S','double-tap forward or back to run (while held)'],
+    ['','(release the key and you walk again)'],
     ['Ctrl+S','save your game'],
     ['N','mute / unmute sound'],
     ['',''],
     ['📱','on phones: left thumb = move stick,'],
     ['','right side = attack, buttons on the right edge'],
+    ['',''],
+    ['Esc','settings — field of view, draw distance,'],
+    ['','mouse sensitivity, nameplates, volume, and'],
+    ['','rebindable keys. The keys listed here are the'],
+    ['','defaults; Settings › Keybinds shows yours.'],
   ]},
   {title:'SURVIVE & CRAFT', rows:[
     ['axe','chop trees for wood'],
@@ -7418,7 +8960,9 @@ function drawInteractPrompts(){
   const ctx=G.ctx,px=player.x,py=player.y,items=[];
   const add=(wx,wy,label,rng,h)=>{ if(Math.hypot(wx-px,wy-py)<(rng||TILE*2.6))items.push({x:wx,y:wy,label,h}); };
   // name tags over remote players (multiplayer) — hidden players stay hidden
-  for(const [,st] of net.remotes) if(!st.hidden&&(!st.dead||st.ghost)) add(st.x,st.y,(st.ghost?'👻 ':'')+st.name,TILE*46,150);
+  if(prefs.showNames!==false)
+    for(const [,st] of net.remotes) if(!st.hidden&&(!st.dead||st.ghost))
+      add(st.x,st.y,(st.ghost?'👻 ':'')+st.name,TILE*(prefs.nameDist||46),150);
   if(player.ghost){
     add(HEALER.x,HEALER.y,'[E] Resurrect',TILE*3);
     for(const wh of WORLD_HEALERS)add(wh.x,wh.y,'[E] Resurrect',TILE*3);
@@ -7528,7 +9072,7 @@ function handleGambitClick(e){
 // ── Character sheet (L) ───────────────────────────────────────────
 // Level + XP, attribute allocation from level-up points, and the ARPG
 // equipment bag: equip/unequip rolled items and socket gems into them.
-const CHARP_W=440, CHARP_H=470;
+const CHARP_W=fitPanelW(440), CHARP_H=470;
 const CHAR_STATS=[['str','STR','melee damage'],['dex','DEX','arrow damage, speed'],['int','INT','arcane power'],['vit','VIT','max HP']];
 function charPanelXY(){return panelAt('charsheet', Math.round(G.canvas.width/2-CHARP_W/2), Math.round(G.canvas.height/2-CHARP_H/2), CHARP_W, CHARP_H);}
 function charStatRects(){
@@ -7667,7 +9211,10 @@ function recomputeDerivedStats(){
 
 function buildSave(){
   return {px:player.x,py:player.y,hp:player.hp,inv:{...inv},hasAxe:player.hasAxe,hasSword:player.hasSword,hasBow:player.hasBow,hasPickaxe:player.hasPickaxe,hasArmor:player.hasArmor,weapon:player.weapon,swordTier:player.swordTier||1,bowTier:player.bowTier||1,pickaxeTier:player.pickaxeTier||1,autoDefend:G.autoDefend!==false,aggroMode:!!G.aggroMode,armor:{...player.armor},bank:{gold:bank.gold},skillXp:{tactics:skills.tactics.xp,archery:skills.archery.xp,hiding:skills.hiding.xp,healing:skills.healing.xp,wrestling:skills.wrestling.xp},quests:{idx:questState.idx,prog:questState.prog},hasHouseTool:player.hasHouseTool,placedHouses:net.status==='online'?undefined:G.placedHouses,gambits,gambitsOn:!!G.gambitsOn,
-    placedObjects:placedObjects.map(o=>({...o})),
+    // Shared world state -- the server owns this and broadcasts it, so only
+    // persist a private copy when we are offline and nothing else will.
+    // Saving it while online is what let each browser restore a divergent world.
+    placedObjects:net.status==='online'?undefined:placedObjects.map(o=>({...o})),
     hasHorse:!!player.hasHorse,onHorse:!!player.onHorse,horseDown:!!player.horseDown,horseX:player.horseX||0,horseY:player.horseY||0,
     artifactInv:player.artifactInv.map(it=>({...it})),equippedArtifacts:{...player.equippedArtifacts},dollGender:player.dollGender,
     name:player.name,gender:player.gender,race:player.race,stats:{...(player.stats||{str:10,dex:10,int:10,vit:10})},
@@ -7850,12 +9397,26 @@ function loadGame(blob){
 }
 
 // ── Input ─────────────────────────────────────────────────────────
-function onKey(d){return e=>{if(!e.key)return;keys[e.key.toLowerCase()]=d;if(['arrowup','arrowdown','arrowleft','arrowright',' '].includes(e.key.toLowerCase()))e.preventDefault();};}
+// The movement code reads keys['w'] directly in half a dozen places, so a
+// rebind has to be applied HERE: press whatever is bound to Move Forward and the
+// map records it under 'w'. See canonKey() in settings.js for why that is the
+// whole of the rebinding mechanism.
+function onKey(d){return e=>{if(!e.key)return;
+  const raw=e.key.toLowerCase();
+  if(settingsCapture) return;                 // the menu is listening for a bind
+  const k=canonKey(raw);
+  keys[k]=d;
+  if(!uiBlocking()) dtapKey(k, d, !!e.repeat);
+  if(['arrowup','arrowdown','arrowleft','arrowright',' '].includes(raw))e.preventDefault();};}
 window.addEventListener('keydown',onKey(true));window.addEventListener('keyup',onKey(false));
 document.addEventListener('keydown',onKey(true));document.addEventListener('keyup',onKey(false));
 
 window.addEventListener('keydown',e=>{
-  const k=e.key.toLowerCase();
+  const kRaw=e.key.toLowerCase();
+  // The settings menu is waiting for a key to assign: swallow it whole, so that
+  // binding Crafting to 'm' does not also open the map on the way past.
+  if(settingsCapture){ e.preventDefault(); captureBind(kRaw); return; }
+  const k=canonKey(kRaw);
   if(k==='f2'){
     e.preventDefault();
     G.editorOpen=!G.editorOpen;
@@ -7882,7 +9443,6 @@ window.addEventListener('keydown',e=>{
   if(k==='i'){G.dollOpen=!G.dollOpen;if(!G.dollOpen)G.dollPick=null;}
   if(k==='o'){G.craftOpen=G.tradeOpen=G.bankOpen=G.skillOpen=G.questOpen=G.dollOpen=false;G.backpackOpen=!G.backpackOpen;}
   if(k==='y'){G.craftOpen=G.tradeOpen=G.bankOpen=G.skillOpen=G.questOpen=G.dollOpen=false;G.gambitOpen=!G.gambitOpen;}
-  if(k==='u'){G.craftOpen=G.tradeOpen=G.bankOpen=G.skillOpen=G.questOpen=G.dollOpen=G.gambitOpen=false;G.hotbarEditOpen=!G.hotbarEditOpen;}
   if(k>='1'&&k<='8'&&!e.ctrlKey&&!uiBlocking())fireHotbarSlot(k.charCodeAt(0)-49);
   if(k==='z'&&!uiBlocking())fireHotbarSlot(G.hotbarSel);
   if(k==='m')G.minimapOpen=!G.minimapOpen;
@@ -7890,18 +9450,31 @@ window.addEventListener('keydown',e=>{
   if(e.ctrlKey&&(k==='='||k==='+')){e.preventDefault();camZoom=Math.max(0.3,camZoom*0.89);}
   if(e.ctrlKey&&(k==='-'||k==='_')){e.preventDefault();camZoom=Math.min(3.0,camZoom*1.12);}
   if(e.ctrlKey&&k==='0'){e.preventDefault();camZoom=innerWidth<600?0.55:0.72;}
+  // Camera presets. Every letter on the keyboard was already bound, and the
+  // brackets read as "step through a list" anyway.
+  if(!e.ctrlKey&&!e.altKey&&k===']'){e.preventDefault();setCamMode(camModeIdx+1);}
+  if(!e.ctrlKey&&!e.altKey&&k==='['){e.preventDefault();setCamMode(camModeIdx-1);}
   if(k==='n'){const nm=!soundMuted;setSoundMuted(nm);addFloater(player.x,player.y-30,nm?'sound off':'sound on');}
   if(k==='`'){
     e.preventDefault();
     G.devGuiOpen=!G.devGuiOpen;
     G.craftOpen=G.tradeOpen=G.buildMode=G.bankOpen=G.skillOpen=G.questOpen=G.houseSettingsOpen=G.houseMenuOpen=false;
-    G.antiqOpen=G.cryptoOpen=G.curatorOpen=G.robberOpen=G.hotbarEditOpen=false;
+    G.antiqOpen=G.cryptoOpen=G.curatorOpen=G.robberOpen=false;
     return;
   }
   if(k==='escape'){
+    // Escape is first and foremost a "close what is open" key -- so remember
+    // whether anything WAS open before the closer below runs. Only if nothing
+    // was does Escape mean "show me the settings".
+    // modalOpen() and uiBlocking() between them name every panel this branch
+    // closes. The minimap is deliberately NOT among them: Escape does not close
+    // it, so counting it as "something was open" would mean the settings menu
+    // could never be reached -- the minimap is on by default.
+    const _hadOpen = modalOpen()||uiBlocking();
+    G.settingsOpen=false; settingsCapture=null; setSliderDrag=null;
+    if(!_hadOpen){ G.settingsOpen=true; settingsTab=0; settingsScroll=0; }
     G.craftOpen=false;G.buildMode=false;G.tradeOpen=false;G.skillOpen=false;G.bankOpen=false;G.smithOpen=false;G.mageOpen=false;G.farrierOpen=false;G.questOpen=false;G.dollOpen=false;G.dollPick=null;G.gambitOpen=false;
     G.antiqOpen=false;G.cryptoOpen=false;G.curatorOpen=false;G.robberOpen=false;
-    G.hotbarEditOpen=false;
     G.houseMenuOpen=false;
     G.houseSettingsOpen=false;
     G.devGuiOpen=false;
@@ -8038,10 +9611,106 @@ window.addEventListener('keydown',e=>{
   }
 });
 
+// Was a plain constant; it is now the DEFAULT of a preference. Read through
+// stickMax() rather than captured once, because the setting can move while the
+// game is running.
+const STICK_MAX = 60;
+function stickMax(){ return Math.max(36, Math.min(96, prefs.stickSize || STICK_MAX)); }
+function stickSprint(){ return stickMax() * 1.3; }   // 78/60 -- the shipped ratio
+// Push past the ring to sprint. Chosen over a separate button because the right
+// side of the screen is already eight buttons deep, and over a double-tap because
+// that costs a beat you do not have when something is chasing you.
+const STICK_SPRINT = 78;
 function touchVec(){
   if(!stick.active)return{x:0,y:0};
-  const max=60;let dx=stick.dx,dy=stick.dy,len=Math.hypot(dx,dy);
+  const max=stickMax();let dx=stick.dx,dy=stick.dy,len=Math.hypot(dx,dy);
   if(len>max){dx=dx/len*max;dy=dy/len*max;}return{x:dx/max,y:dy/max};
+}
+// 1.4x deliberately matches the run multiplier a long right-click already gives on
+// desktop, and the server's MAX_SPEED budget names that exact figure -- so sprinting
+// introduces no speed the anti-cheat has not already accounted for.
+const SPRINT_MULT = 1.4;
+
+// ── Running on a keyboard ────────────────────────────────────────
+// A tap is a press and release inside DTAP_MS.
+//
+// This was 300, which is what the gesture measures at when a test fires the two
+// presses 140ms apart — but that is not a hand. The platform's own double-click
+// threshold is 400-500ms and nobody calls that sluggish, so a real double-tap
+// that took 320ms was being silently thrown away as two separate steps. 400 is
+// still far too fast to hit by walking in taps.
+const DTAP_MS = 400;
+// Release-to-press gap. Auto-repeat delivered as keyup/keydown pairs has a gap
+// of ~0-5ms; a human lifting a finger and putting it back cannot get near 45ms.
+// This single number is what separates the two, and it is why the detector no
+// longer has to trust e.repeat.
+const DTAP_MIN_GAP = 45;
+// Longest press that still counts as a TAP. Holding the key for a third of a
+// second is walking, not tapping, and must not prime the gesture.
+const DTAP_TAP_MAX = 260;
+const _dtapAt   = { w:0, s:0 };   // when the current/last press began
+const _dtapUp   = { w:0, s:0 };   // when it was released
+const _dtapShort= { w:false, s:false };   // was that press short enough to be a tap
+let _dtapRun = null;             // the key that latched the run, or null
+// Diagnostics. "Double-tap does not work" has too many possible causes to guess
+// between — wrong camera mode, taps too slow, the key never seen at all — and
+// each looks identical from outside. These make it one question.
+const _dtapDbg = { downs:0, taps:0, arms:0, lastGapMs:null, lastReleaseGapMs:null, lastRejected:null };
+// `k` is the CANONICAL key — onKey has already translated it — so this reads
+// 'w' and 's' whatever the player has actually bound to forward and back.
+const _now = () => (typeof performance!=='undefined') ? performance.now() : Date.now();
+function dtapKey(k, down, repeat){
+  if(k!=='w' && k!=='s') return;
+  const now = _now();
+  if(!down){
+    // Record the shape of the press that just ended: only a SHORT one can prime
+    // a double tap. This is what stops "hold W, twitch, hold W" from running.
+    _dtapShort[k] = (now - _dtapAt[k]) <= DTAP_TAP_MAX;
+    _dtapUp[k] = now;
+    if(_dtapRun===k) _dtapRun=null;
+    return;
+  }
+  _dtapDbg.downs++;
+  // e.repeat is still honoured where the browser sets it — it is just no longer
+  // the only defence, because it is not reliably set.
+  if(repeat){ _dtapDbg.lastRejected='auto-repeat flag'; return; }
+  _dtapDbg.taps++;
+
+  const sincePress   = now - _dtapAt[k];   // this press vs the previous press
+  const sinceRelease = now - _dtapUp[k];   // this press vs the last release
+  _dtapDbg.lastGapMs = Math.round(sincePress);
+  _dtapDbg.lastReleaseGapMs = Math.round(sinceRelease);
+
+  if(!_dtapShort[k])                     _dtapDbg.lastRejected='previous press was a hold, not a tap';
+  else if(sinceRelease < DTAP_MIN_GAP)   _dtapDbg.lastRejected='release gap '+Math.round(sinceRelease)+'ms — key repeat, not a tap';
+  else if(sincePress >= DTAP_MS)         _dtapDbg.lastRejected='taps '+Math.round(sincePress)+'ms apart, window is '+DTAP_MS;
+  else { _dtapRun = k; _dtapDbg.arms++; _dtapDbg.lastRejected=null; }
+
+  _dtapAt[k] = now;
+}
+// Alt-tab, click away, or anything else that takes focus mid-stride: the keyup
+// never arrives and the key stays down forever. A stuck Sprint is a permanent
+// run, which is the other way to get the symptom this fix is about.
+addEventListener('blur', () => {
+  for(const k in keys) keys[k] = false;
+  _dtapRun = null;
+  _dtapShort.w = _dtapShort.s = false;
+});
+function keyboardRunning(){
+  // Belt and braces: if the keyup was swallowed (a menu opened over it, the
+  // window lost focus mid-stride) the latch would otherwise stick on forever.
+  if(_dtapRun && !keys[_dtapRun]) _dtapRun = null;
+  // Walking is the default and there is no way to make it not the default.
+  // An always-run preference used to live here; it is gone on purpose. Stealth
+  // is going to key off player.running, and a mode where the character runs
+  // without the player asking would silently make them audible everywhere.
+  //
+  // keys[] is indexed by canonical key, so 'shift' here means "whatever is
+  // bound to Sprint" without this having to look the binding up.
+  return !!keys['shift'] || _dtapRun !== null;
+}
+function touchSprinting(){
+  return stick.active && Math.hypot(stick.dx, stick.dy) > stickSprint();
 }
 // ── Touch controls ────────────────────────────────────────────────
 // Left half: virtual joystick. Right half: hold to attack toward the
@@ -8061,7 +9730,14 @@ function touchBtns(){
     {k:'t', lab:'?',  x:bx, y:by-gap*6},
     {k:'x', lab:'⚔',  x:bx, y:by-gap*7},
     {k:'o', lab:'🎒', x:bx-gap, y:by},          // backpack (second column)
-    {k:'u', lab:'🎛', x:bx-gap, y:by-gap},      // hotbar loadout (second column)
+    // Viewpoint. Dispatches the same ']' the keyboard uses, so presets have one
+    // code path. Without this a touch device could not change camera at all --
+    // camAngle/camPitch are otherwise keyboard- and pointer-lock-only.
+    {k:']', lab:'👁', x:bx-gap, y:by-gap},
+    // Call the guards. callGuards() has always existed on 'g' and is even in the
+    // help panel, but there was no way to reach it without a keyboard -- so on a
+    // phone the single most useful "get me out of this" action was unreachable.
+    {k:'g', lab:'🛡', x:bx-gap, y:by-gap*2},
   ];
   if(player.hasHorse) btns.push({k:'r', lab:'🐴', x:bx, y:by-gap*8});   // mount/dismount/whistle
   return btns;
@@ -8073,6 +9749,7 @@ function hitTouchBtn(x,y){
 const pinch={active:false,d0:0,z0:1,target:null};
 const uiTouch={id:null};   // finger currently driving an open panel (as a mouse)
 const _tDist=(a,b)=>Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+addEventListener('mouseup',()=>{ setSliderDrag=null; });
 const _fwdMouse=(type,x,y,onWin)=>(onWin?window:G.canvas).dispatchEvent(new MouseEvent(type,{clientX:x,clientY:y,button:0,buttons:type==='mouseup'?0:1,bubbles:true}));
 G.canvas.addEventListener('touchstart',e=>{
   if(!G.isTouch){G.isTouch=true;applyMobileHudMode();}
@@ -8102,8 +9779,11 @@ G.canvas.addEventListener('touchstart',e=>{
   for(const t of e.changedTouches){
     const b=hitTouchBtn(t.clientX,t.clientY);
     if(b){
-      window.dispatchEvent(new KeyboardEvent('keydown',{key:b.k,bubbles:true}));
-      window.dispatchEvent(new KeyboardEvent('keyup',{key:b.k,bubbles:true}));
+      // b.k is the DEFAULT key for that action; send whatever it is bound to now,
+      // or canonKey() on the way in would treat it as a key that does nothing.
+      const _bk=keyForDefault(b.k);
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:_bk,bubbles:true}));
+      window.dispatchEvent(new KeyboardEvent('keyup',{key:_bk,bubbles:true}));
       continue;
     }
     // hotbar tap fires the slot (before the joystick/attack zones claim it)
@@ -8124,7 +9804,8 @@ G.canvas.addEventListener('touchstart',e=>{
     // build / house-placement: tap places at that spot if outside the stick zone
     // Thumb zone for the movement stick. 30% of a narrow phone is only ~110px,
     // which is a cramped target, so give small screens a wider share.
-    const touchLimit = Math.min(innerWidth * (innerWidth < 500 ? 0.42 : 0.3), 240);
+    const touchLimit = Math.min(innerWidth * (innerWidth < 500 ? 0.42 : 0.3)
+                                 * Math.max(0.6, Math.min(1.5, prefs.stickZone || 1)), 300);
     if((G.buildMode||G.housePlacementMode)&&t.clientX>=touchLimit){
       _fwdMouse('mousedown',t.clientX,t.clientY); _fwdMouse('mouseup',t.clientX,t.clientY,true); continue;
     }
@@ -8181,13 +9862,22 @@ function minimapRect(){
 }
 
 G.canvas.addEventListener('mousedown',e=>{
+  // First person with the mouse released — Esc, alt-tab, a boot-time request the browser
+  // refused, or a menu we just closed. The click buys the look back rather than swinging
+  // at something you cannot aim at. Once held, clicks behave normally again.
+  //
+  // This is also why no hint is needed: the recovery IS a click, and clicking is what you
+  // were going to do. Pointer Lock cannot be entered without a user gesture, so a click
+  // is the closest to automatic the browser permits.
+  if(camMode().fp && document.pointerLockElement!==G.canvas && e.button===0 && !modalOpen()){
+    requestLook(); e.preventDefault(); return;
+  }
   if(G.charSelectOpen&&e.button===0){handleCharSelectClick(e);return;}
   if(G.charCreatorOpen&&e.button===0){handleCharCreatorClick(e);return;}
   // the jewelry picker floats outside the doll panel — route to it first
   if(G.dollOpen&&G.dollPick&&e.button===0&&handleDollClick(e))return;
   if(e.button===0&&panelDragStart(e.clientX,e.clientY))return;   // grab a panel header
   if(G.gambitOpen&&e.button===0){handleGambitClick(e);return;}
-  if(G.hotbarEditOpen&&e.button===0){if(!handleHotbarEditClick(e))G.hotbarEditOpen=false;return;}
   // hotbar: press a slot — a plain click fires it on release, dragging moves
   // it (slot↔slot swap, off the bar to unbind). Middle-click (no drag) fires
   // the selected slot; middle-DRAG orbits the camera (spin + tilt).
@@ -8195,8 +9885,12 @@ G.canvas.addEventListener('mousedown',e=>{
     if(e.button===0){
       const hi=hotbarSlotAt(e.clientX,e.clientY);
       if(hi!==-1){
-        if(hotbar[hi])uiDrag={src:'hotbar',slotIdx:hi,sx:e.clientX,sy:e.clientY,x:e.clientX,y:e.clientY,moved:false};
-        else fireHotbarSlot(hi);                    // empty slot: just select
+        // Dragging rearranges the bar, and rearranging is what the pack is for. With the
+        // pack closed a hotbar click just fires the slot — which also stops a click that
+        // moved a few pixels mid-fight from silently unbinding something.
+        if(hotbar[hi] && G.backpackOpen)
+          uiDrag={src:'hotbar',slotIdx:hi,sx:e.clientX,sy:e.clientY,x:e.clientX,y:e.clientY,moved:false};
+        else fireHotbarSlot(hi);                    // fire it (empty slots just select)
         return;
       }
     }
@@ -8319,6 +10013,7 @@ G.canvas.addEventListener('mousedown',e=>{
   if(G.robberOpen){if(!handleRobberClick(e))G.robberOpen=false;return;}
   if(G.houseMenuOpen){if(!handleHouseMenuClick(e))G.houseMenuOpen=false;return;}
   if(G.houseSettingsOpen){if(!handleHouseSettingsClick(e))G.houseSettingsOpen=false;return;}
+  if(G.settingsOpen){if(!handleSettingsClick(e))G.settingsOpen=false;return;}
   if(G.devGuiOpen){if(!handleDevClick(e))G.devGuiOpen=false;return;}
   if(G.housePlacementMode){
     if(e.button===0){
@@ -8371,12 +10066,47 @@ G.canvas.addEventListener('mousedown',e=>{
     }
     G.tradeOpen=false;return;
   }
-  if(G.craftOpen){for(const r of recipeRects())if(e.clientX>=r.x&&e.clientX<=r.x+r.w&&e.clientY>=r.y&&e.clientY<=r.y+r.h){doCraft(r.id);return;}G.craftOpen=false;return;}
+  if(G.craftOpen){
+    const _hit=(r)=>e.clientX>=r.x&&e.clientX<=r.x+r.w&&e.clientY>=r.y&&e.clientY<=r.y+r.h;
+    // Arrows first: they sit in the header, but testing them after the rows would let a
+    // stray overlap craft something instead of scrolling.
+    if(craftMaxScroll()>0){
+      const b=craftScrollBtns();
+      if(_hit(b.up)){   G.craftScroll=Math.max(0,(G.craftScroll||0)-1); return; }
+      if(_hit(b.down)){ G.craftScroll=Math.min(craftMaxScroll(),(G.craftScroll||0)+1); return; }
+    }
+    for(const r of recipeRects())if(r.vis&&_hit(r)){doCraft(r.id);return;}
+    G.craftOpen=false;return;
+  }
   if(G.buildMode){const w=screenToWorld(e.clientX,e.clientY);placeItem(w.x,w.y);return;}
   if(aggroBtnRect&&e.button===0&&e.clientX>=aggroBtnRect.x&&e.clientX<=aggroBtnRect.x+aggroBtnRect.w&&e.clientY>=aggroBtnRect.y&&e.clientY<=aggroBtnRect.y+aggroBtnRect.h){toggleAggro();return;}
   mouse.down=true;mouse.sx=e.clientX;mouse.sy=e.clientY;mouse.hasPos=true;
 });
 G.canvas.addEventListener('mousemove',e=>{
+  if(setSliderDrag){ const{row,ctl}=setSliderDrag; row.set(sliderValueAt(row,ctl,e.clientX)); return; }
+  // Pointer-locked first person: the cursor no longer exists, so the movement
+  // deltas turn the head instead. mouse.sx/sy are pinned to the centre of the
+  // screen so everything downstream that aims at "where the cursor is" — the
+  // attack ray, RMB move-toward — aims at the crosshair, which is what a first
+  // person view means.
+  if(document.pointerLockElement===G.canvas){
+    // 0.0022 rad/px was the shipped feel, so a sensitivity of 1.0 is exactly
+    // what it always was -- nobody's aim changes unless they ask for it.
+    const _sens=0.0022*(prefs.lookSens||1), _iy=prefs.invertY?-1:1;
+    camAngle=(camAngle - e.movementX*_sens + Math.PI*2)%(Math.PI*2);
+    fpPitch=Math.max(-FP_PITCH_LIMIT,Math.min(FP_PITCH_LIMIT,fpPitch - e.movementY*_sens*_iy));
+    mouse.sx=innerWidth*0.5; mouse.sy=innerHeight*0.5; mouse.hasPos=true;
+    return;
+  }
+  // First person without the lock: cursor motion IS the look, no button held.
+  // Aim stays pinned to the crosshair exactly as it is under the lock, so the
+  // attack ray and RMB move-toward agree with what the centre of the screen is
+  // pointing at rather than with where the cursor happens to be.
+  // Already handled by the window-capture listener above, which runs first and
+  // sees moves this one never gets (anything over the platform's top-strip
+  // chrome). Just step aside so the cursor-position path below does not also
+  // run and move the aim off the crosshair.
+  if(fpFreeLookActive()) return;
   mouse.sx=e.clientX;mouse.sy=e.clientY;mouse.hasPos=true;
   if(uiDrag){                      // item drag: ghost follows the cursor
     uiDrag.x=e.clientX;uiDrag.y=e.clientY;
@@ -8389,7 +10119,11 @@ G.canvas.addEventListener('mousemove',e=>{
     camOrbit.dist+=Math.abs(dx)+Math.abs(dy);
     if(camOrbit.dist>6)camOrbit.moved=true;
     camAngle=(camAngle - dx*0.006 + Math.PI*2)%(Math.PI*2);
-    camPitch=Math.max(0.06,Math.min(1.54,camPitch - dy*0.005));
+    // In first person the vertical drag is a look, not an orbit tilt — camPitch
+    // is meaningless there and changing it would silently alter the framing you
+    // return to when you step back out.
+    if(camMode().fp) fpPitch=Math.max(-FP_PITCH_LIMIT,Math.min(FP_PITCH_LIMIT,fpPitch - dy*0.005));
+    else camPitch=Math.max(0.06,Math.min(1.54,camPitch - dy*0.005));
     return;
   }
   if(radialDrag&&radialDrag.id==='mouse'){moveRadialTo(e.clientX,e.clientY);return;}
@@ -8433,6 +10167,15 @@ G.canvas.addEventListener('wheel',e=>{
       return;
     }
   }
+  // craft open: wheel over the panel scrolls the recipe list. 35 recipes do not fit
+  // a phone in one column, so without this the lower half is unreachable.
+  if(G.craftOpen){
+    const {px,py}=panelXY();
+    if(e.clientX>=px&&e.clientX<=px+PANEL_W&&e.clientY>=py&&e.clientY<=py+PANEL_H){
+      G.craftScroll=Math.max(0,Math.min(craftMaxScroll(),(G.craftScroll||0)+(e.deltaY>0?1:-1)));
+      return;
+    }
+  }
   // backpack open: wheel over the bag scrolls its grid rows
   if(G.backpackOpen){
     const g=packGridRect();
@@ -8459,10 +10202,31 @@ function renderCraftPanel(){
   ctx.strokeStyle='#c8a25a';ctx.lineWidth=1.5;ctx.strokeRect(px,py,PANEL_W,PANEL_H);
   ctx.fillStyle='#c8a25a';ctx.font='bold 13px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';
   ctx.fillText('CRAFTING  ·  C to close',px+PANEL_W/2,py+HEADER_H-8);
+  // Tell the player there is more, and roughly where they are. Without this a
+  // single-column list looks like the whole recipe book is six items long.
+  const _maxS=craftMaxScroll();
+  if(_maxS>0){
+    const rowsTotal=Math.ceil(RECIPES.length/craftCols());
+    const b=craftScrollBtns();
+    const arrow=(r,glyph,on)=>{
+      ctx.fillStyle=on?'rgba(90,65,20,.9)':'rgba(30,26,20,.8)';ctx.fillRect(r.x,r.y,r.w,r.h);
+      ctx.strokeStyle=on?'#c8a25a':'rgba(100,90,80,.35)';ctx.lineWidth=1;ctx.strokeRect(r.x,r.y,r.w,r.h);
+      ctx.fillStyle=on?'#e8dcc0':'#555';ctx.font='13px ui-monospace,Menlo,Consolas,monospace';
+      ctx.textAlign='center';ctx.fillText(glyph,r.x+r.w/2,r.y+r.h/2+4.5);
+    };
+    arrow(b.up,'▲',G.craftScroll>0);
+    arrow(b.down,'▼',G.craftScroll<_maxS);
+    ctx.font='10px ui-monospace,Menlo,Consolas,monospace';
+    ctx.fillStyle='rgba(200,162,90,.75)';ctx.textAlign='left';
+    ctx.fillText('rows '+(G.craftScroll+1)+'-'+Math.min(G.craftScroll+craftRowsVisible(),rowsTotal)+' of '+rowsTotal,
+                 px+PANEL_PAD,py+HEADER_H+22);
+    ctx.textAlign='center';
+  }
   ctx.strokeStyle='rgba(200,162,90,.3)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(px+8,py+HEADER_H);ctx.lineTo(px+PANEL_W-8,py+HEADER_H);ctx.stroke();
   const rects=recipeRects();
-  for(let i=0;i<RECIPES.length;i++){
-    const r=rects[i],rec=RECIPES[i],can=canCraft(rec.id);
+  for(const r of rects){
+    if(!r.vis) continue;
+    const rec=r.rec,can=canCraft(rec.id);
     let locked=false;
     if(rec.adv){
       if(rec.id==='iron_ingot') locked=!fg;
@@ -8610,7 +10374,7 @@ const SMITH_ITEMS=[
   {id:'rarmor',label:'Runic Armor (+18%)',price:320,kind:'apiece',mat:6},
   {id:'bandage',label:'Bandage',price:8,kind:'res',key:'bandages',amt:1}
 ];
-const SMITH_W=300,SMITH_ROW_H=42,SMITH_HEADER=48,SMITH_PAD=14,SMITH_H=SMITH_HEADER+SMITH_PAD+SMITH_ITEMS.length*SMITH_ROW_H+SMITH_PAD;
+const SMITH_W=fitPanelW(300),SMITH_ROW_H=42,SMITH_HEADER=48,SMITH_PAD=14,SMITH_H=SMITH_HEADER+SMITH_PAD+SMITH_ITEMS.length*SMITH_ROW_H+SMITH_PAD;
 function smithPanelXY(){return panelAt('smith', Math.round(G.canvas.width/2-SMITH_W/2), Math.round(G.canvas.height/2-SMITH_H/2), SMITH_W, SMITH_H);}
 function smithRects(){const{px,py}=smithPanelXY(),top=py+SMITH_HEADER+SMITH_PAD;return SMITH_ITEMS.map((it,i)=>({y:top+i*SMITH_ROW_H,x:px+SMITH_PAD,w:SMITH_W-SMITH_PAD*2,h:SMITH_ROW_H-4,btnX:px+SMITH_W-SMITH_PAD-80,btnW:78,btnH:SMITH_ROW_H-14,item:it}));}
 function canSmithBuy(it){
@@ -8637,7 +10401,7 @@ function renderSmithPanel(){
   ctx.textAlign='left';
 }
 const MAGE_ITEMS=[{id:'potion',label:'Heal Potion',sub:'Restores 50 HP  [P to use]',price:15,maxStack:10}];
-const MAGE_W=300,MAGE_ROW_H=52,MAGE_HEADER=48,MAGE_PAD=14,MAGE_H=MAGE_HEADER+MAGE_PAD+MAGE_ITEMS.length*MAGE_ROW_H+MAGE_PAD;
+const MAGE_W=fitPanelW(300),MAGE_ROW_H=52,MAGE_HEADER=48,MAGE_PAD=14,MAGE_H=MAGE_HEADER+MAGE_PAD+MAGE_ITEMS.length*MAGE_ROW_H+MAGE_PAD;
 function magePanelXY(){return panelAt('mage', Math.round(G.canvas.width/2-MAGE_W/2), Math.round(G.canvas.height/2-MAGE_H/2), MAGE_W, MAGE_H);}
 function mageRects(){const{px,py}=magePanelXY(),top=py+MAGE_HEADER+MAGE_PAD;return MAGE_ITEMS.map((it,i)=>({y:top+i*MAGE_ROW_H,x:px+MAGE_PAD,w:MAGE_W-MAGE_PAD*2,h:MAGE_ROW_H-4,btnX:px+MAGE_W-MAGE_PAD-80,btnW:78,btnH:MAGE_ROW_H-18,item:it}));}
 function handleMageClick(e){for(const r of mageRects()){const it=r.item;if(e.clientX>=r.btnX&&e.clientX<=r.btnX+r.btnW&&e.clientY>=r.y+(r.h-r.btnH)/2&&e.clientY<=r.y+(r.h+r.btnH)/2){if(it.id==='potion'){if(inv.gold<it.price){addFloater(player.x,player.y-20,'need '+it.price+'g!');return true;}if(inv.potions>=it.maxStack){addFloater(player.x,player.y-20,'already full!');return true;}inv.gold-=it.price;inv.potions++;snd.gold();addFloater(player.x,player.y-20,'potion bought!');}return true;}}return false;}
@@ -8650,7 +10414,7 @@ function renderMagePanel(){
   for(const r of mageRects()){const it=r.item,full=inv.potions>=it.maxStack,can=inv.gold>=it.price&&!full;ctx.fillStyle='rgba(20,10,40,.85)';ctx.fillRect(r.x,r.y,r.w,r.h);ctx.strokeStyle='rgba(130,80,200,.4)';ctx.lineWidth=1;ctx.strokeRect(r.x,r.y,r.w,r.h);ctx.textAlign='left';ctx.fillStyle='#d0b0ff';ctx.font='bold 13px ui-monospace,Menlo,Consolas,monospace';ctx.fillText(it.label,r.x+8,r.y+16);ctx.fillStyle='rgba(180,160,220,.6)';ctx.font='11px ui-monospace,Menlo,Consolas,monospace';ctx.fillText(it.sub,r.x+8,r.y+32);const by=r.y+(r.h-r.btnH)/2;ctx.fillStyle=can?'rgba(80,30,150,.9)':'rgba(30,15,50,.7)';ctx.fillRect(r.btnX,by,r.btnW,r.btnH);ctx.strokeStyle=can?'#aa66ff':'rgba(80,50,120,.4)';ctx.lineWidth=1;ctx.strokeRect(r.btnX,by,r.btnW,r.btnH);ctx.fillStyle=can?'#e0b0ff':'#554';ctx.font='12px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';ctx.fillText(full?'FULL':it.price+'g buy',r.btnX+r.btnW/2,by+r.btnH/2+4);}
   ctx.textAlign='left';
 }
-const FARRIER_W=300,FARRIER_HEADER=48,FARRIER_PAD=14,FARRIER_BODY_H=110,FARRIER_H=FARRIER_HEADER+FARRIER_PAD+FARRIER_BODY_H+FARRIER_PAD;
+const FARRIER_W=fitPanelW(300),FARRIER_HEADER=48,FARRIER_PAD=14,FARRIER_BODY_H=110,FARRIER_H=FARRIER_HEADER+FARRIER_PAD+FARRIER_BODY_H+FARRIER_PAD;
 function farrierPanelXY(){return panelAt('farrier', Math.round(G.canvas.width/2-FARRIER_W/2), Math.round(G.canvas.height/2-FARRIER_H/2), FARRIER_W, FARRIER_H);}
 function handleFarrierClick(e){const{px,py}=farrierPanelXY();const bx=px+FARRIER_PAD,bw=FARRIER_W-FARRIER_PAD*2,bh=36,by=py+FARRIER_HEADER+FARRIER_PAD+58;if(e.clientX>=bx&&e.clientX<=bx+bw&&e.clientY>=by&&e.clientY<=by+bh){if(player.hasHorse){addFloater(player.x,player.y-20,'already have a horse!');return true;}if(inv.gold<200){addFloater(player.x,player.y-20,'need 200g!');return true;}inv.gold-=200;player.hasHorse=true;player.onHorse=true;snd.gold();addFloater(player.x,player.y-20,'horse acquired! [R] to mount/dismount');G.farrierOpen=false;return true;}return false;}
 function renderFarrierPanel(){
@@ -8666,7 +10430,7 @@ function renderFarrierPanel(){
 }
 
 // ── Antiquarian — shop (T2/T3 for relics, 420s refresh) + artifact inventory ──
-const ANTIQ_W=340,ANTIQ_ROW_H=40,ANTIQ_HEADER=54,ANTIQ_PAD=14,ANTIQ_STOCK_N=4,ANTIQ_REFRESH=420;
+const ANTIQ_W=fitPanelW(340),ANTIQ_ROW_H=40,ANTIQ_HEADER=54,ANTIQ_PAD=14,ANTIQ_STOCK_N=4,ANTIQ_REFRESH=420;
 function antiqStockPrice(tier){return tier===3?5:2;}
 function ensureAntiqStock(){
   if(G.antiqStock&&G.gameTime-G.antiqStockAt<ANTIQ_REFRESH)return;
@@ -8749,7 +10513,7 @@ function renderAntiqPanel(){
 }
 
 // ── Cryptologist — identify unidentified artifacts for 25g ───────
-const CRYPTO_ROW_H=44,CRYPTO_W=320,CRYPTO_HEADER=48,CRYPTO_PAD=14,CRYPTO_COST=25;
+const CRYPTO_ROW_H=44,CRYPTO_W=fitPanelW(320),CRYPTO_HEADER=48,CRYPTO_PAD=14,CRYPTO_COST=25;
 function cryptoUnidRows(){return player.artifactInv.map((item,idx)=>({idx,item})).filter(r=>!r.item.identified);}
 function cryptoPanelXY(){
   const n=Math.max(1,cryptoUnidRows().length);
@@ -8790,7 +10554,7 @@ function renderCryptoPanel(){
 }
 
 // ── Museum Curator — rotating artifact bounty board ───────────────
-const CURATOR_W=320,CURATOR_HEADER=48,CURATOR_PAD=14,CURATOR_BODY_H=100,CURATOR_H=CURATOR_HEADER+CURATOR_PAD+CURATOR_BODY_H+CURATOR_PAD,CURATOR_REFRESH=600;
+const CURATOR_W=fitPanelW(320),CURATOR_HEADER=48,CURATOR_PAD=14,CURATOR_BODY_H=100,CURATOR_H=CURATOR_HEADER+CURATOR_PAD+CURATOR_BODY_H+CURATOR_PAD,CURATOR_REFRESH=600;
 function ensureBounty(){
   if(G.bounty&&G.gameTime-G.bountyAt<CURATOR_REFRESH)return;
   G.bounty={defId:ARTIFACT_DEFS[Math.floor(Math.random()*ARTIFACT_DEFS.length)].id};
@@ -8834,7 +10598,7 @@ function renderCuratorPanel(){
 }
 
 // ── Grave Robber — 75g gamble box (90% trash · 9% T1 · 1% T3) ────
-const ROBBER_W=300,ROBBER_HEADER=48,ROBBER_PAD=14,ROBBER_BODY_H=90,ROBBER_H=ROBBER_HEADER+ROBBER_PAD+ROBBER_BODY_H+ROBBER_PAD,ROBBER_COST=75;
+const ROBBER_W=fitPanelW(300),ROBBER_HEADER=48,ROBBER_PAD=14,ROBBER_BODY_H=90,ROBBER_H=ROBBER_HEADER+ROBBER_PAD+ROBBER_BODY_H+ROBBER_PAD,ROBBER_COST=75;
 function robberPanelXY(){return panelAt('robber', Math.round(G.canvas.width/2-ROBBER_W/2), Math.round(G.canvas.height/2-ROBBER_H/2), ROBBER_W, ROBBER_H);}
 function gambleBox(){
   if(inv.gold<ROBBER_COST){addFloater(player.x,player.y-20,'need '+ROBBER_COST+'g!');return;}
@@ -8877,7 +10641,7 @@ const HOUSES = [
   }
 ];
 
-const HOUSE_W = 320, HOUSE_ROW_H = 64, HOUSE_HEADER = 48, HOUSE_PAD = 14;
+const HOUSE_W = fitPanelW(320), HOUSE_ROW_H = 64, HOUSE_HEADER = 48, HOUSE_PAD = 14;
 const HOUSE_H = HOUSE_HEADER + HOUSE_PAD + HOUSES.length * HOUSE_ROW_H + HOUSE_PAD;
 
 function housePanelXY() {
@@ -9241,7 +11005,7 @@ function isInsidePlacedHouse(tx, ty) {
   return false;
 }
 
-const SETTINGS_W = 320, SETTINGS_H = 340, SETTINGS_HEADER = 48, SETTINGS_PAD = 14;
+const SETTINGS_W = fitPanelW(320), SETTINGS_H = 340, SETTINGS_HEADER = 48, SETTINGS_PAD = 14;
 function houseSettingsPanelXY() {
   return panelAt('house_settings', Math.round(G.canvas.width/2 - SETTINGS_W/2), Math.round(G.canvas.height/2 - SETTINGS_H/2), SETTINGS_W, SETTINGS_H);
 }
@@ -9465,8 +11229,14 @@ function packOrderKeys(){
 function packReorder(fromIdx,toIdx){
   const items=packItems(),a=items[fromIdx];
   if(!a||a.kind!=='res'||fromIdx===toIdx)return;
-  const order=packOrderKeys().filter(k=>k!==a.k);
-  order.splice(Math.max(0,Math.min(toIdx,order.length)),0,a.k);
+  // fromIdx/toIdx index the VISIBLE pack, which now only lists what is actually
+  // carried — so they cannot be spliced straight into packOrderKeys(), which still
+  // holds every item in the game. Reorder the visible keys, then put the ones the
+  // player is not carrying after them so they keep a stable order for later.
+  const visible=items.filter(it=>it.kind==='res').map(it=>it.k);
+  const moved=visible.filter(k=>k!==a.k);
+  moved.splice(Math.max(0,Math.min(toIdx,moved.length)),0,a.k);
+  const order=[...moved,...packOrderKeys().filter(k=>!moved.includes(k))];
   packOrder=order;
   try{localStorage.setItem(PACK_ORDER_KEY,JSON.stringify(order));}catch(_){}
   G.packSel=Math.min(toIdx,packItems().length-1);
@@ -9485,18 +11255,29 @@ const BAG_W=300, BAG_ROWH=26, BAG_PAD=12;   // still used by the secure-chest pa
 // ── Backpack — artwork grid (O) ────────────────────────────────────
 // The 6×6 grid area of the backpack art holds resources + artifacts as
 // icon cells; wheel (or the ▲▼ arrows) scrolls rows when they overflow.
-const PACK_GRID=[538,218,872,566];          // grid interior in 1408×768 art space
+// Grid-first layout. The old PACK_GRID mapped the usable area into a backpack
+// illustration; the panel is now built FROM the grid instead, so nothing is spent on
+// artwork. Everything below scales together via packScaleG().
 const PACK_COLS=6, PACK_ROWS=6;
+const PACK_CELL=46;      // cell edge at scale 1
+const PACK_FRAME=12;     // border around the grid
+const PACK_GUTTER=26;    // right-hand column holding the ▲▼ scroll arrows
+const PACK_FOOTER=54;    // selected-item label + drop/sell buttons
 function packScaleG(){ return (panelOfs.backpack&&panelOfs.backpack.s)||1; }
 let packResize=null;
 function backpackXY(){
-  const s=packScaleG(), W=Math.round(860*s), H=Math.round(860*s*768/1408);
+  const s=packScaleG();
+  const W=Math.round((PACK_FRAME*2 + PACK_CELL*PACK_COLS + PACK_GUTTER)*s);
+  const H=Math.round((PACK_FRAME*2 + PACK_CELL*PACK_ROWS + PACK_FOOTER)*s);
   const defaultX = Math.round(G.canvas.width/2 - W/2);
   const x = G.chestOpen ? defaultX + 170 : defaultX;
   return {...panelAt('backpack', x, Math.round(G.canvas.height/2 - H/2), W, H), W, H};
 }
 function packItems(){
-  const items=packOrderKeys().map(k=>({kind:'res',...BAG_BY_KEY[k],n:inv[k]||0}));
+  // Only what the player actually carries. The pack used to list every item in the
+  // game at a count of 0, so finding the three things you own meant scanning past
+  // forty you did not. Ordering (packOrder) still applies to whatever survives.
+  const items=packOrderKeys().map(k=>({kind:'res',...BAG_BY_KEY[k],n:inv[k]||0})).filter(it=>it.n>0);
   player.artifactInv.forEach((item,idx)=>{
     const def=artifactDef(item.defId);
     items.push({kind:'art',idx,item,lab:item.identified?def.name:'Unidentified Artifact',ic:item.identified?def.icon:'❔'});
@@ -9504,8 +11285,9 @@ function packItems(){
   return items;
 }
 function packGridRect(){
-  const{px,py,W,H}=backpackXY();
-  return {x:px+PACK_GRID[0]/1408*W, y:py+PACK_GRID[1]/768*H, w:(PACK_GRID[2]-PACK_GRID[0])/1408*W, h:(PACK_GRID[3]-PACK_GRID[1])/768*H};
+  const{px,py,W,H}=backpackXY(), s=packScaleG();
+  const f=PACK_FRAME*s;
+  return {x:px+f, y:py+f, w:W-f*2-PACK_GUTTER*s, h:H-f*2-PACK_FOOTER*s};
 }
 function packMaxScroll(){ return Math.max(0,Math.ceil(packItems().length/PACK_COLS)-PACK_ROWS); }
 function packCellAt(sx,sy){
@@ -9519,14 +11301,26 @@ function packArrowRects(){
   return [{x:g.x+g.w+8,y:g.y,w:s,h:s},{x:g.x+g.w+8,y:g.y+g.h-s,w:s,h:s}];
 }
 function packBtnRects(){
-  const{px,py,W,H}=backpackXY(),by=py+H*0.845,bw=W*0.13,bh=H*0.052;
-  return [{x:px+W/2-bw-8,y:by,w:bw,h:bh},{x:px+W/2+8,y:by,w:bw,h:bh}];
+  const g=packGridRect(), s=packScaleG();
+  const bw=Math.round(74*s), bh=Math.round(22*s);
+  const by=g.y+g.h+Math.round(26*s);
+  return [{x:g.x,y:by,w:bw,h:bh},{x:g.x+bw+Math.round(8*s),y:by,w:bw,h:bh}];
 }
 function renderBackpack(){
-  const ctx=G.ctx,{px,py,W,H}=backpackXY();
-  if(GUI.pack.ok)ctx.drawImage(GUI.pack.img,px,py,W,H);
-  else{ctx.fillStyle='rgba(18,14,8,.97)';ctx.fillRect(px,py,W,H);ctx.strokeStyle='#c8a25a';ctx.lineWidth=2;ctx.strokeRect(px,py,W,H);}
+  const ctx=G.ctx,{px,py,W,H}=backpackXY(),s=packScaleG();
+  // Frame. Two tones so the border still reads as leather without a 1408px image.
+  ctx.fillStyle='#3a2a1c';ctx.fillRect(px,py,W,H);
+  ctx.strokeStyle='#6b4e2f';ctx.lineWidth=Math.max(2,3*s);ctx.strokeRect(px+1,py+1,W-2,H-2);
+  ctx.strokeStyle='rgba(200,162,90,.45)';ctx.lineWidth=1;ctx.strokeRect(px+4*s,py+4*s,W-8*s,H-8*s);
   const g=packGridRect(),cw=g.w/PACK_COLS,ch=g.h/PACK_ROWS;
+  // Every cell gets its socket drawn, occupied or not — an empty grid should still read
+  // as a grid, which is what the old illustration was doing for free.
+  ctx.fillStyle='rgba(24,17,11,.92)';ctx.fillRect(g.x,g.y,g.w,g.h);
+  for(let row=0;row<PACK_ROWS;row++)for(let col=0;col<PACK_COLS;col++){
+    const x=g.x+col*cw, y=g.y+row*ch;
+    ctx.fillStyle='rgba(52,38,25,.85)';ctx.fillRect(x+2,y+2,cw-4,ch-4);
+    ctx.strokeStyle='rgba(120,92,58,.55)';ctx.lineWidth=1;ctx.strokeRect(x+2.5,y+2.5,cw-5,ch-5);
+  }
   const items=packItems(),maxS=packMaxScroll();
   if(G.packScroll>maxS)G.packScroll=maxS;
   if(G.packSel!=null&&G.packSel>=items.length)G.packSel=null;
@@ -9567,14 +11361,14 @@ function renderBackpack(){
     ctx.fillStyle='rgba(240,216,120,.75)';ctx.font='10px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';
     ctx.fillText((G.packScroll+1)+'-'+Math.min(G.packScroll+PACK_ROWS,Math.ceil(items.length/PACK_COLS))+'/'+Math.ceil(items.length/PACK_COLS),up.x+up.w/2,(up.y+dn.y+dn.h)/2+4);
   }
-  // title on the top flap
-  ctx.fillStyle='#f0e0b8';ctx.font='bold '+Math.max(11,Math.round(H*0.030))+'px ui-monospace,Menlo,Consolas,monospace';ctx.textAlign='center';
-  ctx.fillText('🎒 BACKPACK  ·  O',px+W/2,py+H*0.115);
-  // selected-item info + actions on the bottom flap
+  // No title bar: it used to sit on the illustration's top flap at H*0.115, which is
+  // inside the grid now, and a bag full of items does not need labelling.
+  // Selected-item info + actions live in the footer strip under the grid.
   if(G.packSel!=null&&items[G.packSel]){
     const it=items[G.packSel];
-    ctx.fillStyle='#f0e0b8';ctx.font='bold '+Math.max(10,Math.round(H*0.026))+'px ui-monospace,Menlo,Consolas,monospace';
-    ctx.fillText(it.kind==='res'?it.lab+'  ×'+it.n:it.ic+' '+it.lab,px+W/2,py+H*0.825);
+    ctx.fillStyle='#f0e0b8';ctx.font='bold '+Math.max(10,Math.round(11*s))+'px ui-monospace,Menlo,Consolas,monospace';
+    ctx.textAlign='left';
+    ctx.fillText(it.kind==='res'?it.lab+'  ×'+it.n:it.ic+' '+it.lab,g.x,g.y+g.h+Math.round(16*s));
     if(it.kind==='res'){
       const[b1,b2]=packBtnRects(),has=it.n>0;
       const btn=(b,txt,on=has)=>{ctx.fillStyle=on?'rgba(120,60,30,.92)':'rgba(40,34,26,.7)';ctx.fillRect(b.x,b.y,b.w,b.h);
@@ -9587,8 +11381,9 @@ function renderBackpack(){
       if(canSellGear) btn(b2,'sell '+LOOT_GEAR[it.k].value+'g');
       else btn(b2,'drop all');
     }else{
-      ctx.fillStyle='rgba(224,200,255,.8)';ctx.font=Math.max(9,Math.round(H*0.021))+'px ui-monospace,Menlo,Consolas,monospace';
-      ctx.fillText(it.item.identified?'equip on the paper doll (I)':'identify at the Cryptologist',px+W/2,py+H*0.865);
+      ctx.fillStyle='rgba(224,200,255,.8)';ctx.font=Math.max(9,Math.round(9*s))+'px ui-monospace,Menlo,Consolas,monospace';
+      ctx.textAlign='left';
+      ctx.fillText(it.item.identified?'equip on the paper doll (I)':'identify at the Cryptologist',g.x,g.y+g.h+Math.round(38*s));
     }
   }
   // resize handle (bottom-right of the grid frame)
@@ -9699,7 +11494,7 @@ function drawUiDragGhost(){
   ctx.textAlign='left';
 }
 
-const CHEST_W=310;
+const CHEST_W=fitPanelW(310);
 function chestXY(){
   const H=52+BAG_ITEMS.length*BAG_ROWH+18;
   const defaultX = Math.round(G.canvas.width/2 - CHEST_W/2);
@@ -9839,7 +11634,7 @@ function applyTradeSwap(give,get){
   addFloater(player.x,player.y-30,'✅ trade complete!'); snd.gold(); saveGame(true);
 }
 const PT_ITEMS=['gold','wood','stone','planks','arrows','hide','bone','potions','bandages'];
-const TR_W=380, TR_ROWH=24, TR_PAD=12;
+const TR_W=fitPanelW(380), TR_ROWH=24, TR_PAD=12;
 function ptradeXY(){ const H=64+PT_ITEMS.length*TR_ROWH+52; return panelAt('trade_p', Math.round(G.canvas.width/2-TR_W/2), Math.round(G.canvas.height/2-H/2), TR_W, H); }
 function ptradeRects(){
   const {px,py}=ptradeXY(); const rects={rows:[]}; let y=py+52;
@@ -9956,8 +11751,12 @@ function renderHousePlacementOverlay() {
 // ── Update ────────────────────────────────────────────────────────
 function update(dt){
   const rotSpeed = 1.8;
-  if (keys['['] || keys['<'] || keys[',']) camAngle -= rotSpeed * dt;
-  if (keys[']'] || keys['>'] || keys['.']) camAngle += rotSpeed * dt;
+  // [ and ] deliberately do NOT rotate: they cycle the camera presets in the
+  // keydown handler, and having them do both meant every preset change also spun
+  // the view for as long as the key was held. Rotation stays on , / . (and their
+  // shifted < / > so it works without releasing shift).
+  if (keys['<'] || keys[',']) camAngle -= rotSpeed * dt;
+  if (keys['>'] || keys['.']) camAngle += rotSpeed * dt;
   camAngle = (camAngle + Math.PI * 2) % (Math.PI * 2);
 
   if(G.editorOpen){editorUpdate(dt);return;}   // world paused while editing
@@ -10001,7 +11800,24 @@ function update(dt){
       dx = rx; dy = ry;
     }
     if(rmb.down&&mouse.hasPos){const rdx=worldMouseX-player.x,rdy=worldMouseY-player.y,rDist=Math.hypot(rdx,rdy);if(rDist>4){dx+=rdx/rDist;dy+=rdy/rDist;}}
-    const ml=Math.hypot(dx,dy);if(ml>1){dx/=ml;dy/=ml;}const step=player.speed*0.6*dt;const nx=player.x+dx*step;if(!boxBlocked(nx,player.y,player.r))player.x=nx;const ny=player.y+dy*step;if(!boxBlocked(player.x,ny,player.r))player.y=ny;
+    const ml=Math.hypot(dx,dy);if(ml>1){dx/=ml;dy/=ml;}
+    const step=player.speed*0.6*dt;
+    // A ghost passes through everything, and this is not a flourish — it is the
+    // fix for being permanently stuck.
+    //
+    // This used to run the same boxBlocked test the living player does, but
+    // WITHOUT the WADE override the living path wraps around its own call. So
+    // water was solid to a ghost: die in a river and you were already inside
+    // the obstacle, every candidate position failed, and there was no way out
+    // at all. The identical trap caught anyone who died with their collision
+    // box overlapping a tree, a wall or a boulder.
+    //
+    // A ghost is incorporeal and its whole job is to reach a healer. Collision
+    // has nothing to offer here except the chance to strand someone, so the
+    // only limit left is the edge of the map.
+    const gx=player.x+dx*step, gy=player.y+dy*step;
+    player.x=Math.max(TILE*0.5, Math.min((MAP_W-0.5)*TILE, gx));
+    player.y=Math.max(TILE*0.5, Math.min((MAP_H-0.5)*TILE, gy));
   }
   if(!player.dead){
     let dx=0,dy=0;if(keys['w']||keys['arrowup'])dy-=1;if(keys['s']||keys['arrowdown'])dy+=1;if(keys['a']||keys['arrowleft'])dx-=1;if(keys['d']||keys['arrowright'])dx+=1;
@@ -10012,6 +11828,17 @@ function update(dt){
       dx = rx; dy = ry;
     }
     let speedMult=1;
+    if(touchSprinting()||keyboardRunning())speedMult=SPRINT_MULT;
+    // ONE authoritative answer to "is this character running right now", for
+    // hiding and stealth to read later rather than each re-deriving it from
+    // keys, the touch stick and the always-run preference separately — three
+    // copies of that test would eventually disagree, and a stealth system that
+    // disagrees with the movement system is the worst kind of bug to chase.
+    //
+    // It means ACTUALLY running: run mode engaged AND the character moving. Hold
+    // forward against a wall and the latch is still set, but you are not running
+    // and nothing should hear you as though you were.
+    player.running = speedMult===SPRINT_MULT && (dx!==0 || dy!==0);
     if(rmb.down&&!G.craftOpen&&!G.buildMode&&mouse.hasPos){const rdx=worldMouseX-player.x,rdy=worldMouseY-player.y,rDist=Math.hypot(rdx,rdy);if(rDist>4){const td=rDist/TILE;const rm=td<1.5?0.5:td<3?1.0:1.4;dx+=rdx/rDist;dy+=rdy/rDist;speedMult=rm;}}
     if(player.stunTimer>0){player.stunTimer=Math.max(0,player.stunTimer-dt);return;}
     if(player.webTimer>0)player.webTimer=Math.max(0,player.webTimer-dt);
@@ -10345,19 +12172,36 @@ function renderMinimap(){
 // ── 3D Entity sync ─────────────────────────────────────────────────
 let _lastSyncT=0;
 const _slotRigCache = [];  // per-pool-slot: {type, hiding} — skip configureRig when unchanged
-function syncEntities(t){
-  const adt=Math.min(Math.max(t-_lastSyncT,0),0.1); _lastSyncT=t;
-  const isHiding = skills.hiding.active;
-  // ── Render distance + animation-LOD, device- and zoom-aware ──
-  // Phones get a much tighter bubble; zooming out widens it. Fog tracks the
-  // edge so culled entities fade out instead of popping.
+// ── Render distance + animation-LOD, device- and zoom-aware ──
+// Phones get a much tighter bubble; zooming out widens it. Fog tracks the
+// edge so culled entities fade out instead of popping.
+//
+// Shared by mobs (syncEntities) and remote players (syncRemotePlayers) so the
+// two can never drift apart — a player and a wolf standing next to each other
+// should disappear at the same distance.
+function viewRadii(){
   const _mob = (typeof innerWidth==='number'&&innerWidth<600) || G.isTouch;
   const zoomK = Math.max(1, camZoom/(_mob?0.55:0.72));
   // Vision is a player-distance circle → uniform in every direction (~45+
   // tiles). Animation is a smaller radius so skinning cost stays bounded.
-  const RD  = (_mob?1200:2300) * zoomK;   // vision / cull radius (world units, ~25 tiles on mobile)
-  const AD  = (_mob?600:1080)  * zoomK;   // animate mobs within this (~12 tiles on mobile)
-  const RD2 = RD*RD, AD2 = AD*AD;
+  // renderScale is the player's draw-distance preference. It multiplies the
+  // vision radius only -- the animation radius is a CPU-cost bound, and letting
+  // a slider raise it would trade a frame-rate problem for a worse one.
+  const rs  = Math.max(0.5, Math.min(2, prefs.renderScale || 1));
+  const RD  = (_mob?1200:2300) * zoomK * rs;   // vision / cull radius (world units)
+  const AD  = (_mob?600:1080)  * zoomK;        // animate within this (~12 tiles on mobile)
+  return { _mob, RD, AD, RD2: RD*RD, AD2: AD*AD };
+}
+// Hard ceiling on simultaneously animated remote players. AD alone is not a
+// bound: a hundred players in one town square are all inside it, and each one
+// costs a full skinned-mesh update. The nearest few are the only ones whose
+// limbs you can actually read.
+const MAX_ANIMATED_REMOTES = 20;
+
+function syncEntities(t){
+  const adt=Math.min(Math.max(t-_lastSyncT,0),0.1); _lastSyncT=t;
+  const isHiding = skills.hiding.active;
+  const { _mob, RD, AD, RD2, AD2 } = viewRadii();
   const NPC_LOOK2 = (TILE*6)*(TILE*6);
   // Fog fades by camera distance, so push it *past* the far (north) edge of
   // vision — then it never fades anything on-screen, only the far background.
@@ -10373,7 +12217,7 @@ function syncEntities(t){
     const eNear = ed2<AD2;                                                        // animation-LOD gate
     // Prefer the animated GLTF model once its file has loaded
     const mm=MOB_MODELS[e.type];
-    if(mm&&loadedModels[mm.file]){
+    if(SKINNING_OK&&mm&&loadedModels[mm.file]){
       grp.visible=false;
       const im=(inst&&inst.type===e.type)?inst:buildSlotModel(si,e.type);
       animModel(im,e,t,adt,eNear);
@@ -10397,11 +12241,18 @@ function syncEntities(t){
     }
   }
   for(let i=ei;i<enemyPool.length;i++){enemyPool[i].visible=false;const m=slotModel[i];if(m)m.obj.visible=false;_slotRigCache[i]=null;}
-  const useProtag=protag&&!player.dead&&!player.ghost&&!player.isRat&&!G.housePlacementMode;
+  const useProtag=SKINNING_OK&&protag&&!player.dead&&!player.ghost&&!player.isRat&&!G.housePlacementMode;
   if(useProtag){
     const P=protag;
     plrGrp.visible=false;
-    P.obj.visible=true;
+    // Hidden, not skipped, in first person. `useProtag` stays true so the
+    // mixer keeps advancing, held props keep refreshing and the attack cues
+    // still fire — stepping back out of first person must not reveal a
+    // character frozen in whatever pose they were in when you entered.
+    // (plrGrp is the OTHER avatar: a fallback primitive rig used when the GLB
+    // is not available. Both have to be hidden, which is why the first attempt
+    // at this only half worked and you ended up inside the model's head.)
+    P.obj.visible=!camMode().fp;
     P.obj.position.set(player.x,heightAt(player.x,player.y),player.y);
     const pdx=player.x-(P.lx??player.x), pdz=player.y-(P.lz??player.y);
     P.lx=player.x; P.lz=player.y;
@@ -10411,11 +12262,10 @@ function syncEntities(t){
     let faceTgt=null;
     if(moving) faceTgt=Math.atan2(-pdx,-pdz);
     else if(mouse.hasPos&&!G.isTouch) faceTgt=Math.atan2(-(worldMouseX-player.x),-(worldMouseY-player.y));
-    if(faceTgt!==null){
-      let dturn=faceTgt-P.obj.rotation.y;
-      dturn=((dturn+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI;
-      P.obj.rotation.y+=dturn*0.3;
-    }
+    // Kept deliberately snappier than a mob — this one answers the cursor — but
+    // it is bounded and frame-rate independent now, so a 144Hz machine and a
+    // 30Hz one turn the character at the same speed.
+    if(faceTgt!==null) turnToward(P.obj, faceTgt, adt, 'player');
     // one-shot cues: revival, specials, weapon swings, tool chopping & mining
     if(P.wasGhost)protagOnce('arise',t);
     else if(protagSkillCue){protagOnce(protagSkillCue===1?'skill1':'skill2',t);protagSkillCue=0;}
@@ -10433,7 +12283,7 @@ function syncEntities(t){
     P.wasGhost=false;
   } else {
     if(protag){protag.obj.visible=false;protag.wasGhost=player.ghost;}
-    plrGrp.position.set(player.x,heightAt(player.x,player.y),player.y);plrGrp.visible=(!player.dead||player.ghost)&&!G.housePlacementMode;
+    plrGrp.position.set(player.x,heightAt(player.x,player.y),player.y);plrGrp.visible=(!player.dead||player.ghost)&&!G.housePlacementMode&&!camMode().fp;
     if(mouse.hasPos) plrGrp.rotation.y = Math.atan2(-(worldMouseX-player.x), -(worldMouseY-player.y));  // face the cursor
     const [pB,pH,pL]=plrGrp.userData.mats;
     if(player.ghost){
@@ -10451,7 +12301,7 @@ function syncEntities(t){
       else if(pTier===3)plrGrp.userData.mats[3].color.setHex(0x9fd0ff);
     }
     const plrOp=player.ghost?0.55:(skills.hiding.active?0.35:1);
-    for(const m of plrGrp.userData.mats)m.opacity=plrOp;
+    setRigOpacity(plrGrp.userData.mats, plrOp);
     const pAtk=swordSwing.active?Math.max(0,Math.min(1,swordSwing.lifetime/swordSwing.duration)):0;
     animateRig(plrGrp, player.x, player.y, t, {attack:pAtk});
   }
@@ -10480,13 +12330,15 @@ function syncEntities(t){
     if(gd2<AD2){const gaf=g.attackCooldown-g.attackTimer;animateRig(guardPool[i],g.x,g.y,t,{turn:true,attack:(gaf>=0&&gaf<0.28)?1-gaf/0.28:0});}}
   for(const n of npcs) {
     const nd2=(n.position.x-player.x)*(n.position.x-player.x)+(n.position.z-player.y)*(n.position.z-player.y);
-    if(nd2>RD2) continue;                         // frozen when far
+    // Was `continue` alone, which skipped the ANIMATION but left the mesh visible —
+    // so every town NPC was still drawn from anywhere on the map. Mobs and guards
+    // above both hide at RD; NPCs never did.
+    if(nd2>RD2){ n.visible=false; continue; }
+    n.visible=true;
     if(nd2<AD2) animateRig(n,n.position.x,n.position.z,t);   // idle breathing
     if(nd2<NPC_LOOK2){                             // face the player only in range
       const tgt = Math.atan2(-(player.x - n.position.x), -(player.y - n.position.z));
-      let d = tgt - n.rotation.y;
-      d = ((d + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-      n.rotation.y += d * 0.1;
+      turnToward(n, tgt, adt, 'npc');
     }
   }
   // GLB town NPCs: gentle local wander + look at the player only within range;
@@ -10494,7 +12346,9 @@ function syncEntities(t){
   for(const n of glbNpcs){
     const o=n.obj;
     const pdx=player.x-o.position.x, pdz=player.y-o.position.z, pd2=pdx*pdx+pdz*pdz;
-    if(pd2>RD2) continue;                          // beyond render distance: leave frozen
+    // Same omission as the rig NPCs above: frozen but still submitted every frame.
+    if(pd2>RD2){ o.visible=false; continue; }
+    o.visible=true;
     const near = pd2<AD2;
     n.pause-=adt; let moving=false;
     if(n.pause<=0){                                // pick a new spot within the leash of home
@@ -10512,7 +12366,7 @@ function syncEntities(t){
     let tgt=Math.PI;                               // rest: south
     if(pd2<NPC_LOOK2) tgt=Math.atan2(-pdx,-pdz);   // look at the player in range
     else if(moving) tgt=Math.atan2(-(n.tx-o.position.x),-(n.tz-o.position.z));
-    let dd=tgt-o.rotation.y; dd=((dd+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI; o.rotation.y+=dd*0.1;
+    turnToward(o, tgt, adt, 'npc');
     if(near){ setNpcAnim(n, moving?'walk':(n.curIdle||'idle')); n.mixer.update(adt); }
   }
   for(let i=0;i<arrowPool.length;i++){const a=projectiles[i];if(!a){arrowPool[i].visible=false;continue;}arrowPool[i].visible=true;arrowPool[i].position.set(a.x,heightAt(a.x,a.y)+18,a.y);arrowPool[i].rotation.y=-Math.atan2(a.vy,a.vx);}
@@ -10548,15 +12402,42 @@ function syncEntities(t){
   netTick(adt); syncRemotePlayers(t,adt); autoSaveTick(adt);   // multiplayer presence + server autosave
   // Orbit camera: camAngle spins around the player, camPitch tilts from
   // ground level (0.06) to straight overhead (1.54) at constant radius.
-  const horiz = Math.cos(camPitch) * CAM_R * camZoom;
-  const cx = player.x + Math.sin(camAngle) * horiz;
-  const cz = player.y + Math.cos(camAngle) * horiz;
   // The camera rides the terrain with the player. Without this it holds a fixed
   // world height and buries itself in the first hill you climb.
   const _camGY = heightAt(player.x, player.y);
-  camera.position.set(cx, _camGY + Math.max(16, Math.sin(camPitch) * CAM_R * camZoom), cz);
-  // At low angles aim at the torso instead of the feet so the view stays level
-  camera.lookAt(player.x, _camGY + (camPitch < CAM_PITCH0 ? (1 - camPitch/CAM_PITCH0) * 24 : 0), player.y);
+  if (camMode().fp) {
+    // First person: sit in the character's head and look along camAngle.
+    // Forward is -(sin, cos) — the direction the orbit camera looks FROM its
+    // position TOWARD the player, which is also exactly the direction W already
+    // moved you, so view and movement cannot disagree.
+    const eye = _camGY + CHAR_H * FP_EYE_FRAC;
+    const cp = Math.cos(fpPitch);
+    camera.position.set(player.x, eye, player.y);
+    camera.lookAt(
+      player.x - Math.sin(camAngle) * 1000 * cp,
+      eye + Math.sin(fpPitch) * 1000,
+      player.y - Math.cos(camAngle) * 1000 * cp
+    );
+  } else {
+    // Orbit: camAngle spins around the player, camPitch tilts from ground level
+    // (0.06) to straight overhead (1.54) at constant radius.
+    const horiz = Math.cos(camPitch) * CAM_R * camZoom;
+    const cx = player.x + Math.sin(camAngle) * horiz;
+    const cz = player.y + Math.cos(camAngle) * horiz;
+    // Height off the PLAYER's ground — correct on flat ground, and the reason
+    // this camera follows you up a hill instead of burying itself in it.
+    let camY = _camGY + Math.max(16, Math.sin(camPitch) * CAM_R * camZoom);
+    // ...but the camera is not standing where the player is. On a slope the
+    // boom end can be tens of units of terrain BELOW the ground it is over, and
+    // then the view is from inside the hill, looking up through the underside
+    // of the world. Sample the ground along the boom and stay above all of it:
+    // the far end matters most, but a crest partway along would block the shot
+    // even with both ends clear.
+    camY = Math.max(camY, camBoomFloor(cx, cz));
+    camera.position.set(cx, camY, cz);
+    // At low angles aim at the torso instead of the feet so the view stays level
+    camera.lookAt(player.x, _camGY + (camPitch < CAM_PITCH0 ? (1 - camPitch/CAM_PITCH0) * 24 : 0), player.y);
+  }
 }
 
 // ── 3D Render ──────────────────────────────────────────────────────
@@ -10564,6 +12445,7 @@ function render3D(t){
   // Animated water — scroll the ripple texture so waves drift visibly
   _windU.value = t;                                        // canopy sway (see topMesh.onBeforeCompile)
   _grassMat.uniforms.uTime.value = t;                      // ground cover sway
+  _fireU.value = t;                                        // flame curl + flicker
   // Ripples, glint and foam all live in the water shader now, driven off the
   // render clock. Deliberately NOT G.gameTime — that's an epoch value in the
   // 1.7e9 range, and float32 uniforms have nowhere near the precision to
@@ -10587,7 +12469,20 @@ function render3D(t){
     ctx.fillStyle='rgba(15,20,35,0.45)';
     ctx.fillRect(0,0,G.canvas.width,G.canvas.height);
   }
-  if(stick.active){const v=touchVec();ctx.strokeStyle='rgba(255,255,255,.3)';ctx.lineWidth=3;ctx.beginPath();ctx.arc(stick.baseX,stick.baseY,60,0,Math.PI*2);ctx.stroke();ctx.fillStyle='rgba(255,255,255,.5)';ctx.beginPath();ctx.arc(stick.baseX+v.x*60,stick.baseY+v.y*60,24,0,Math.PI*2);ctx.fill();}
+  if(stick.active){
+    const v=touchVec(), sprinting=touchSprinting();
+    // The ring is the only feedback that sprint engaged, so make it unmistakable
+    // without being loud: gold and thicker, plus a faint outer ring at the threshold.
+    ctx.strokeStyle=sprinting?'rgba(240,208,96,.75)':'rgba(255,255,255,.3)';
+    ctx.lineWidth=sprinting?5:3;
+    ctx.beginPath();ctx.arc(stick.baseX,stick.baseY,stickMax(),0,Math.PI*2);ctx.stroke();
+    if(sprinting){
+      ctx.strokeStyle='rgba(240,208,96,.25)';ctx.lineWidth=2;
+      ctx.beginPath();ctx.arc(stick.baseX,stick.baseY,stickSprint(),0,Math.PI*2);ctx.stroke();
+    }
+    ctx.fillStyle=sprinting?'rgba(240,208,96,.6)':'rgba(255,255,255,.5)';
+    ctx.beginPath();ctx.arc(stick.baseX+v.x*STICK_MAX,stick.baseY+v.y*STICK_MAX,24,0,Math.PI*2);ctx.fill();
+  }
   if(G.isTouch){
     for(const b of touchBtns()){
       ctx.fillStyle='rgba(20,15,10,.55)';ctx.beginPath();ctx.arc(b.x,b.y,TB_R,0,Math.PI*2);ctx.fill();
@@ -10626,6 +12521,7 @@ function render3D(t){
   if(G.houseMenuOpen)renderHousePanel();
   if(G.houseSettingsOpen)renderHouseSettingsPanel();
   if(G.devGuiOpen)renderDevPanel();
+  if(G.settingsOpen)renderSettings();
   if(G.craftOpen)renderCraftPanel();
   if(G.tradeOpen)renderTradePanel();
   if(G.chestOpen)renderChest();
@@ -10650,7 +12546,6 @@ function render3D(t){
   drawRadialButton();
   if(radial.open)drawRadial();
   if(G.gambitOpen)renderGambitPanel();
-  if(G.hotbarEditOpen)renderHotbarEdit();
   if(G.backpackOpen)renderBackpack();
   if(G.trade)renderTrade();
   if(G.tradeInvite)renderTradeInvite();
@@ -10700,14 +12595,21 @@ function render3D(t){
   if(player.ghost)drawGhostHUD();
   // pos / inventory / weapon readouts moved into the How To Play panel (T) —
   // the always-on HUD stays down to the title line + transient statuses
-  const st=[];if(G.aggroMode)st.push('⚔ AGGRO');if(skills.hiding.active)st.push('👤 HIDDEN');if(player.poisonTimer>0)st.push('☠ POISONED');if(player.charmed)st.push('💚 CHARMED');if(player.stunTimer>0)st.push('⚡ STUNNED');if(player.isRat)st.push('🐀 RAT CURSE');if(G.inDungeon){const _f=DUNGEON_FLOORS.find(x=>x.n===G.dungeonFloor);st.push('💀 F'+(G.dungeonFloor||1)+' '+(_f?_f.name.toUpperCase():'RAT DUNGEON'));}if(player.onHorse)st.push('🐴 MOUNTED');
+  const st=[];if(prefs.showFps)st.push(_fpsVal+' FPS');
+  // player.running, NOT keyboardRunning(). The difference is the whole point:
+  // keyboardRunning() means "run mode is engaged", which is true while you stand
+  // still with Sprint held, so the badge lit up when nobody was running. An
+  // indicator that is on while you are stationary teaches the player that the
+  // game thinks it is running when it is not — which is exactly the wrong thing
+  // to be wrong about while trying to work out whether a key walks or runs.
+  if(!player.dead&&player.running)st.push('🏃 RUN');if(G.aggroMode)st.push('⚔ AGGRO');if(skills.hiding.active)st.push('👤 HIDDEN');if(player.poisonTimer>0)st.push('☠ POISONED');if(player.charmed)st.push('💚 CHARMED');if(player.stunTimer>0)st.push('⚡ STUNNED');if(player.isRat)st.push('🐀 RAT CURSE');if(G.inDungeon){const _f=DUNGEON_FLOORS.find(x=>x.n===G.dungeonFloor);st.push('💀 F'+(G.dungeonFloor||1)+' '+(_f?_f.name.toUpperCase():'RAT DUNGEON'));}if(player.onHorse)st.push('🐴 MOUNTED');
   document.getElementById('status').textContent=st.join('  ');
 }
 
 
 // Height is derived from the busiest page so no page has dead space and none
 // clips: header + tabs + ceil(maxButtons/2) rows + footer.
-const DEV_W = 388, DEV_HEADER = 46, DEV_TABS_H = 26, DEV_PAD = 12, DEV_ROW_H = 34;
+const DEV_W = fitPanelW(388), DEV_HEADER = 46, DEV_TABS_H = 26, DEV_PAD = 12, DEV_ROW_H = 34;
 function devPanelXY() {
   const h = devPanelH();
   return panelAt('dev_panel', Math.round(G.canvas.width/2 - DEV_W/2), Math.round(G.canvas.height/2 - h/2), DEV_W, h);
@@ -10786,8 +12688,7 @@ const DEV_PAGES = [
     { label:'Set 20:00 Dusk',  action:()=>addFloater(player.x,player.y-30,_dev.setHour(20)) },
     { label:'Set 00:00 Night', action:()=>addFloater(player.x,player.y-30,_dev.setHour(0)) },
     { label:()=>'Shadows: '+(renderer.shadowMap.enabled?'ON':'OFF'), action:()=>window.toggleShadows() },
-    { label:()=>'Flick Ctrl: '+(radialHidden()?'HIDDEN':'shown'), action:()=>setRadialHidden(!radialHidden()) },
-    { label:'Reset Flick Pos', action:()=>{ resetRadialPos(); addFloater(player.x,player.y-30,'flick control reset'); } },
+    { label:'Open Settings',   action:()=>{ G.devGuiOpen=false; G.settingsOpen=true; } },
     { label:'Rebake Terrain',  action:()=>devLog('terrain rebake',_dev.warp()) },
     { label:'Log Texture Probe',action:()=>devLog('textures',_dev.texProbe()) },
     { label:'Log Scene Env',   action:()=>devLog('scene env',_dev.sceneEnv()) },
@@ -10925,6 +12826,303 @@ function renderDevPanel() {
   ctx.fillText('page '+(pageIdx+1)+'/'+DEV_PAGES.length+'  ·  readouts print to the browser console',
     px + DEV_W/2, py + DEV_H - 8);
   ctx.textAlign = 'left';
+}
+
+
+// ══ Settings (ESC) ═══════════════════════════════════════════════════════════
+// Everything a player can change about how the game looks, sounds and controls.
+// The dev panel keeps the things that change the WORLD (spawn a wolf, set the
+// hour); this keeps the things that change the PLAYER'S experience of it.
+const SET_W = fitPanelW(408);
+const SET_HEADER = 40, SET_TABS_H = 26, SET_ROW_H = 32, SET_PAD = 12;
+const SET_FOOTER = 38, SET_GUTTER = 20;
+let settingsTab = 0, settingsScroll = 0;
+let settingsCapture = null;      // action id awaiting a keypress, or null
+let setSliderDrag = null;        // row being dragged, or null
+
+// How many rows fit. On a phone the panel is height-capped by fitPanelH, so this
+// shrinks and the scroll arrows start earning their place.
+function setVisibleRows(){
+  const maxH = fitPanelH(SET_HEADER + SET_TABS_H + 6 + 12*SET_ROW_H + SET_FOOTER);
+  return Math.max(4, Math.floor((maxH - SET_HEADER - SET_TABS_H - 6 - SET_FOOTER) / SET_ROW_H));
+}
+// Drawn rows: what fits, or what there is, whichever is smaller. The dev panel
+// sizes itself to its BUSIEST page so it never jumps -- that works there because
+// its pages are all about as long. Here they run from 2 rows (Audio) to 27
+// (Keybinds), so a fixed height would mean either a scrollbar on a two-row page
+// or half a panel of nothing on it. The panel is centred, so it grows and
+// shrinks symmetrically and the tab strip stays put.
+function setRowCount(){ return Math.max(1, Math.min(setVisibleRows(), setRows().length)); }
+function setPanelH(){ return SET_HEADER + SET_TABS_H + 6 + setRowCount()*SET_ROW_H + SET_FOOTER; }
+function settingsXY(){
+  const h = setPanelH();
+  return panelAt('settings', Math.round(G.canvas.width/2 - SET_W/2),
+                             Math.round(G.canvas.height/2 - h/2), SET_W, h);
+}
+
+// A row is one of:
+//   {t:'toggle', label, get, set}
+//   {t:'slider', label, min, max, step, get, set, fmt}
+//   {t:'cycle',  label, get, next}
+//   {t:'bind',   id, label}
+//   {t:'btn',    label, action}
+//   {t:'note',   label}
+const SET_TABS = [
+  { key:'VIDEO', title:'Video', rows: () => [
+    { t:'cycle',  label:'Quality',        get:()=>getTier().toUpperCase(),
+      next:()=>{ const i=TIERS.indexOf(getTier()); setTier(TIERS[(i+1)%TIERS.length]); } },
+    { t:'toggle', label:'Shadows',        get:()=>!!renderer.shadowMap.enabled, set:()=>window.toggleShadows() },
+    { t:'slider', label:'Field of View',  min:-20, max:30, step:1,
+      get:()=>prefs.fov, set:v=>{ setPref('fov',v); applyFov(camMode()); },
+      fmt:()=>Math.round(camera.fov)+'°' },
+    { t:'slider', label:'Draw Distance',  min:0.5, max:2, step:0.05,
+      get:()=>prefs.renderScale, set:v=>setPref('renderScale',v),
+      fmt:()=>Math.round(viewRadii().RD/TILE)+' tiles' },
+    { t:'note',   label:'Draw distance trades frame rate for how far you can see.' },
+  ]},
+  { key:'CTRL', title:'Controls', rows: () => {
+    const r = [
+      { t:'slider', label:'Mouse Sensitivity', min:0.25, max:3, step:0.05,
+        get:()=>prefs.lookSens, set:v=>setPref('lookSens',v), fmt:()=>prefs.lookSens.toFixed(2)+'×' },
+      { t:'toggle', label:'Invert Look Y',  get:()=>!!prefs.invertY, set:v=>setPref('invertY',v) },
+      { t:'note',   label:'Walk by default. Hold Sprint, or double-tap forward' },
+      { t:'note',   label:'or back and keep holding it, to run.' },
+      { t:'cycle',  label:'Camera',         get:()=>camMode().label||camMode().id,
+        next:()=>setCamMode(camModeIdx+1) },
+      { t:'note',   label:'Mouse look is first person only — [ and ] step camera modes.' },
+      { t:'toggle', label:'Flick Control',  get:()=>!radialHidden(), set:v=>setRadialHidden(!v) },
+      { t:'btn',    label:'Reset Flick Position',
+        action:()=>{ resetRadialPos(); addFloater(player.x,player.y-30,'flick control reset'); } },
+    ];
+    // The movement stick and its thumb zone only exist on a touch screen. They
+    // are still listed on a desktop (so the settings are discoverable when the
+    // same account picks up a tablet) but marked as what they are.
+    r.push({ t:'slider', label:'Thumb Stick Size', min:36, max:96, step:2,
+             get:()=>prefs.stickSize, set:v=>setPref('stickSize',v), fmt:()=>Math.round(prefs.stickSize)+'px' });
+    r.push({ t:'slider', label:'Thumb Zone Width', min:0.6, max:1.5, step:0.05,
+             get:()=>prefs.stickZone, set:v=>setPref('stickZone',v),
+             fmt:()=>Math.round(prefs.stickZone*100)+'%' });
+    if(!isTouchPrimary()) r.push({ t:'note', label:'Stick settings apply on phone and tablet.' });
+    return r;
+  }},
+  { key:'KEYS', title:'Keybinds', rows: () => [
+    ...BIND_DEFS.map(b => ({ t:'bind', id:b.id, label:b.label })),
+    { t:'btn', label:'Reset All Keys', action:()=>{ resetBinds(); addFloater(player.x,player.y-30,'keys reset'); } },
+  ]},
+  { key:'HUD', title:'Interface', rows: () => [
+    { t:'toggle', label:'Player Nameplates', get:()=>prefs.showNames!==false, set:v=>setPref('showNames',v) },
+    { t:'slider', label:'Nameplate Range', min:10, max:80, step:2,
+      get:()=>prefs.nameDist, set:v=>setPref('nameDist',v), fmt:()=>Math.round(prefs.nameDist)+' tiles' },
+    { t:'toggle', label:'Show FPS',       get:()=>!!prefs.showFps, set:v=>setPref('showFps',v) },
+    { t:'toggle', label:'Minimap',        get:()=>!!G.minimapOpen, set:v=>{ G.minimapOpen=v; } },
+    { t:'btn',    label:'Reset Panel Positions',
+      action:()=>{ resetPanelPositions(); addFloater(player.x,player.y-30,'panels reset'); } },
+  ]},
+  { key:'AUDIO', title:'Audio', rows: () => [
+    { t:'toggle', label:'Sound',          get:()=>!soundMuted, set:v=>setSoundMuted(!v) },
+    { t:'slider', label:'Master Volume',  min:0, max:1, step:0.05,
+      get:()=>prefs.volume, set:v=>{ setPref('volume',v); setMasterVol(v); },
+      fmt:()=>Math.round(prefs.volume*100)+'%' },
+  ]},
+];
+
+function setRows(){ return (SET_TABS[settingsTab]||SET_TABS[0]).rows(); }
+function setMaxScroll(){ return Math.max(0, setRows().length - setVisibleRows()); }
+
+function setTabRects(){
+  const {px,py}=settingsXY();
+  const n=SET_TABS.length, w=(SET_W-SET_PAD*2)/n;
+  return SET_TABS.map((t,i)=>({ tab:i, label:t.key,
+    x:px+SET_PAD+i*w, y:py+SET_HEADER-6, w:w-3, h:SET_TABS_H-6 }));
+}
+// The row area, minus the right-hand gutter the arrows live in.
+function setRowRects(){
+  const {px,py}=settingsXY();
+  const rows=setRows(), vis=setRowCount();
+  settingsScroll=Math.max(0,Math.min(settingsScroll,setMaxScroll()));
+  const startY=py+SET_HEADER+SET_TABS_H+6;
+  const w=SET_W-SET_PAD*2-(setMaxScroll()>0?SET_GUTTER:0);
+  const out=[];
+  for(let i=0;i<vis;i++){
+    const row=rows[i+settingsScroll]; if(!row)break;
+    out.push({ row, x:px+SET_PAD, y:startY+i*SET_ROW_H, w, h:SET_ROW_H-4 });
+  }
+  return out;
+}
+// Control column: right-aligned, same width for every row so the panel reads as
+// a list rather than a ransom note.
+function setCtlRect(r){
+  const w=Math.min(150, r.w*0.46);
+  return { x:r.x+r.w-w, y:r.y+4, w, h:SET_ROW_H-12 };
+}
+function setArrowRects(){
+  if(setMaxScroll()<=0) return [];
+  const {px,py}=settingsXY();
+  const x=px+SET_W-SET_PAD-SET_GUTTER+2, top=py+SET_HEADER+SET_TABS_H+6;
+  const h=setRowCount()*SET_ROW_H;
+  return [{ dir:-1, x, y:top, w:SET_GUTTER-4, h:22 },
+          { dir:+1, x, y:top+h-22, w:SET_GUTTER-4, h:22 }];
+}
+function setFooterRects(){
+  const {px,py}=settingsXY(), H=setPanelH();
+  const bw=(SET_W-SET_PAD*2-8)/2, by=py+H-SET_FOOTER+7;
+  return [{ id:'reset', label:'Reset Defaults', x:px+SET_PAD, y:by, w:bw, h:22 },
+          { id:'done',  label:'Done', x:px+SET_PAD+bw+8, y:by, w:bw, h:22 }];
+}
+
+const _inR=(e,r)=>e.clientX>=r.x&&e.clientX<=r.x+r.w&&e.clientY>=r.y&&e.clientY<=r.y+r.h;
+function sliderValueAt(row, ctl, x){
+  const t=Math.max(0,Math.min(1,(x-ctl.x-6)/(ctl.w-12)));
+  const v=row.min + t*(row.max-row.min);
+  const st=row.step||1;
+  return Math.round(v/st)*st;
+}
+
+function handleSettingsClick(e){
+  if(settingsCapture) return true;          // waiting for a key; ignore clicks
+  for(const t of setTabRects()) if(_inR(e,t)){ settingsTab=t.tab; settingsScroll=0; return true; }
+  for(const a of setArrowRects()) if(_inR(e,a)){
+    settingsScroll=Math.max(0,Math.min(setMaxScroll(),settingsScroll+a.dir)); return true; }
+  for(const f of setFooterRects()) if(_inR(e,f)){
+    if(f.id==='done'){ G.settingsOpen=false; }
+    else { resetPrefs(); resetBinds(); setMasterVol(prefs.volume); applyFov(camMode());
+           addFloater(player.x,player.y-30,'settings reset'); }
+    return true;
+  }
+  for(const r of setRowRects()){
+    const row=r.row, ctl=setCtlRect(r);
+    if(row.t==='btn'){ if(_inR(e,r)){ try{ row.action(); }catch(err){ console.warn('[SET]',err); } return true; } continue; }
+    if(row.t==='note') continue;
+    if(!_inR(e,ctl)) continue;
+    if(row.t==='toggle'){ row.set(!row.get()); return true; }
+    if(row.t==='cycle'){ row.next(); return true; }
+    if(row.t==='bind'){ settingsCapture=row.id; return true; }
+    if(row.t==='slider'){
+      row.set(sliderValueAt(row,ctl,e.clientX));
+      setSliderDrag={row,ctl};                 // keep following the cursor
+      return true;
+    }
+  }
+  return true;                                 // clicks inside the panel never close it
+}
+
+// Assign whatever was pressed. Escape cancels rather than binding Escape, which
+// would leave no way back out of the menu.
+function captureBind(k){
+  const id=settingsCapture; settingsCapture=null;
+  if(!id) return;
+  if(k==='escape') return;
+  if(k==='f2'||k==='f5'||k==='f11'||k==='f12') return;   // browser/editor keys stay put
+  setBind(id,k);
+  addFloater(player.x,player.y-30,keyLabel(k)+' → '+(BIND_DEFS.find(b=>b.id===id)||{}).label);
+}
+
+function renderSettings(){
+  const ctx=G.ctx, {px,py}=settingsXY(), H=setPanelH();
+  const tab=SET_TABS[settingsTab]||SET_TABS[0];
+
+  ctx.fillStyle='rgba(16,13,9,.97)'; ctx.fillRect(px,py,SET_W,H);
+  ctx.strokeStyle='#c8a25a'; ctx.lineWidth=2; ctx.strokeRect(px,py,SET_W,H);
+
+  ctx.textAlign='center';
+  ctx.fillStyle='#e8dcc0'; ctx.font='bold 14px ui-monospace,Menlo,Consolas,monospace';
+  const _ms=setMaxScroll();
+  ctx.fillText('⚙ SETTINGS — '+tab.title
+    + (_ms>0 ? '   '+(settingsScroll+1)+'–'+Math.min(setRows().length,settingsScroll+setVisibleRows())
+               +'/'+setRows().length : ''),
+    px+SET_W/2, py+22);
+
+  for(const t of setTabRects()){
+    const on=t.tab===settingsTab;
+    ctx.fillStyle=on?'rgba(200,162,90,.9)':'rgba(48,38,24,.8)';
+    ctx.fillRect(t.x,t.y,t.w,t.h);
+    ctx.strokeStyle=on?'#f0e0b8':'rgba(200,162,90,.45)'; ctx.lineWidth=1;
+    ctx.strokeRect(t.x,t.y,t.w,t.h);
+    ctx.fillStyle=on?'#241a0e':'#c8b48a';
+    ctx.font='bold 10px ui-monospace,Menlo,Consolas,monospace';
+    ctx.fillText(t.label,t.x+t.w/2,t.y+14);
+  }
+
+  for(const r of setRowRects()){
+    const row=r.row;
+    if(row.t==='note'){
+      ctx.textAlign='left'; ctx.fillStyle='#8a7a5c';
+      ctx.font='10px ui-monospace,Menlo,Consolas,monospace';
+      ctx.fillText(row.label,r.x+2,r.y+18);
+      continue;
+    }
+    if(row.t==='btn'){
+      ctx.fillStyle='rgba(60,48,30,.9)'; ctx.fillRect(r.x,r.y+3,r.w,r.h-6);
+      ctx.strokeStyle='rgba(200,162,90,.6)'; ctx.lineWidth=1; ctx.strokeRect(r.x,r.y+3,r.w,r.h-6);
+      ctx.textAlign='center'; ctx.fillStyle='#e8dcc0';
+      ctx.font='bold 11px ui-monospace,Menlo,Consolas,monospace';
+      ctx.fillText(row.label,r.x+r.w/2,r.y+18);
+      continue;
+    }
+    ctx.textAlign='left'; ctx.fillStyle='#d8c8a4';
+    ctx.font='11px ui-monospace,Menlo,Consolas,monospace';
+    ctx.fillText(row.label,r.x+2,r.y+19);
+
+    const c=setCtlRect(r);
+    if(row.t==='toggle'){
+      const on=row.get();
+      ctx.fillStyle=on?'rgba(110,160,90,.85)':'rgba(60,48,30,.9)';
+      ctx.fillRect(c.x,c.y,c.w,c.h);
+      ctx.strokeStyle=on?'#bde09a':'rgba(200,162,90,.5)'; ctx.lineWidth=1;
+      ctx.strokeRect(c.x,c.y,c.w,c.h);
+      ctx.textAlign='center'; ctx.fillStyle=on?'#12200c':'#a89878';
+      ctx.font='bold 10px ui-monospace,Menlo,Consolas,monospace';
+      ctx.fillText(on?'ON':'OFF',c.x+c.w/2,c.y+c.h/2+4);
+    } else if(row.t==='cycle'){
+      ctx.fillStyle='rgba(60,48,30,.9)'; ctx.fillRect(c.x,c.y,c.w,c.h);
+      ctx.strokeStyle='rgba(200,162,90,.6)'; ctx.lineWidth=1; ctx.strokeRect(c.x,c.y,c.w,c.h);
+      ctx.textAlign='center'; ctx.fillStyle='#e8dcc0';
+      ctx.font='bold 10px ui-monospace,Menlo,Consolas,monospace';
+      ctx.fillText(String(row.get()).slice(0,16)+' ▸',c.x+c.w/2,c.y+c.h/2+4);
+    } else if(row.t==='bind'){
+      const cap=settingsCapture===row.id, k=bindOf(row.id);
+      ctx.fillStyle=cap?'rgba(200,162,90,.9)':'rgba(60,48,30,.9)';
+      ctx.fillRect(c.x,c.y,c.w,c.h);
+      ctx.strokeStyle=cap?'#fff':(k?'rgba(200,162,90,.6)':'rgba(200,90,90,.7)');
+      ctx.lineWidth=1; ctx.strokeRect(c.x,c.y,c.w,c.h);
+      ctx.textAlign='center'; ctx.fillStyle=cap?'#241a0e':(k?'#e8dcc0':'#c88');
+      ctx.font='bold 10px ui-monospace,Menlo,Consolas,monospace';
+      ctx.fillText(cap?'press a key…':keyLabel(k),c.x+c.w/2,c.y+c.h/2+4);
+    } else if(row.t==='slider'){
+      const v=row.get(), t=(v-row.min)/(row.max-row.min);
+      const tx=c.x+6, tw=c.w-12, ty=c.y+c.h/2;
+      ctx.strokeStyle='rgba(200,162,90,.35)'; ctx.lineWidth=3;
+      ctx.beginPath(); ctx.moveTo(tx,ty); ctx.lineTo(tx+tw,ty); ctx.stroke();
+      ctx.strokeStyle='#c8a25a'; ctx.lineWidth=3;
+      ctx.beginPath(); ctx.moveTo(tx,ty); ctx.lineTo(tx+tw*t,ty); ctx.stroke();
+      ctx.fillStyle='#e8dcc0'; ctx.beginPath(); ctx.arc(tx+tw*t,ty,6,0,Math.PI*2); ctx.fill();
+      ctx.textAlign='right'; ctx.fillStyle='#a89878';
+      ctx.font='10px ui-monospace,Menlo,Consolas,monospace';
+      ctx.fillText(row.fmt?row.fmt():String(v), c.x-6, r.y+19);
+    }
+  }
+
+  for(const a of setArrowRects()){
+    const dis=a.dir<0?settingsScroll<=0:settingsScroll>=setMaxScroll();
+    ctx.fillStyle=dis?'rgba(48,38,24,.5)':'rgba(60,48,30,.95)';
+    ctx.fillRect(a.x,a.y,a.w,a.h);
+    ctx.strokeStyle='rgba(200,162,90,'+(dis?'.25':'.6')+')'; ctx.lineWidth=1;
+    ctx.strokeRect(a.x,a.y,a.w,a.h);
+    ctx.textAlign='center'; ctx.fillStyle=dis?'#6a5a40':'#e8dcc0';
+    ctx.font='11px ui-monospace,Menlo,Consolas,monospace';
+    ctx.fillText(a.dir<0?'▲':'▼',a.x+a.w/2,a.y+15);
+  }
+
+  for(const f of setFooterRects()){
+    const done=f.id==='done';
+    ctx.fillStyle=done?'rgba(200,162,90,.9)':'rgba(60,48,30,.9)';
+    ctx.fillRect(f.x,f.y,f.w,f.h);
+    ctx.strokeStyle='rgba(200,162,90,.6)'; ctx.lineWidth=1; ctx.strokeRect(f.x,f.y,f.w,f.h);
+    ctx.textAlign='center'; ctx.fillStyle=done?'#241a0e':'#e8dcc0';
+    ctx.font='bold 10px ui-monospace,Menlo,Consolas,monospace';
+    ctx.fillText(f.label+(done?'  (Esc)':''),f.x+f.w/2,f.y+15);
+  }
+  ctx.textAlign='left';
 }
 
 // ── Dev Console Mode Helper Commands ───────────────────────────────
@@ -11075,6 +13273,26 @@ function initDevCommands() {
     maxSkills: window.maxSkills,
     toggleTime: window.toggleTime,
     fullRevive: window.fullRevive,
+    // Camera + forest LOD readout. The near/far split is driven by the live
+    // camera angle, so "why is the forest more detailed over here" is a
+    // question worth being able to answer without a debugger.
+    camInfo: () => {
+      const m = camMode();
+      const info = {
+        mode: m.id, fov: camera.fov,
+        camPitch: +camPitch.toFixed(3), camZoom: +camZoom.toFixed(3),
+        fpPitch: +fpPitch.toFixed(3),
+        nearBudget: nearForest
+          ? Math.min(NEAR_TREES_CAP, Math.round((QS.nearTrees|0) * nearBudgetFactor(m.fp, camPitch, camZoom)))
+          : 0,
+        tierNearTrees: QS.nearTrees|0,
+        nearRadiusTiles: +nearRadiusTiles(m.fp, camPitch).toFixed(1),
+        placed: nearForest ? nearForest.species.map(sp => sp.id + ':' + sp.bark.count).join(' ') : '(none)',
+        farTrees: trunkMesh.count,
+      };
+      console.table ? console.table(info) : console.log(info);
+      return info;
+    },
     help: () => {
       console.log(`
 --- [DEV MODE CONSOLE COMMANDS] ---
@@ -11093,6 +13311,7 @@ giveLanterns(amount)    - Give player lanterns (default: 10)
 maxSkills()             - Max all active skill trees to level 4
 toggleTime()            - Switch instantly between day and night cycles
 fullRevive()            - Instantly resurrect player, restore full HP, and clear rat curse
+camInfo()               - Camera mode, fov, and the forest LOD budget it implies
       `);
     }
   };
@@ -11113,7 +13332,25 @@ function nameColor(n){
 function buildRemoteModel(st){
   const inner=SkeletonUtils.clone(protagTemplate);   // carries scale/offset/π-yaw
   const mats=[];
-  inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false;
+  inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true;
+    // Culling stays ON. It was disabled because three tests a SkinnedMesh against
+    // its BIND-POSE bounding sphere, so an animating character can be culled while
+    // still visibly on screen. Inflating the sphere fixes that without giving up
+    // culling entirely — and culling is worth a lot here, since an off-screen
+    // remote was otherwise still submitting ~12.9k triangles every frame.
+    //
+    // SkeletonUtils.clone SHARES geometry between clones, so this must happen once
+    // per geometry, not once per player: unguarded, every join would inflate the
+    // same sphere again and it would grow without bound until nothing ever culled.
+    const g=o.geometry;
+    if(g && !g.userData._skinBoundsInflated){
+      if(!g.boundingSphere) g.computeBoundingSphere();
+      if(g.boundingSphere) g.boundingSphere.radius *= 1.75;
+      g.userData._skinBoundsInflated = true;
+    }
+    o.frustumCulled=true;
+    // Materials stay per-remote: opacity is per-player (ghost 0.45, hidden 0.25),
+    // so sharing them would make one player's death fade every other player out.
     o.material=o.material.clone(); o.material.transparent=true; mats.push(o.material); } });
   const obj=new THREE.Group(); obj.add(inner);
   obj.position.set(st.x,heightAt(st.x,st.y),st.y); scene.add(obj); obj.updateMatrixWorld(true);
@@ -11156,13 +13393,29 @@ function remoteWeapon(v,kind){
 }
 function syncRemotePlayers(t,dt){
   if(net.remotes.size===0 && remoteVis.size===0) return;
+  // Same radii the mobs use, plus a hard cap on how many remotes may animate.
+  const { RD2, AD2 } = viewRadii();
+  // Rank by distance once per frame: everything past RD is hidden, everything
+  // past AD holds its pose, and only the nearest MAX_ANIMATED_REMOTES get a
+  // mixer update at all.
+  const _ranked=[];
+  for(const [id,st] of net.remotes){
+    const dx=st.x-player.x, dz=st.y-player.y;
+    _ranked.push([id, dx*dx+dz*dz]);
+  }
+  _ranked.sort((a,b)=>a[1]-b[1]);
+  const _d2=new Map(_ranked);
+  const _mayAnimate=new Set();
+  for(let i=0;i<_ranked.length && _mayAnimate.size<MAX_ANIMATED_REMOTES;i++){
+    if(_ranked[i][1]<=AD2) _mayAnimate.add(_ranked[i][0]);
+  }
   for(const [id,st] of net.remotes){
     let v=remoteVis.get(id);
     if(!v){
       v={rx:st.x,rz:st.y,lw:null,wkind:null,wslot:null};
       remoteVis.set(id,v);
     }
-    if(!v.model && protagTemplate){                    // real model (or upgrade from rig)
+    if(SKINNING_OK && !v.model && protagTemplate){     // real model (or upgrade from rig)
       if(v.rig){ scene.remove(v.rig); v.rig=null; }
       v.model=buildRemoteModel(st);
     } else if(!v.model && !v.rig){                     // fallback rig until GLB arrives
@@ -11181,16 +13434,17 @@ function syncRemotePlayers(t,dt){
     const st=net.remotes.get(id);
     const k=Math.min(1,dt*10);
     v.rx+=(st.x-v.rx)*k; v.rz+=(st.y-v.rz)*k;
-    const visible=!st.dead||st.ghost;
+    const _rd2=_d2.get(id) ?? 0;
+    const _tooFar=_rd2>RD2;                 // render-distance cull
+    const _animate=_mayAnimate.has(id);     // animation-LOD + nearest-N cap
+    const visible=(!st.dead||st.ghost) && !_tooFar;
     const op=st.ghost?0.45:(st.hidden?0.25:1);
     const w=(st.weapon==='bow'||st.weapon==='axe'||st.weapon==='pickaxe')?st.weapon:'sword';
     if(v.model){
       const m=v.model;
       m.obj.visible=visible;
       m.obj.position.set(v.rx,st.onHorse?(horse?horse.rideH:50):0,v.rz);   // riders sit at saddle height
-      let dd=st.dir-m.obj.rotation.y;                  // face the server-synced dir
-      dd=((dd+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI;
-      m.obj.rotation.y+=dd*0.25;
+      turnToward(m.obj, st.dir, dt, 'remote');         // face the server-synced dir
       if(m.pendingAttack&&m.actions.attack){            // server-validated swing
         m.pendingAttack=false;
         if(m.actions[m.cur])m.actions[m.cur].fadeOut(0.08);
@@ -11199,13 +13453,17 @@ function syncRemotePlayers(t,dt){
       }
       const catching=Math.hypot(st.x-v.rx,st.y-v.rz)>4;   // still gliding → walking
       if(t>=m.busyUntil) setRemoteAnim(m, st.onHorse?'idle':(catching?'walk':'idle'));
-      m.mixer.update(dt);
-      for(const mt of m.mats) mt.opacity=op;
-      remoteWeapon(v,w);
+      // Skinning is the expensive half of a remote player. Past AD, or outside the
+      // nearest-N cap, the pose simply freezes — at that distance the character is
+      // a few pixels tall and nobody can tell.
+      if(_animate) m.mixer.update(dt);
+      setRigOpacity(m.mats, op);
+      // A hidden model needs no weapon attached, and swapping props is not free.
+      if(visible) remoteWeapon(v,w);
     }
     // their horse: under them while riding, standing where they left it
-    const wantsHorse=(st.onHorse||st.horseDown)&&visible;
-    if(wantsHorse&&!v.horse&&horseTemplate){
+    const wantsHorse=(st.onHorse||st.horseDown)&&visible&&!_tooFar;
+    if(SKINNING_OK&&wantsHorse&&!v.horse&&horseTemplate){
       const inner=SkeletonUtils.clone(horseTemplate);
       const obj=new THREE.Group(); obj.add(inner); scene.add(obj);
       const mixer=new THREE.AnimationMixer(inner);
@@ -11217,18 +13475,18 @@ function syncRemotePlayers(t,dt){
       if(st.onHorse){
         v.horse.obj.position.set(v.rx,0,v.rz);
         if(v.model) v.horse.obj.rotation.y=v.model.obj.rotation.y;
-        v.horse.mixer.update(dt);
+        if(_animate) v.horse.mixer.update(dt);
       }else if(st.horseDown){
         v.horse.obj.position.set(st.horseX,0,st.horseY);
-        v.horse.mixer.update(dt*0.35);
+        if(_animate) v.horse.mixer.update(dt*0.35);
       }
     }
     if(v.model){}else if(v.rig){
-      v.rig.visible=visible;
+      v.rig.visible=visible;   // `visible` already carries the render-distance cull
       v.rig.position.set(v.rx,heightAt(v.rx,v.rz),v.rz);
       if(v.lw!==w){ applyProp(v.rig,w,18,34,11); v.lw=w; }
       animateRig(v.rig,v.rx,v.rz,t,{turn:true});
-      for(const mt of v.rig.userData.mats) mt.opacity=op;
+      setRigOpacity(v.rig.userData.mats, op);
     }
   }
 }
@@ -11307,13 +13565,28 @@ function updateMpHud(){
     : net.nameRejected ? '📛 name "'+playerName()+'" is taken — pick another'
     : (net.status==='connecting' ? '🌐 connecting…' : '📴 offline');
 }
-if(MP_ENABLED){
+// Joining the shared world makes you a visible, attackable body in it. Two things
+// must be true before that is fair:
+//   1. the models are in     -- otherwise you stand there unable to see the world
+//   2. a character is chosen -- otherwise you stand there unable to MOVE, because
+//                               character select blocks input while it is open
+// The first pass only gated on (1) and left the second window open.
+let _netStarted = false;
+function maybeStartNet(){
+  if(_netStarted || !MP_ENABLED) return;
+  if(G.charSelectOpen || G.charCreatorOpen) return;   // still picking who to be
+  _netStarted = true;
+  bootScreen.whenReady(startNet);                     // ...and only once assets are in
+}
+function startNet(){
   initNet(()=>({ x:player.x, y:player.y,
     dir: protag?protag.obj.rotation.y:plrGrp.rotation.y,
     weapon: player.weapon||'sword', dead:!!player.dead, ghost:!!player.ghost,
     onHorse:!!player.onHorse, hidden:!!(skills.hiding&&skills.hiding.active),
     horseDown:!!(player.hasHorse&&player.horseDown), horseX:player.horseX||0, horseY:player.horseY||0,
     hp:player.hp|0, maxHp:player.maxHp|0 }));
+}
+if(MP_ENABLED){
   net.onChat=m=>{
     renderChatLog();
     if(m.feed) return;                                   // kill feed: log only
@@ -11398,7 +13671,11 @@ if(MP_ENABLED){
 // ── Game loop ──────────────────────────────────────────────────────
 let lastT=0;
 function loop(t=0){
+  fpsSample(t);
+  maybeStartNet();   // no-op after the first successful start
+  releaseLookForUI();
   requestAnimationFrame(loop);const raw=t-lastT;const dt=Math.min(raw/1000,0.05);lastT=t;
+  fpFreeLookEdge(dt);   // keep turning while the cursor is pinned to a window edge
   _perf.push(raw); if(!HEADLESS) frameTick(raw);   // frameTick drives the auto-demote watchdog
   update(dt);render3D(t/1000);
 }

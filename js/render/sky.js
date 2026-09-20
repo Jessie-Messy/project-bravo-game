@@ -155,15 +155,42 @@ export function createSky({ THREE, renderer, scene, settings }){
         return s;
       }
       void main(){
+        // RE-NORMALISE. vDir is normalize(position) per VERTEX, then linearly
+        // interpolated across the triangle — and a linear blend of two unit
+        // vectors is not a unit vector, it sags toward the chord. That error is
+        // harmless almost everywhere, but the projection below divides by D.y,
+        // which near the horizon is a very small number, so the sag turns into
+        // a visible facet per triangle: the sky appeared to stretch into
+        // rectangles right along the horizon.
+        vec3 D = normalize(vDir);
         // Below the horizon there is only ground; bail before doing any noise.
-        if(vDir.y <= 0.02) discard;
+        if(D.y <= 0.02) discard;
         // Project the view direction onto a plane at a fixed height. This is
         // what makes clouds compress toward the horizon like real ones instead
         // of tiling evenly across the dome.
-        vec2 uv = vDir.xz / max(vDir.y, 0.06) * 0.55;
+        //
+        // The clamp bounds how far that compression can run: at 0.06 the uv is
+        // already scaled 16x, which is enough stretching to read as smearing
+        // even with the direction corrected. 0.085 keeps the compression
+        // convincing without letting it run away.
+        vec2 uv = D.xz / max(D.y, 0.085) * 0.55;
         uv += vec2(uTime * 0.0032, uTime * 0.0019);          // drift
         float n = fbm(uv);
         n = mix(n, fbm(uv * 2.7 - vec2(uTime * 0.004, 0.0)), 0.35);  // shear the layers
+        // DETAIL FALLOFF. The projection above divides by D.y, so approaching
+        // the horizon the uv step between neighbouring pixels grows without
+        // bound — by D.y = 0.1 one screen pixel spans a huge distance in noise
+        // space, and the fbm is being point-sampled far below its own Nyquist
+        // limit. That is what the streaking is: aliasing, not geometry, which
+        // is why correcting the interpolated direction alone did not remove it.
+        //
+        // A texture would solve this with mipmaps. Procedural noise has no
+        // mips, so the equivalent is to blend toward the noise's MEAN as the
+        // sampling rate collapses — detail dissolves into flat cloud instead of
+        // resolving into stripes. 0.48 is this fbm's mean (amplitudes 0.5+0.25+
+        // ... summing to 0.97 max).
+        float detail = smoothstep(0.035, 0.26, D.y);
+        n = mix(0.48, n, detail);
         // Coverage as a threshold, not a multiply: this is what gives clouds
         // edges and gaps of clear sky rather than a uniform haze.
         // The threshold has to sit on the noise's REAL distribution. This fbm
@@ -178,11 +205,17 @@ export function createSky({ THREE, renderer, scene, settings }){
         // only just. This camera always looks AT the player and can never pitch
         // up, so the horizon band is the only sky it ever shows; fading from
         // 0.30 put the entire cloud layer above the top of the frame.
-        d *= smoothstep(0.010, 0.11, vDir.y);
+        // Fade out before the stretch gets extreme. The old 0.010 floor kept
+        // clouds visible right down into the worst of it. It cannot be raised
+        // far: in the orbit cameras the horizon band is most of the sky on
+        // screen, and fading from too high empties it.
+        // With the detail dissolved above, the remaining job here is only to
+        // stop the dome's own base showing as a rim.
+        d *= smoothstep(0.025, 0.115, D.y);
         if(d <= 0.001) discard;
         // Cheap lighting: thin edges brighten toward the sun, thick cores stay
         // dark. Not scattering, but it stops them reading as flat cutouts.
-        float sunAmt = pow(max(dot(normalize(vDir), normalize(uSunDir)), 0.0), 6.0);
+        float sunAmt = pow(max(dot(D, normalize(uSunDir)), 0.0), 6.0);
         // Daylit cumulus are BRIGHT — brighter than the sky behind them. The
         // first pass used 0.55/0.32, which made every cloud darker than the
         // blue it sat on and read as smog. Only the deepest cores go grey.
@@ -193,7 +226,11 @@ export function createSky({ THREE, renderer, scene, settings }){
       }`,
   });
   const WHITE = new THREE.Color(1, 1, 1);
-  const cloudMesh = new THREE.Mesh(new THREE.SphereGeometry(SKY_SCALE * 0.42, 24, 16), cloudMat);
+  // 48x24, not 24x16. Re-normalising in the fragment shader fixes the direction
+  // but the triangles near the equator still span ~15 degrees of azimuth at the
+  // coarser count, which is where the facets were widest. This is a sky shell —
+  // a few hundred more vertices is nothing next to the per-pixel fbm it runs.
+  const cloudMesh = new THREE.Mesh(new THREE.SphereGeometry(SKY_SCALE * 0.42, 48, 24), cloudMat);
   cloudMesh.frustumCulled = false;
   cloudMesh.renderOrder = -2;          // after the sky dome, before stars/moon
   scene.add(cloudMesh);

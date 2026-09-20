@@ -27,10 +27,30 @@ export const SWORD_ARC     = Math.PI / 2;
 // World resources
 export const TREE_HP  = 4, STONE_HP  = 5, IRON_HP = 8;
 export const RESPAWN_TREE = 30, RESPAWN_STONE = 120, RESPAWN_IRON = 180;
-// 24 real minutes per in-game day (1 real minute = 1 in-game hour), so a
-// tester sees roughly one night per session instead of one every few minutes.
-// Night proper (20:00-04:00) is ~8 of those minutes.
-export const DAY_CYCLE_SEC = 1440;
+// ~24 real minutes per in-game day, so a tester sees roughly one night per
+// session instead of one every few minutes. Night proper (20:00-04:00) is
+// about a third of that.
+//
+// 1435, NOT 1440, and the odd number is the whole point. The world clock is
+// derived from wall-clock epoch seconds (see worldNow() in game3d.js) so that
+// every client agrees without server state. But 86400 % 1440 === 0 — the cycle
+// divided the real day exactly 60 times — which locked in-game time to real
+// time of day permanently:
+//
+//   in-game hour  ==  (minutes into the UTC day) mod 24
+//
+// so every even UTC hour landed on exactly 00:00 in-game and every odd hour on
+// exactly 12:00, the same every day forever. Anyone joining on the hour got
+// pitch-black midnight half the time and high noon the other half, and no
+// amount of waiting for "tomorrow" changed it.
+//
+// 86400 % 1435 === 300, so the same wall-clock moment now drifts about five
+// in-game hours per real day and only repeats after 287 days. The five-second
+// difference is imperceptible; the aliasing it removes was not.
+//
+// Careful: the 1440s in game3d.js around the clock display are MINUTES PER
+// 24 HOURS, not this value. They were equal by coincidence and must stay 1440.
+export const DAY_CYCLE_SEC = 1435;
 
 // Enemy population
 export const ENEMY_RESPAWN_DELAY      = 45;
@@ -53,21 +73,41 @@ export const HEAL_AMT     = [20, 30, 45, 60, 80, 105, 135, 170, 210, 260];
 export const WRESTLE_STUN = [1, 1.5, 2.5, 3.5, 5, 6, 7, 8, 9, 10];
 export const WRESTLE_DMG  = [10, 15, 22, 32, 45, 60, 78, 100, 125, 155];
 
+// ── Fitting panels to the device ──────────────────────────────────
+// Every panel below is canvas-drawn at absolute coordinates, and each one derives its
+// internal layout from its own width constant: column widths, progress bars, centred
+// text and — importantly — the rectangles used for hit-testing all read the same
+// number. So clamping the constant reflows the whole panel, clicks included, rather
+// than cropping it.
+//
+// Six panels were wider than a 375px phone (craft 500, charsheet 440, contracts 430,
+// trade 390, dev 388, player-trade 380) and had their right-hand side off-screen.
+// On a desktop these are no-ops.
+//
+// Evaluated once at load: rotating a phone mid-session will not re-clamp them. Doing
+// that properly means turning every panel constant into a function and updating every
+// use site, which is not worth it until the mobile layouts themselves are settled.
+const _vw = () => (typeof innerWidth === 'number' && innerWidth > 0) ? innerWidth : 1920;
+const _vh = () => (typeof innerHeight === 'number' && innerHeight > 0) ? innerHeight : 1080;
+export const fitPanelW = (w) => Math.min(w, _vw() - 24);
+// Height leaves room for the HUD: the title/clock block above and the hotbar below.
+export const fitPanelH = (h) => Math.min(h, _vh() - 150);
+
 // Skill panel
-export const SKILL_PANEL_W   = 290;
+export const SKILL_PANEL_W   = fitPanelW(290);
 export const SKILL_PANEL_ROW = 72;
 export const SKILL_PANEL_H   = 36 + 5 * 72 + 14; // 410
 
 // Craft panel
-export const PANEL_W   = 500, PANEL_PAD = 12;
+export const PANEL_W   = fitPanelW(500), PANEL_PAD = 12;
 export const BTN_H     = 32,  HEADER_H  = 32, BTN_GAP = 4;
 
 // Trade panel
-export const TRADE_W      = 390, TRADE_PAD    = 14;
+export const TRADE_W      = fitPanelW(390), TRADE_PAD    = 14;
 export const TRADE_ROW_H  = 40,  TRADE_HEADER = 44, TRADE_SECT_H = 20;
 
 // Bank panel
-export const BANK_W = 280, BANK_H = 248, BANK_PAD = 14;
+export const BANK_W = fitPanelW(280), BANK_H = 248, BANK_PAD = 14;
 export const BANK_HEADER = 30, BANK_BTN_W = 78, BANK_BTN_H = 34;
 
 // Guards + minimap

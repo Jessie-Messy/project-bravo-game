@@ -37,8 +37,19 @@ const STORE_KEY = 'bravoQuality_v1';
 //                    silently clamps anyway, but the two low tiers get an
 //                    explicit lower number because the ground plane is the
 //                    single biggest texture-fetch cost in the frame.
-//   obsWindow      — half-extent, in tiles, of the wall/roof occlusion probe.
-//                    Wider windows cost raycasts, so only ultra pays for 40.
+//   nearTrees      — how many trees may be drawn with full procedural BRANCH
+//                    geometry (~2k triangles each). Everything past this
+//                    budget draws the cheap merged cone canopy (~250 tris)
+//                    instead, so forest cost is bounded by this number and
+//                    not by how many trees are on screen. 0 on low means low
+//                    never pays for branch geometry at all.
+//   obsWindow      — forward reach of the render window, in tiles, before the
+//                    zoom multiplier in updateViewCone(). Its single reader is
+//                    _view.far. Raising it is what lets trees, walls and rocks
+//                    keep going out to where the fog can hide them instead of
+//                    ending on a visible line; the cost is the tile scan in the
+//                    rebuild loops, which grows with the AREA and is why the
+//                    two low tiers stay where they are.
 export const QUALITY = {
   low: Object.freeze({
     pixelRatio: 1.0,
@@ -59,6 +70,7 @@ export const QUALITY = {
     embers: 0,
     anisotropy: 4,
     obsWindow: 28,
+    nearTrees: 0,
   }),
   medium: Object.freeze({
     pixelRatio: 1.25,
@@ -79,6 +91,7 @@ export const QUALITY = {
     embers: 32,
     anisotropy: 8,
     obsWindow: 32,
+    nearTrees: 20,
   }),
   high: Object.freeze({
     pixelRatio: 1.5,
@@ -98,7 +111,8 @@ export const QUALITY = {
     waterFoam: true,
     embers: 96,
     anisotropy: 0,
-    obsWindow: 32,
+    obsWindow: 46,
+    nearTrees: 48,
   }),
   ultra: Object.freeze({
     pixelRatio: 2.0,
@@ -118,7 +132,8 @@ export const QUALITY = {
     waterFoam: true,
     embers: 192,
     anisotropy: 0,
-    obsWindow: 40,
+    obsWindow: 58,
+    nearTrees: 96,
   }),
 };
 Object.freeze(QUALITY);
@@ -143,7 +158,32 @@ function writeStored(name) {
 // are far slower than any real integrated chip, but 'medium' is as low as this
 // list goes because 'low' is reserved for the touch path where the whole HUD
 // changes shape too.
-const WEAK_GPU = /Intel|UHD|Iris|Mali|Adreno|PowerVR|SwiftShader|llvmpipe/i;
+const WEAK_GPU = /Intel|UHD|Iris|Mali|Adreno|PowerVR/i;
+
+// No GPU at all. These names mean the browser gave up on hardware and is
+// rasterising on the CPU: SwiftShader and llvmpipe are the browsers' own
+// software backends, "Microsoft Basic Render Driver" is what Windows reports
+// when no display driver is installed — which is exactly what a VM without
+// guest GPU drivers looks like.
+//
+// These used to be lumped in with the integrated parts above and handed
+// 'medium'. That was far too generous: a software rasteriser is orders of
+// magnitude slower than the weakest real GPU, not a bit slower, and medium
+// still turns on shadows and the whole post-processing chain. They get 'low',
+// which is the tier that draws straight to the canvas with no composer and no
+// shadow pass at all.
+const SOFTWARE_GPU = /SwiftShader|llvmpipe|Basic Render|Basic Display|Software Adapter/i;
+
+// Virtual and remote display adapters. These matter because the renderer
+// string names the VIRTUAL device, not the host GPU, so none of the patterns
+// above match and detection used to fall through to 'high' — a VM would be
+// handed the heaviest tier it has. That is how a MacBook running Windows in
+// Parallels ended up on 'high': the string reads
+//   ANGLE (Parallels, Parallels Display Adapter (WDDM) Direct3D11 ..., D3D11)
+// which contains no 'Intel' and no 'SwiftShader'. Paravirtual GPUs pay a
+// translation cost on every draw call even when the host GPU is strong, so
+// they belong on the same conservative footing as integrated parts.
+const VIRTUAL_GPU = /Parallels|VMware|SVGA3D|VirtualBox|VBoxSVGA|Hyper-?V|RemoteFX|Paravirtual|VirGL|virtio|QXL|Microsoft Remote Display/i;
 
 let detectReason = 'not yet run';
 
@@ -195,6 +235,16 @@ export function detectTier(opts) {
     console.log('[quality] ' + detectReason);
     return 'medium';
   }
+  if (SOFTWARE_GPU.test(name)) {
+    detectReason = 'software rasteriser, no GPU: ' + name;
+    console.log('[quality] ' + detectReason);
+    return 'low';
+  }
+  if (VIRTUAL_GPU.test(name)) {
+    detectReason = 'virtual/remote display adapter: ' + name;
+    console.log('[quality] ' + detectReason);
+    return 'medium';
+  }
   if (WEAK_GPU.test(name)) {
     detectReason = 'integrated/mobile GPU: ' + name;
     return 'medium';
@@ -223,6 +273,7 @@ export function setTier(name) {
   // session — nothing is more infuriating than a settings panel that keeps
   // undoing itself while you're looking at it.
   watchdogArmed = false;
+  userOverride = true;
   if (name === current) { writeStored(name); return; }
   current = name;
   writeStored(name);
@@ -265,12 +316,19 @@ const WARMUP_MS = 5000;      // shader compiles and the first GLB loads make
 const MIN_SAMPLES = 60;
 const MEDIAN_LIMIT_MS = 22;  // ~45fps. Below the 16.7ms ideal but above the
                              // point where mouse-look starts to feel sticky.
-const MAX_FRAME_MS = 500;    // anything longer is a tab-switch or a zone load,
-                             // not a frame we should judge the GPU on
+// Outlier ceiling. This used to be 500ms, which quietly created a blind spot:
+// a machine rendering at 2fps produces a steady stream of ~500ms frames, and
+// every one of them was discarded as "not a real frame" — so the worse a
+// machine performed, the less likely the watchdog was to notice. The median
+// below already rejects occasional stalls, so the ceiling only needs to be
+// high enough to drop tab-switches and zone loads.
+const MAX_FRAME_MS = 2000;
+const REARM_MS = 3000;       // pause after a demotion before judging again
 
 const frames = [];
 let elapsedMs = 0;
-let watchdogArmed = true;    // false once it fires, or once setTier is called
+let watchdogArmed = true;    // false while cooling down, or once setTier is called
+let userOverride = false;    // a deliberate choice retires the watchdog for good
 
 export function frameTick(dtMs) {
   if (!watchdogArmed) return;
@@ -294,16 +352,29 @@ export function frameTick(dtMs) {
   if (idx <= 0) { watchdogArmed = false; return; }  // already on low, nothing left to give
 
   const next = TIERS[idx - 1];
-  // Disarm before applying: listeners rebuild render targets, which spikes the
-  // very frame times we are measuring, and we are not doing this twice.
+  const sampled = frames.length;   // captured before the window is cleared
+  // Disarm and clear the window before applying: listeners rebuild render
+  // targets, which spikes the very frame times we are measuring.
   watchdogArmed = false;
+  frames.length = 0;
+  elapsedMs = 0;
   console.log('[quality] auto-demote ' + current + ' → ' + next +
-    ' (median frame ' + median.toFixed(1) + 'ms over ' + frames.length + ' frames, limit ' + MEDIAN_LIMIT_MS + 'ms)');
+    ' (median frame ' + median.toFixed(1) + 'ms over ' + sampled + ' frames, limit ' + MEDIAN_LIMIT_MS + 'ms)');
   // Note the deliberate absence of a writeStored() here. This is a reaction to
   // one session on one machine — a laptop on battery, a background export, a
   // browser mid-update — and baking it into localStorage would leave the
   // player permanently downgraded with no idea why.
   applyTier(next);
+
+  // Re-arm rather than retiring for the session. One step was all this could
+  // ever take, which is not enough when detection started two tiers too high
+  // -- a virtualised GPU reading as discrete lands on 'high' and needs to get
+  // to 'low', not 'medium'. The WARMUP_MS gate still applies after the reset
+  // above, so the next judgement is a fresh measurement, not a rebound off the
+  // rebuild hitch. A deliberate setTier() still retires it permanently.
+  if (TIERS.indexOf(next) > 0) {
+    setTimeout(() => { if (!userOverride) watchdogArmed = true; }, REARM_MS);
+  }
 }
 
 // Boot helper: run detection, adopt the result, and hand the tier back.

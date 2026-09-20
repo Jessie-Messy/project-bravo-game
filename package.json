@@ -1,3 +1,21 @@
 {
-  "type": "module"
+  "name": "project-bravo-game",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "inspect": "node tools/inspect.mjs",
+    "bake": "node tools/bake.mjs",
+    "bake:dry": "node tools/bake.mjs --dry-run",
+    "compare": "node tools/compare.mjs",
+    "verify": "node tools/verify.mjs",
+    "assets": "npm run bake && npm run compare && npm run verify"
+  },
+  "dependencies": {
+    "@gltf-transform/core": "^4.5.0",
+    "@gltf-transform/extensions": "^4.5.0",
+    "@gltf-transform/functions": "^4.5.0",
+    "draco3dgltf": "^1.5.7",
+    "meshoptimizer": "^1.2.0",
+    "sharp": "^0.35.4"
+  }
 }

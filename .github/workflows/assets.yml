@@ -1,0 +1,45 @@
+name: assets
+
+# The budget gate. The reason 19 of 39 models shipped unoptimised was that nothing ever
+# checked -- an asset pipeline you have to remember to run is one you will stop running.
+# This makes an over-budget asset a failed check instead of a silent regression.
+
+on:
+  push:
+    paths:
+      - 'models/**'
+      - 'assets/budgets.json'
+      - 'tools/**'
+      - 'package.json'
+      - '.github/workflows/assets.yml'
+  pull_request:
+    paths:
+      - 'models/**'
+      - 'assets/budgets.json'
+      - 'tools/**'
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # `npm ci` needs the lockfile to be in sync with package.json; fall back to a
+      # plain install rather than failing the run for a lockfile drift.
+      - name: Install
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+      - name: Verify asset budgets
+        run: npm run verify
+
+      # Advisory: shows the payload breakdown in the run log so a creeping total is
+      # visible before it becomes a failure.
+      - name: Report payload
+        if: always()
+        run: npm run inspect

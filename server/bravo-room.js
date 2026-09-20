@@ -6,6 +6,7 @@
 const { Room } = require('colyseus');
 const { Schema, MapSchema, defineTypes } = require('@colyseus/schema');
 const storage = require('./storage.js');
+const { verifyGameTicket } = require('./orion-auth.js');
 const { MobSim, world } = require('./mobs.js');
 
 // Must match the client's constants.js
@@ -64,7 +65,7 @@ defineTypes(WorldState, { players: { map: PlayerState }, mobs: { map: MobState }
 
 class BravoRoom extends Room {
   onCreate() {
-    this.maxClients = 16;
+    this.maxClients = 120;   // raised for load testing (Phase 01); real capacity needs interest management
     this.autoDispose = false;          // the world stays up even when empty
     this.setState(new WorldState());
     this.meta = new Map();             // sessionId -> per-connection tracking
@@ -446,16 +447,27 @@ class BravoRoom extends Room {
   // token; later joins must present the same token or they're rejected.
   // Stops anyone from logging in as another playtester and inheriting
   // their position/stats.
+  // Identity comes from a signed Orion platform ticket, not from the client.
+  //
+  // This replaced a first-come name claim: whoever joined a name first stored a
+  // per-device secret and kept it. That bound a character to a browser, and any
+  // unclaimed name could be taken by anyone. Now the ticket is HMAC-signed by
+  // the platform, lives 60 seconds, and carries the real account id.
+  //
+  // The name is read from the ticket's claims and `options.name` is ignored
+  // entirely — otherwise a player could present a valid ticket and still ask to
+  // be someone else.
   onAuth(client, options) {
-    const name = BravoRoom.cleanName(options && options.name);
-    const token = (options && typeof options.token === 'string') ? options.token.slice(0, 64) : '';
-    const saved = storage.getToken(name);
-    if (saved && saved !== token) {
-      console.warn(`[bravo] REJECTED join as protected name "${name}"`);
-      throw new Error('name-protected');
+    const ticket = (options && typeof options.token === 'string') ? options.token : '';
+    const claims = verifyGameTicket(ticket, 'medieval');
+
+    if (!claims) {
+      console.warn('[bravo] REJECTED join: invalid, expired or missing ticket');
+      throw new Error('bad-ticket');
     }
-    if (!saved && token) storage.setToken(name, token);
-    return true;
+
+    // Returned from onAuth, so it arrives as client.auth in onJoin.
+    return { uid: claims.uid, name: BravoRoom.cleanName(claims.name), slot: claims.slot | 0 };
   }
 
   static cleanName(raw) {
@@ -464,7 +476,9 @@ class BravoRoom extends Room {
   }
 
   onJoin(client, options) {
-    const name = BravoRoom.cleanName(options && options.name);
+    // client.auth is what onAuth returned — the verified account, not anything
+    // the browser asked to be called.
+    const name = (client.auth && client.auth.name) || 'Traveler';
     const p = new PlayerState();
     p.name = name;
     const saved = storage.load(name);

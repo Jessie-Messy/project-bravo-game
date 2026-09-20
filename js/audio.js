@@ -4,6 +4,14 @@
 export let soundMuted = false;
 export let masterVol  = 0.65;
 export function setSoundMuted(v) { soundMuted = v; }
+// The master gain node only exists once the context has been created (which
+// waits for a user gesture, per browser autoplay policy). Setting the volume
+// before then still has to stick, so masterVol is the source of truth and the
+// live node is updated only if it is already there.
+export function setMasterVol(v) {
+  masterVol = Math.max(0, Math.min(1, v));
+  if (_master) _master.gain.value = masterVol;
+}
 
 let _ac=null, _master=null, _revIn=null, _noiseBuf=null;
 

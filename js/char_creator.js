@@ -180,7 +180,12 @@ export function renderCharSelect(ctx, canvas, onSelectSlot, onCreateSlot) {
   // text stays legible instead of being squeezed into two narrow columns.
   const portrait = vw < vh;
   const DESIGN_W = portrait ? 420 : 820;
-  const DESIGN_H = portrait ? 640 : 620;
+  // 860, not 640. A populated card draws fixed-size content down to +282 and then needs
+  // room for the 36px Play button beneath it — about 342px in total. Two of those, plus
+  // the header and the gap, do not fit in 640, which is why the button used to land on
+  // top of the racial-trait box. Scale-to-fit still keeps this on screen: on a 375x812
+  // phone S is limited by width (375/420 = 0.89), so 860 design px renders as ~768.
+  const DESIGN_H = portrait ? 860 : 620;
   const S = Math.min(vw / DESIGN_W, vh / DESIGN_H);
   const offX = (vw - DESIGN_W * S) / 2;
   const offY = (vh - DESIGN_H * S) / 2;
@@ -193,19 +198,34 @@ export function renderCharSelect(ctx, canvas, onSelectSlot, onCreateSlot) {
   // Decorative header
   const headerY = Math.max(30, Math.floor(h * 0.08));
   ctx.fillStyle = '#c8a25a';
-  ctx.font = 'bold 24px ui-monospace, Menlo, Consolas, monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('PROJECT BRAVO — CHARACTER SELECTION', w / 2, headerY);
-
-  ctx.fillStyle = '#a09070';
-  ctx.font = '13px ui-monospace, Menlo, Consolas, monospace';
-  ctx.fillText('Choose a character to enter Lunar, or create a new hero', w / 2, headerY + 22);
+  // Monospace is ~0.6em per character, so the full title needs 35 * 0.6 * 24 = ~504px —
+  // wider than the 420px portrait design it is centred in, clipping both ends. Portrait
+  // gets a shorter title at a size that fits inside the 380px of usable width.
+  if (portrait) {
+    ctx.font = 'bold 20px ui-monospace, Menlo, Consolas, monospace';
+    ctx.fillText('CHARACTER SELECT', w / 2, headerY);
+    ctx.fillStyle = '#a09070';
+    ctx.font = '12px ui-monospace, Menlo, Consolas, monospace';
+    ctx.fillText('Choose a hero, or create one', w / 2, headerY + 20);
+  } else {
+    ctx.font = 'bold 24px ui-monospace, Menlo, Consolas, monospace';
+    ctx.fillText('PROJECT BRAVO — CHARACTER SELECTION', w / 2, headerY);
+    ctx.fillStyle = '#a09070';
+    ctx.font = '13px ui-monospace, Menlo, Consolas, monospace';
+    ctx.fillText('Choose a character to enter Lunar, or create a new hero', w / 2, headerY + 22);
+  }
 
   const acc = AccountManager.getAccount();
   const gap = portrait ? 20 : 30;
   // Portrait stacks the two slots; landscape keeps them side by side.
   const cardW = portrait ? Math.floor(w - 40) : Math.min(340, Math.floor(w * 0.42));
-  const cardH = portrait ? Math.floor((h - headerY - 90 - gap) / 2) : Math.min(420, Math.floor(h * 0.65));
+  // Portrait height is a CONSTANT because the card's contents are: name, race, four
+  // attribute rows, a 54px trait box ending at +282, then the button. Deriving it from
+  // whatever vertical space happened to be left is what produced a 239px card holding
+  // 342px of content.
+  const CARD_H_PORTRAIT = 342;
+  const cardH = portrait ? CARD_H_PORTRAIT : Math.min(420, Math.floor(h * 0.65));
   const cardY0 = headerY + 50;
   const startX = portrait ? 20 : (w - (cardW * 2 + gap)) / 2;
 

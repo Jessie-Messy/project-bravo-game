@@ -89,7 +89,14 @@ export function makeConiferCanopy(THREE, { height = 100, radius = 34, tiers = 4,
 
     // Fewer facets higher up — those tiers are small on screen and the polygons
     // are wasted there.
-    const seg = Math.max(6, 11 - i);
+    //
+    // These were 11/10/9/8, from when the whole canopy was a single cone and the
+    // forest was much smaller on screen. A distant tree is seen in SILHOUETTE
+    // against the sky, which is the one place a low radial count cannot hide,
+    // and the measured cost of the entire far forest was 19k triangles inside a
+    // cap it was using 2% of. Roughly doubling the facets doubles that to 38k —
+    // still less than a single near-LOD tree, which is 2,032.
+    const seg = Math.max(13, 24 - i * 3);
     const g = new THREE.ConeGeometry(r, h, seg, 1, true);   // open-ended: the base cap is never visible
     roughenCone(g, rand, 0.11 + t * 0.05);
     g.rotateY(rand() * Math.PI * 2);                        // decorrelate tier outlines
@@ -100,6 +107,57 @@ export function makeConiferCanopy(THREE, { height = 100, radius = 34, tiers = 4,
   const merged = mergeGeometries(parts, false);
   for(const g of parts) g.dispose();
   if(!merged) throw new Error('makeConiferCanopy: mergeGeometries failed');
+  merged.computeVertexNormals();
+  merged.computeBoundingSphere();
+  return merged;
+}
+
+/**
+ * A broadleaf canopy: a lumpy rounded crown, merged to one geometry.
+ *
+ * THE FAR FOREST HAD ONLY A CONIFER. Every distant tree drew as the stacked-cone
+ * spruce above, whatever it actually was — so an oak wood was a field of pointed
+ * cones until you walked close enough for the branch geometry to take over, at
+ * which point it turned into round broadleaves in front of you. Two different
+ * forests, and the LOD switch was the seam between them.
+ *
+ * Same contract as makeConiferCanopy: centred on the origin, spanning
+ * -height/2..+height/2, because the wind shader derives its bend weight from
+ * that range and the caller positions it on that assumption.
+ */
+export function makeBroadleafCanopy(THREE, { height = 100, radius = 34, lobes = 5, seed = 4242 } = {}){
+  const rand = rng(seed);
+  const parts = [];
+
+  // A crown is a handful of overlapping masses, not one ball. Five roughened
+  // spheres arranged around and above the centre give a silhouette that breaks
+  // up against the sky, which is the whole job at this distance.
+  for(let i = 0; i < lobes; i++){
+    const first = i === 0;
+    // One broad mass low and centred, the rest smaller and pushed out and up.
+    const r = radius * (first ? 0.78 : 0.42 + rand() * 0.22);
+    const a = (i / lobes) * Math.PI * 2 + rand() * 0.9;
+    const out = first ? 0 : radius * (0.34 + rand() * 0.30);
+    const y = height * (first ? -0.04 : -0.10 + rand() * 0.40);
+
+    // 7x5 segments: enough to read as round in silhouette, few enough that a
+    // whole forest of them stays cheap. Spheres, unlike cones, have no apex to
+    // protect, so roughenCone can work on every ring.
+    const g = new THREE.SphereGeometry(r, 7, 5);
+    g.scale(1, 0.80 + rand() * 0.25, 1);          // squashed — crowns are wider than tall
+    roughenCone(g, rand, 0.16);
+    g.translate(Math.cos(a) * out, y, Math.sin(a) * out);
+    parts.push(g);
+  }
+
+  const merged = mergeGeometries(parts, false);
+  for(const g of parts) g.dispose();
+  if(!merged) throw new Error('makeBroadleafCanopy: mergeGeometries failed');
+  // Pull the result into the -height/2..+height/2 box the wind shader assumes.
+  merged.computeBoundingBox();
+  const bb = merged.boundingBox, h = bb.max.y - bb.min.y;
+  merged.translate(0, -(bb.min.y + bb.max.y) / 2, 0);
+  if(h > 0) merged.scale(1, height / h, 1);
   merged.computeVertexNormals();
   merged.computeBoundingSphere();
   return merged;
