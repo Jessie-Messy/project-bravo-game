@@ -5155,6 +5155,81 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     });
     return list.join(', ');
   },
+  // ── Multiplayer load harness ───────────────────────────────────────────────
+  //
+  // The question "how many players can this hold" was never measurable: you
+  // needed that many real clients, and the answer would have been confounded by
+  // the network. These two put synthetic players straight into net.remotes —
+  // which is exactly what syncRemotePlayers reads — and then drive the real
+  // frame function by hand.
+  //
+  // Driving update()/render3D() directly rather than waiting on rAF is the
+  // point. A backgrounded tab throttles rAF to nothing (see the preview-pane
+  // note in HANDOFF), so a timing loop built on frames never runs. A synchronous
+  // call does the identical work and can be timed anywhere.
+  //
+  //   _dev.mpLoad(80)       80 synthetic players scattered around you
+  //   _dev.mpLoad(80, 900)  ...all within 900 units, i.e. all animating
+  //   _dev.mpLoad(0)        clear them
+  //   _dev.mpBench(120)     time 120 frames and report
+  mpLoad(n, radius){
+    for(const id of [...net.remotes.keys()]) if(id.startsWith('bench_')) net.remotes.delete(id);
+    const R = radius || 2600;
+    for(let i=0;i<n;i++){
+      // Spread over a disc, not a ring: a ring puts everyone at one distance and
+      // the LOD tiers then either all fire or none do, which measures nothing.
+      const a = (i*2.399963);                       // golden angle — even, non-repeating
+      const r = R * Math.sqrt((i+0.5)/Math.max(1,n));
+      net.remotes.set('bench_'+i, {
+        x: player.x + Math.cos(a)*r, y: player.y + Math.sin(a)*r,
+        dir: a, name: 'Bench'+i, dead:false, ghost:false, hidden:false,
+        weapon: ['sword','bow','axe','pickaxe'][i&3], onHorse:false,
+      });
+    }
+    return JSON.stringify({remotes: net.remotes.size, radius: R});
+  },
+  mpBench(frames){
+    const F = frames || 120;
+    const { RD2, AD2 } = viewRadii();
+    let within = 0, animating = 0;
+    for(const [,st] of net.remotes){
+      const dx=st.x-player.x, dz=st.y-player.y, d2=dx*dx+dz*dz;
+      if(d2<=RD2) within++;
+      if(d2<=AD2) animating++;
+    }
+    update(1/60); render3D(performance.now()/1000);          // warm, and settle the pools
+    // ⚠ renderer.info.render RESETS ON EVERY render() CALL, and the composer
+    // makes several per frame — so reading it after the fact reports only the
+    // last pass, which is a single fullscreen quad. It said `drawCalls: 1` for a
+    // 150-player crowd until this was turned off. autoReset=false accumulates
+    // across every pass; divide by the frame count for a real per-frame figure.
+    const info = renderer.info;
+    const prevAuto = info.autoReset;
+    info.autoReset = false; info.reset();
+    const samples=[];
+    for(let i=0;i<F;i++){
+      const a=performance.now();
+      update(1/60); render3D(performance.now()/1000);
+      samples.push(performance.now()-a);
+    }
+    const callsPerFrame = +(info.render.calls / F).toFixed(1);
+    const trisPerFrame  = Math.round(info.render.triangles / F);
+    info.autoReset = prevAuto; info.reset();
+    samples.sort((a,b)=>a-b);
+    const pick = q => +samples[Math.min(F-1, Math.floor(F*q))].toFixed(2);
+    return JSON.stringify({
+      remotes: net.remotes.size,
+      withinRenderDist: within,
+      withinAnimDist: animating,
+      animatedCap: MAX_ANIMATED_REMOTES, visibleCap: MAX_VISIBLE_REMOTES,
+      actuallyAnimated: Math.min(animating, MAX_ANIMATED_REMOTES),
+      medianMs: pick(0.5), p95Ms: pick(0.95), maxMs: +samples[F-1].toFixed(2),
+      impliedFps: +(1000/Math.max(0.01, samples[F>>1])).toFixed(0),
+      drawCallsPerFrame: callsPerFrame, trianglesPerFrame: trisPerFrame,
+      programs: renderer.info.programs ? renderer.info.programs.length : null,
+    });
+  },
+
   // Housing, without walking the whole loop every time.
   //   _dev.house()                  what could be built right here, and why not
   //   _dev.house('house_stilt')     build that one at the player's feet
@@ -12897,6 +12972,27 @@ function viewRadii(){
 // costs a full skinned-mesh update. The nearest few are the only ones whose
 // limbs you can actually read.
 const MAX_ANIMATED_REMOTES = 20;
+// ...and a ceiling on how many are DRAWN at all.
+//
+// There was a cap on animation and none on rendering, which is the wrong way
+// round for the case that actually hurts: a crowd. Measured with _dev.mpLoad /
+// _dev.mpBench, standing in the city with everyone inside the animation radius:
+//
+//   remotes   draw calls/frame   median ms
+//        0           164             3.2
+//       50           455             4.0
+//      100           749             5.5
+//      150          1043             6.3
+//
+// About 5.9 draw calls per visible player — each one is a body plus a weapon,
+// and the composer renders the scene roughly three times (depth prepass, main,
+// and the bloom/SMAA chain). Animation was never the cost; submission was.
+//
+// 60 is chosen from what a crowd looks like rather than from a frame budget: at
+// that count the nearest 60 fill the view, and the 61st-nearest is behind
+// somebody. Players past it keep their position and their nameplate — they are
+// still THERE, they are just not drawn — so nothing gameplay-facing changes.
+const MAX_VISIBLE_REMOTES = 60;
 
 function syncEntities(t){
   const adt=Math.min(Math.max(t-_lastSyncT,0),0.1); _lastSyncT=t;
@@ -14114,6 +14210,10 @@ function syncRemotePlayers(t,dt){
   for(let i=0;i<_ranked.length && _mayAnimate.size<MAX_ANIMATED_REMOTES;i++){
     if(_ranked[i][1]<=AD2) _mayAnimate.add(_ranked[i][0]);
   }
+  // Nearest-N draw cap. _ranked is already sorted by distance, so this is the
+  // same pass: everyone past the cap is hidden regardless of how close they are.
+  const _mayDraw=new Set();
+  for(let i=0;i<_ranked.length && _mayDraw.size<MAX_VISIBLE_REMOTES;i++) _mayDraw.add(_ranked[i][0]);
   for(const [id,st] of net.remotes){
     let v=remoteVis.get(id);
     if(!v){
@@ -14140,7 +14240,7 @@ function syncRemotePlayers(t,dt){
     const k=Math.min(1,dt*10);
     v.rx+=(st.x-v.rx)*k; v.rz+=(st.y-v.rz)*k;
     const _rd2=_d2.get(id) ?? 0;
-    const _tooFar=_rd2>RD2;                 // render-distance cull
+    const _tooFar=_rd2>RD2 || !_mayDraw.has(id);   // render distance, then nearest-N
     const _animate=_mayAnimate.has(id);     // animation-LOD + nearest-N cap
     const visible=(!st.dead||st.ghost) && !_tooFar;
     const op=st.ghost?0.45:(st.hidden?0.25:1);
