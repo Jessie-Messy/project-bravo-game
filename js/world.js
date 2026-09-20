@@ -557,6 +557,10 @@ for (let y = 0; y < MAP_H; y++) {
 // nothing here can be a literal without going stale the moment the coast is
 // regenerated.
 export const COAST_MOBS = [];      // [tx, ty, type]
+// The coast's two named bosses. Placed by generateCoast, which is the only thing
+// that knows where the shoreline ended up — the same reason the NPCs are derived
+// rather than written down.
+export const COAST_BOSS_SPAWNS = [];   // { boss, x, y }
 // Saltmere's safe ground — the ONLY safe zone on the coast. Filled by
 // generateCoast from the village it actually placed, in TILE coordinates, and
 // exported into world-data.json so the server enforces the same rectangle the
@@ -839,6 +843,18 @@ export const COAST_DOCK_TILES  = [];   // pier tiles, for the boat and for props
   for (const lx of [22, 40, 150, 172]) {
     COAST_MOBS.push([X0 + lx, Y0 + beachAt(lx) + 3, 'wrecker']);
   }
+
+  // ── The two bosses ───────────────────────────────────────────────
+  // Deliberately at opposite ends, and both well away from Saltmere: the
+  // village is the only safe ground on this map, and a boss that can be pulled
+  // into it would be farmed from safety while the open-PvP rules that make the
+  // coast interesting never come into play.
+  //
+  // The Tidewrack sits out in the shallows at the western end — you fight it
+  // standing in water, with nowhere to back into. Drowned Kessel holds the
+  // eastern beach where the wreckers camp.
+  COAST_BOSS_SPAWNS.push({ boss:'tidewrack', x: X0 + 24, y: Y0 + Math.round(shore(24)) - 5 });
+  COAST_BOSS_SPAWNS.push({ boss:'kessel',    x: X0 + 176, y: Y0 + Math.round(shore(176)) + 2 });
 
   // Player house plots: 6x6 clearings on the grass INLAND of the village.
   //

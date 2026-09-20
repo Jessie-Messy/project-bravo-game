@@ -41,7 +41,7 @@ import { CHAMP_ALTARS, DUNGEON_PORTAL_A, DUNGEON_PORTAL_B,
   DUNGEON_FLOORS, DUNGEON_STAIRS, DUNGEON_BOSS_SPAWNS, WORLD_CHESTS, floorAt,
   COAST_PORTALS, CITY_COAST_GATE,
   COAST_VILLAGE, COAST_HOUSE_PLOTS, COAST_DOCK_TILES, FERRY_MAINLAND,
-  COAST_NPCS, COAST_SAFE_ZONE } from './world.js';
+  COAST_NPCS, COAST_SAFE_ZONE, COAST_BOSS_SPAWNS } from './world.js';
 import { updateEnemy, champSpawnTick, damageEnemy, damagePlayer,
   spawnRandomEnemy, boxBlocked, populateWorld, populateDungeon, hooks,
   makeEnemy, ENEMY_CFG, extraBlocking, spawnDrops, BOSS_ABILITIES,
@@ -6788,6 +6788,13 @@ const RECIPES=[
   {id:'steel_arm',top:'2 steel ingots + hide + bone → steel armor',adv:true,sub:()=>!hasUpgradeSlot(4)?'FULL SET':((nearbyObject('forge',3)||nearbyObject('workbench',3))?'have: '+(inv.steel_ingot||0)+'s  '+inv.hide+'h':'need: forge/bench nearby')},
   {id:'mithril_arm',top:'3 mithril ingots + hide → mithril armor',adv:true,sub:()=>!hasUpgradeSlot(5)?'FULL SET':((nearbyObject('forge',3)||nearbyObject('workbench',3))?'have: '+(inv.mithril_ingot||0)+'m  '+inv.hide+'h':'need: forge/bench nearby')},
   {id:'runic_arm',top:'3 runic ingots + hide → runic armor',adv:true,sub:()=>!hasUpgradeSlot(6)?'FULL SET':((nearbyObject('forge',3)||nearbyObject('workbench',3))?'have: '+(inv.runic_ingot||0)+'r  '+inv.hide+'h':'need: forge/bench nearby')},
+  // ── Abyssal, tier 6. There is no ore and no smelting recipe: the ingots drop
+  // on the Saltmere coast and nowhere else, which is the entire point of the
+  // tier. You cannot grind your way to it on the safe map at any price.
+  {id:'abyssal_sword',top:'4 abyssal ingots → abyssal sword',adv:true,sub:()=>player.swordTier>=6?'OWNED':((nearbyObject('forge',3)||nearbyObject('workbench',3))?'have: '+(inv.abyssal_ingot||0)+' a-ingots':'need: forge/bench nearby')},
+  {id:'abyssal_bow',  top:'4 abyssal ingots → abyssal bow',  adv:true,sub:()=>player.bowTier>=6?'OWNED':((nearbyObject('forge',3)||nearbyObject('workbench',3))?'have: '+(inv.abyssal_ingot||0)+' a-ingots':'need: forge/bench nearby')},
+  {id:'abyssal_pick', top:'4 abyssal ingots → abyssal pick', adv:true,sub:()=>player.pickaxeTier>=6?'OWNED':(nearbyObject('workbench',3)?'have: '+(inv.abyssal_ingot||0)+' a-ingots':'need: workbench nearby')},
+  {id:'abyssal_arm',  top:'4 abyssal ingots + hide → abyssal armor',adv:true,sub:()=>!hasUpgradeSlot(7)?'FULL SET':((nearbyObject('forge',3)||nearbyObject('workbench',3))?'have: '+(inv.abyssal_ingot||0)+'a  '+inv.hide+'h':'need: forge/bench nearby')},
   {id:'secure_chest',top:'5 planks + 4 iron ingots → secure chest',adv:true,sub:()=>nearbyObject('workbench',3)?'have: '+inv.planks+'p  '+(inv.iron_ingot||0)+'i':'need: workbench nearby'},
   {id:'siege_ram',top:'10 wood + 3 iron ingots → siege ram',adv:true,sub:()=>nearbyObject('workbench',3)?'have: '+inv.wood+'w  '+(inv.iron_ingot||0)+'i':'need: workbench nearby'},
   {id:'torch',top:'1 wood + 1 hide → 3 torches',adv:false,sub:()=>'have: '+inv.wood+'w  '+inv.hide+'h  ('+inv.torch+' held)'},
@@ -6927,6 +6934,10 @@ function canCraft(id){
   if(id==='mithril_bow') return (inv.mithril_ingot||0)>=3&&(player.bowTier||1)<4&&(wb||fg);
   if(id==='runic_pick') return (inv.runic_ingot||0)>=3&&(player.pickaxeTier||1)<5&&wb;
   if(id==='runic_sword') return (inv.runic_ingot||0)>=3&&(player.swordTier||1)<5&&(wb||fg);
+  if(id==='abyssal_sword') return (inv.abyssal_ingot||0)>=4&&(player.swordTier||1)<6&&(wb||fg);
+  if(id==='abyssal_bow')   return (inv.abyssal_ingot||0)>=4&&(player.bowTier||1)<6&&(wb||fg);
+  if(id==='abyssal_pick')  return (inv.abyssal_ingot||0)>=4&&(player.pickaxeTier||1)<6&&wb;
+  if(id==='abyssal_arm')   return (inv.abyssal_ingot||0)>=4&&inv.hide>=2&&hasUpgradeSlot(7)&&(wb||fg);
   if(id==='runic_bow') return (inv.runic_ingot||0)>=3&&(player.bowTier||1)<5&&(wb||fg);
   if(id==='bronze_arm') return (inv.iron_ingot||0)>=3&&inv.hide>=2&&wb&&hasUpgradeSlot(3);
   if(id==='steel_arm') return (inv.steel_ingot||0)>=2&&inv.hide>=2&&(inv.bone||0)>=2&&(wb||fg)&&hasUpgradeSlot(4);
@@ -6971,6 +6982,10 @@ function doCraft(id){
   if(id==='runic_pick') {inv.runic_ingot-=3;player.pickaxeTier=5;player.hasPickaxe=true;addFloater(player.x,player.y-20,'Runic Pickaxe!');}
   if(id==='runic_sword'){inv.runic_ingot-=3;player.swordTier=5;player.hasSword=true;player.weapon='sword';addFloater(player.x,player.y-20,'Runic Sword!');}
   if(id==='runic_bow') {inv.runic_ingot-=3;player.bowTier=5;player.hasBow=true;player.weapon='bow';addFloater(player.x,player.y-20,'Runic Bow!');}
+  if(id==='abyssal_sword'){inv.abyssal_ingot-=4;player.swordTier=6;player.hasSword=true;player.weapon='sword';addFloater(player.x,player.y-20,'Abyssal Sword!');}
+  if(id==='abyssal_bow')  {inv.abyssal_ingot-=4;player.bowTier=6;player.hasBow=true;player.weapon='bow';addFloater(player.x,player.y-20,'Abyssal Bow!');}
+  if(id==='abyssal_pick') {inv.abyssal_ingot-=4;player.pickaxeTier=6;player.hasPickaxe=true;addFloater(player.x,player.y-20,'Abyssal Pickaxe!');}
+  if(id==='abyssal_arm')  {inv.abyssal_ingot-=4;inv.hide-=2;equipArmorPiece(7);}
   if(id==='bronze_arm'){inv.iron_ingot-=3;inv.hide-=2;equipArmorPiece(3);}
   if(id==='steel_arm') {inv.steel_ingot-=2;inv.hide-=2;inv.bone-=2;equipArmorPiece(4);}
   if(id==='mithril_arm'){inv.mithril_ingot-=3;inv.hide-=2;equipArmorPiece(5);}
@@ -8511,6 +8526,12 @@ hooks.onKill = e => {
   if(G.totalKills>=100) grantAchiev('centurion');
   if(G.totalKills>=500) grantAchiev('warlord');
   if(e.isChamp || e.isChampBoss) grantAchiev('champ_slay');
+  if(e.coastBoss){                                  // named coast boss felled
+    addFloater(player.x,player.y-70,'☠ '+e.bossName+' has fallen!');
+    inv.gold+=400; addFloater(player.x,player.y-52,'+400g bounty');
+    grantRandomArtifact(0.1,0.3,0.6);               // the coast skews higher than the dungeon
+    questEvent('coastboss', e.coastBoss);
+  }
   if(e.floorBoss){                                  // named floor boss felled
     if(!G.floorBossesDown)G.floorBossesDown={};
     G.floorBossesDown[G.dungeonFloor]=true;
@@ -8563,6 +8584,48 @@ const FLOOR_BOSSES={
   gravebinder:{ base:'troll_l', name:'The Gravebinder', hp:2.4, dmg:1.5, tint:0x9effc0 },
   molloch:    { base:'piper',   name:'Ratking Molloch', hp:3.0, dmg:1.8, tint:0xffcc66 },
 };
+// ── Coast bosses ──────────────────────────────────────────────────
+//
+// ⚠ THESE RESPAWN. The dungeon's bosses are one-time kills per save, because a
+// dungeon is a thing you clear. The coast is a thing you LIVE ON — it is the
+// only source of tier 6 and of sigils, and a permanent track you can exhaust in
+// two kills is not a reason to stay anywhere. They come back on a timer, which
+// also gives the open-PvP rules something to happen around: a respawning boss
+// is a place people gather, and people gathering is the point of the map.
+const COAST_BOSSES={
+  tidewrack:{ base:'reef_serpent', name:'The Tidewrack',  hp:14, dmg:2.6, tint:0x2fd6c0 },
+  kessel:   { base:'wrecker',      name:'Drowned Kessel', hp:11, dmg:2.2, tint:0x6ad8a0 },
+};
+const COAST_BOSS_RESPAWN=240;        // seconds
+let _coastBossTimers={};
+function spawnCoastBoss(spec){
+  const def=COAST_BOSSES[spec.boss]; if(!def) return;
+  if(enemies.some(e=>e.coastBoss===spec.boss&&e.state!=='dead'&&e.state!=='respawning')) return;
+  const e=makeEnemy(def.base, spec.x, spec.y); if(!e) return;
+  e.maxHp=Math.round(e.maxHp*def.hp); e.hp=e.maxHp;
+  e.damage=Math.round(e.damage*def.dmg);
+  e.r=Math.round(e.r*1.6);
+  e.coastBoss=spec.boss; e.bossName=def.name; e.isChampBoss=true;   // boss-tier XP
+  enemies.push(e);
+  return e;
+}
+// Driven from the main update. Cheap: two entries, and it only does anything
+// while somebody is actually on the coast.
+function updateCoastBosses(dt){
+  if(!G.onCoast) return;
+  for(const spec of COAST_BOSS_SPAWNS){
+    const alive=enemies.some(e=>e.coastBoss===spec.boss&&e.state!=='dead'&&e.state!=='respawning');
+    if(alive){ _coastBossTimers[spec.boss]=0; continue; }
+    _coastBossTimers[spec.boss]=(_coastBossTimers[spec.boss]||0)+dt;
+    if(_coastBossTimers[spec.boss]>=COAST_BOSS_RESPAWN){
+      _coastBossTimers[spec.boss]=0;
+      const e=spawnCoastBoss(spec);
+      if(e&&Math.hypot(e.x-player.x,e.y-player.y)<TILE*30)
+        addFloater(player.x,player.y-64,'⚠ '+COAST_BOSSES[spec.boss].name+' returns to the water...');
+    }
+  }
+}
+
 function spawnFloorBoss(floorN){
   const spec=DUNGEON_BOSS_SPAWNS.find(b=>b.floor===floorN); if(!spec) return;
   if(G.floorBossesDown&&G.floorBossesDown[floorN]) return;          // already slain
@@ -12284,7 +12347,16 @@ const BAG_ITEMS=[
   {k:'planks',lab:'Planks',ic:'▤'},{k:'arrows',lab:'Arrows',ic:'➶',spr:'crossbow'},{k:'hide',lab:'Hide',ic:'🟫',spr:'hidepile'},
   {k:'bone',lab:'Bone',ic:'🦴'},{k:'bandages',lab:'Bandages',ic:'✚',spr:'bandage'},{k:'potions',lab:'Potions',ic:'⚗',spr:'potion_red'},
   {k:'skull',lab:'Skull',ic:'💀'},
-  {k:'iron_ore',lab:'Iron Ore',ic:'🪨',spr:'crystals'},{k:'iron_ingot',lab:'Iron Ingot',ic:'🧱',spr:'anvil'},{k:'steel_ingot',lab:'Steel Ingot',ic:'🔗',spr:'tongs'},{k:'siege_ram',lab:'Siege Ram',ic:'🐏'},
+  {k:'iron_ore',lab:'Iron Ore',ic:'🪨',spr:'crystals'},{k:'iron_ingot',lab:'Iron Ingot',ic:'🧱',spr:'anvil'},{k:'steel_ingot',lab:'Steel Ingot',ic:'🔗',spr:'tongs'},
+  // ⚠ mithril and runic were MISSING from this table. They are in `inv`, they
+  // are craftable and they drop from bosses — but with no BAG_ITEMS entry the
+  // pack never showed them and itemLabel() fell through to the raw key, so a
+  // pickup floater read "+1 runic_ingot". Abyssal is added here at the same
+  // time rather than repeating the omission.
+  {k:'mithril_ore',lab:'Mithril Ore',ic:'🔹'},{k:'mithril_ingot',lab:'Mithril Ingot',ic:'🟦'},
+  {k:'runic_ore',lab:'Runic Ore',ic:'🔮'},{k:'runic_ingot',lab:'Runic Ingot',ic:'🟪'},
+  {k:'abyssal_ingot',lab:'Abyssal Ingot',ic:'🟩'},
+  {k:'siege_ram',lab:'Siege Ram',ic:'🐏'},
   // Every placeable is a pack item — drag one to the hotbar, select it, right-click to place.
   ...Object.keys(PLACEABLES).map(k=>({k:PLACEABLES[k].invKey, lab:PLACEABLES[k].label,
     ic:PLACEABLES[k].emoji, ...(k==='torch'?{spr:'torch'}:{})})),
@@ -13035,6 +13107,7 @@ function update(dt){
   // pointer compare.
   G.onCoast = player.y >= COAST_Y0*TILE;
   if(G.onCoast && !coastSurface) ensureCoastSurface();
+  updateCoastBosses(dt);
   if(G.portalCooldown<=0){
     const ptx=Math.floor(player.x/TILE), pty=Math.floor(player.y/TILE);
     if(ptx>=0&&pty>=0&&ptx<MAP_W&&pty<MAP_H&&map[pty][ptx]===T.TELEPORT){
@@ -13125,6 +13198,12 @@ function update(dt){
       if(d.type==='arpg_item'&&d.item){        // ARPG instance → equipment bag, not a stack
         player.equipmentItems.push(d.item);
         addFloater(player.x,player.y-24,d.item.rarityName+': '+d.item.name+'  [G]');
+      } else if(d.type.startsWith('sigil_')){
+        // A sigil is consumed the moment you pick it up rather than sitting in
+        // the pack. It is a permanent stat with a hard cap — there is nothing to
+        // decide about when to use one, and an inventory slot for something you
+        // would always use immediately is a slot that only exists to be clicked.
+        useSigil(d.type.slice(6));
       } else { invAdd(d.type,1); addFloater(player.x,player.y-24,'+1 '+itemLabel(d.type)); }
       snd.pickup();drops.splice(i,1);
     }}

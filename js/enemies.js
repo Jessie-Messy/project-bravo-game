@@ -160,6 +160,13 @@ export function spawnDrops(e) {
     drops.push({ type:'loot_gauntlets', x:e.x+20, y:e.y, lifetime:120 });   // boss: guaranteed fine gear
     return;
   }
+  // ── Saltmere coast ──
+  // The coast pays in abyssal ingots — the only source of tier 6 in the game,
+  // and the reason to cross. Ordinary coast mobs drop them rarely; the two
+  // bosses drop them reliably (see the boss block below).
+  else if(e.type==='shore_crab')   { resource='hide';  count=1+Math.floor(Math.random()*2); }
+  else if(e.type==='reef_serpent') { resource='hide';  count=2+Math.floor(Math.random()*2); }
+  else if(e.type==='wrecker')      { resource='gold';  count=6+Math.floor(Math.random()*8); }
   else { resource='stone'; count=1+Math.floor(Math.random()*2); }
   // beasts leave bones behind ~40% of the time (bone armor material)
   if((e.type==='wolf'||e.type==='giant_rat'||e.type==='hellhound'||e.type==='silver_serp')&&Math.random()<0.4){
@@ -168,6 +175,32 @@ export function spawnDrops(e) {
   for (let i=0;i<count;i++) {
     const ang=Math.random()*Math.PI*2, dist=8+Math.random()*14;
     drops.push({ type:resource, x:e.x+Math.cos(ang)*dist, y:e.y+Math.sin(ang)*dist, lifetime:30 });
+  }
+  // Coast mobs: a thin chance at the tier-6 material. Thin on purpose — a
+  // steady trickle from trash mobs would make the bosses pointless, and the
+  // bosses are where the map's risk actually lives.
+  if(e.type==='shore_crab'||e.type==='reef_serpent'||e.type==='wrecker'){
+    const rate = e.type==='wrecker' ? 0.14 : 0.06;
+    if(Math.random()<rate) drops.push({ type:'abyssal_ingot', x:e.x, y:e.y-8, lifetime:120 });
+  }
+  // ── The coast bosses ──
+  // A guaranteed sigil is the whole point: sigils are permanent and capped at
+  // 10, so forty boss kills is the entire permanent-progression track. That is
+  // a long grind on a map where other players can interrupt it, which is the
+  // intended shape.
+  if(e.coastBoss){
+    for(let i=0;i<3+Math.floor(Math.random()*3);i++)
+      drops.push({ type:'abyssal_ingot', x:e.x+(Math.random()-0.5)*40, y:e.y+(Math.random()-0.5)*40, lifetime:180 });
+    const kinds=['sigil_vigour','sigil_might','sigil_precision','sigil_fortitude'];
+    drops.push({ type:kinds[Math.floor(Math.random()*kinds.length)], x:e.x, y:e.y-14, lifetime:240 });
+    // A second sigil half the time, so a lucky kill feels different from a
+    // normal one without the floor ever being empty-handed.
+    if(Math.random()<0.5)
+      drops.push({ type:kinds[Math.floor(Math.random()*kinds.length)], x:e.x+18, y:e.y-14, lifetime:240 });
+    for(let i=0;i<24;i++){
+      const ang=Math.random()*Math.PI*2, dist=16+Math.random()*70;
+      drops.push({ type:'gold', x:e.x+Math.cos(ang)*dist, y:e.y+Math.sin(ang)*dist, lifetime:60 });
+    }
   }
   if(e.type==='goblin_k'||e.type==='troll_l'||e.type==='spider_q'||e.type==='piper'){
     drops.push({ type:'steel_ingot', x:e.x-10, y:e.y, lifetime:90 });
