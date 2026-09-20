@@ -23,6 +23,85 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-20 — v0.17.0: two regions, two rulesets, notoriety, and the dev auth bypass
+
+#### The rules
+| | MAINLAND | COAST |
+|---|---|---|
+| safe ground | city (throughout) | **Saltmere village only** |
+| who you may strike | **outlaws only** | anyone, outside the village |
+| outlaw may swing first? | **no** — only answers a recent attacker | yes |
+| notoriety earned here? | no | **yes**, +1 per PvP kill |
+
+That split is the loop: notoriety is **earned on the coast and paid for on the
+mainland**, where it makes you huntable and takes away your ability to start a fight.
+It also resolves the bootstrap — "you may only kill outlaws" and "outlaws are made by
+killing" cannot both hold on one map.
+
+**⚠ THE SERVER DECIDES, ALWAYS.** `attackBlockedReason()` in `bravo-room.js` is the only
+answer that counts. The client's `attackBlockedClient()` is a **prediction**, so a refused
+swing can say *why* rather than vanishing — a blocked swing that reads as the game eating
+your input is worse than one that says "safe ground". Both read the same constants:
+`js/constants.js` is the source, `build-world-data.mjs` copies them into
+`world-data.json`, and the server reads them from there. **Same discipline that stopped
+`bravo-room.js` retyping `MAP_H`.** The coast safe zone comes from `world.js`, because
+only the generator knows where the village ended up — a literal rectangle would have gone
+stale exactly the way the village's own position did.
+
+#### Notoriety
+- +1 per PvP kill **on the coast only**. A mainland kill can only ever be lawful, so
+  crediting it would punish the person enforcing the rules.
+- Outlaw at **2**. Decays one point per 30 min of **connected** time (not wall-clock, so
+  it cannot be waited out by logging off). `NOTO_DECAY_MS = 0` makes it permanent.
+- **⚠ PERSISTED IN BOTH STORAGE BACKENDS.** In memory only, the whole system would be
+  defeated by pressing reconnect. Added to SQLite as a **migration** — the `CREATE TABLE`
+  is `IF NOT EXISTS` and every existing database has already run it.
+- Outlaws are marked **☠** on the nameplate; the mainland rule turns on knowing who is
+  lawful game *before* you swing.
+- **Retaliation is keyed by attacker, not "last person who hit me"** — otherwise a gang
+  locks an outlaw out of fighting back by taking turns.
+
+#### Guards hunt people now
+The call is refereed server-side, and a mustered guard's damage goes through `netPvp` so
+the server validates it like any other hit. **Guards enforce the rules; they are not a
+way around them.** Everyone nearby musters them, so a hunt is public.
+
+#### The Saltmere gate
+An arch in Lunar City and its twin in the village. **⚠ Checked BEFORE the dungeon branch**
+in the TELEPORT handler — that branch only asks whether you are currently underground, so
+a bare TELEPORT tile in the city drops you down a hole instead of onto the coast. Both
+ends register together so neither can point at something that was never built. The plaza
+refuses to carve `WALL`/`STAINED_GLASS` (verified: 0 city wall tiles lost).
+
+#### ⚠ The dev auth bypass — read the guards before touching it
+`ORION_DEV_AUTH=1` accepts a join with **no ticket at all**. It exists because a clean
+clone could not run multiplayer in any form. **Three conditions, all required:** the env
+var, `NODE_ENV !== 'production'`, **and no secret configured**. The third is the one that
+matters — production resolves a secret, so the bypass *cannot* engage there even if the
+var leaks in. A fourth guard is outside the auth module: `index.js` binds **127.0.0.1**
+while it is active; LAN testing is a second explicit opt-in (`ORION_DEV_AUTH_HOST`).
+Verified as a matrix, including that a configured secret disables it.
+
+```
+cd server && ORION_DEV_AUTH=1 node index.js
+```
+
+#### Verified live, every branch
+mainland vs citizen → `target-not-outlaw` · mainland vs outlaw → allowed · in Lunar City
+vs outlaw → `safe-zone` · coast beach → allowed · Saltmere village → `safe-zone` ·
+mainland as outlaw → `outlaw-cannot-initiate` · **after they hit me first → allowed** ·
+coast as outlaw → allowed.
+
+`_dev.pvp()` reports who you may lawfully strike and why not; `{noto}` / `{myNoto}`
+override so the outlaw branch can be tested without murdering two people first.
+
+#### ⚠ Still missing: the reward half
+The ruleset that makes the coast **risky** is in. The rewards that make it **worth the
+risk** are not — no coast bosses, no coast-exclusive character upgrades, no richer loot
+tables. Deliberately not guessed at.
+
+---
+
 ### 2026-09-20 — v0.16.1: how far the multiplayer actually stretches
 
 **There is now a way to ask the question.** `_dev.mpLoad(n[,radius])` puts *n* synthetic
