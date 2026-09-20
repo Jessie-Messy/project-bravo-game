@@ -5,7 +5,7 @@ import { TILE, MAP_W, MAP_H, T,
   DUNGEON_X0, DUNGEON_Y0, DUNGEON_W, DUNGEON_H,
 } from './constants.js';
 import { G, map, player, enemies, drops, floaters, hitFlash, eProjList, skills, inv } from './state.js';
-import { CHAMP_ALTARS, WOLF_SPAWNS, BANDIT_SPAWNS, CAVE_MOBS } from './world.js';
+import { CHAMP_ALTARS, WOLF_SPAWNS, BANDIT_SPAWNS, CAVE_MOBS, COAST_MOBS } from './world.js';
 import { snd } from './audio.js';
 
 // ── Enemy config ───────────────────────────────────────────────────
@@ -27,6 +27,20 @@ export const ENEMY_CFG = {
   piper:       { maxHp:520, speed:65,  damage:42, attackRange:TILE*1.6, aggroRange:TILE*12, attackCooldown:2.0, r:26 },
   giant_rat:   { maxHp:15,  speed:120, damage:4,  attackRange:TILE*0.9, aggroRange:TILE*4,  attackCooldown:1.2, r:8  },
   ratman_archer: { maxHp:34, speed:100, damage:10, attackRange:TILE*5.0, aggroRange:TILE*6,  attackCooldown:1.8, r:10 },
+
+  // ── Saltmere coast ──
+  // `spawnTiles` is the new part. makeEnemy used to pick between exactly two
+  // ground types — CAVE_FLOOR for cave dwellers, GRASS for everything else —
+  // so a crab meant for the beach could not be placed at all: it would search
+  // outward for GRASS and either land inland or fail. These say where they live.
+  shore_crab:  { maxHp:46,  speed:58,  damage:9,  attackRange:TILE*0.9, aggroRange:TILE*3,  attackCooldown:1.5, r:12,
+                 spawnTiles:[T.SAND, T.SHALLOWS] },
+  reef_serpent:{ maxHp:62,  speed:150, damage:13, attackRange:TILE*1.1, aggroRange:TILE*5,  attackCooldown:1.2, r:12,
+                 spawnTiles:[T.SHALLOWS, T.SAND] },
+  // Coastal raiders. Tougher than a bandit and slower than one — they are not
+  // ambushers, they are the reason the village keeps its boats tied up.
+  wrecker:     { maxHp:78,  speed:92,  damage:21, attackRange:TILE*1.4, aggroRange:TILE*7,  attackCooldown:1.5, r:13,
+                 spawnTiles:[T.SAND, T.GRASS] },
 };
 
 // ── Utility: tileAt / blockedAt / boxBlocked ───────────────────────
@@ -70,14 +84,16 @@ export function makeEnemy(type, tx, ty) {
     ||type==='troll_l'||type==='spider_q'||type==='slime'||type==='slime_mini'
     ||type==='ratman'||type==='ratman_wiz'||type==='hellhound'||type==='silver_serp'||type==='piper'
     ||type==='giant_rat'||type==='ratman_archer');
-  const validTile = isCave ? T.CAVE_FLOOR : T.GRASS;
+  // Where this type may stand. `spawnTiles` wins when a type declares it;
+  // otherwise it is the old two-way choice, so nothing existing changes.
+  const validTiles = cfg0.spawnTiles || [isCave ? T.CAVE_FLOOR : T.GRASS];
   let etx=-1, ety=-1;
   outer: for (let r=0;r<=6;r++) {
     for (let dy=-r;dy<=r;dy++) for (let dx=-r;dx<=r;dx++) {
       if (Math.abs(dx)!==r&&Math.abs(dy)!==r) continue;
       const nx=tx+dx, ny=ty+dy;
       if (nx<0||ny<0||nx>=MAP_W||ny>=MAP_H) continue;
-      if (map[ny][nx]===validTile) { etx=nx; ety=ny; break outer; }
+      if (validTiles.includes(map[ny][nx])) { etx=nx; ety=ny; break outer; }
     }
   }
   if (etx<0) return null;
@@ -614,6 +630,12 @@ export function populateWorld() {
       const ty=cy+Math.floor(h*0.35)+(i%2===0?0:Math.floor(h*0.3));
       const e=makeEnemy(type,tx,ty); if(e) enemies.push(e);
     }
+  }
+  // The coast. Spawned from explicit points rather than scattered, because the
+  // region is a thin habitable strip between the sea and a cliff and a random
+  // scatter puts most of them in the water.
+  for (const [tx,ty,type] of COAST_MOBS) {
+    const e=makeEnemy(type,tx,ty); if(e) enemies.push(e);
   }
 }
 

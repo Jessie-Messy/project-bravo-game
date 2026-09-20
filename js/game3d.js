@@ -38,7 +38,8 @@ import { prefs, setPref, resetPrefs, BIND_DEFS, binds, bindOf,
 import { CHAMP_ALTARS, DUNGEON_PORTAL_A, DUNGEON_PORTAL_B,
   DUNGEON_ENTRY_TILE, DUNGEON_CITY_EXIT,
   DUNGEON_FLOORS, DUNGEON_STAIRS, DUNGEON_BOSS_SPAWNS, WORLD_CHESTS, floorAt,
-  COAST_VILLAGE, COAST_HOUSE_PLOTS, COAST_DOCK_TILES, FERRY_MAINLAND } from './world.js';
+  COAST_VILLAGE, COAST_HOUSE_PLOTS, COAST_DOCK_TILES, FERRY_MAINLAND,
+  COAST_NPCS } from './world.js';
 import { updateEnemy, champSpawnTick, damageEnemy, damagePlayer,
   spawnRandomEnemy, boxBlocked, populateWorld, populateDungeon, hooks,
   makeEnemy, ENEMY_CFG, extraBlocking, spawnDrops, BOSS_ABILITIES,
@@ -3768,6 +3769,14 @@ const EVIS = {
   hellhound:     [0x881a10, 18,26,40, 0, 1],
   silver_serp:   [0xb0b8c0, 12,12,52, 0, 2],
   piper:         [0x9a6820, 14,34, 9, 6, 0],
+  // ── Saltmere coast ──
+  // shape 1 is the quadruped rig: body, head out front, four legs. A crab is a
+  // wide low box on legs, which is exactly what that rig is when you make it
+  // broader than it is long.
+  shore_crab:    [0x9c4a32, 28,15,22, 0, 1],
+  // shape 2 is the bodyless blob — one stretched mesh, which is all a serpent is.
+  reef_serpent:  [0x2f7a6a, 14,12,46, 0, 2],
+  wrecker:       [0x4a5248, 15,45,11, 5, 0],
 };
 const EVIS_DEF = [0x555555, 14,30,10, 6, 0];
 
@@ -3880,6 +3889,40 @@ const RIG_STYLES = {
   // what a bandit looks like, always, on all hardware.
   bandit:   { skin:0xb07a4e,
               hood:0x3a2f28, maskScarf:0x2a221c, sash:0x6a2a24, belt:0x3a2a1c },
+
+  // ── Saltmere ──
+  // The harbourmaster is the one figure here with any authority, and it shows
+  // in exactly two pieces: a plume and a chain. Everything else about him is a
+  // working man.
+  harbourmaster: { build:{bw:16,bh:49,bd:11,hr:4.3}, skin:0xc39a6b,
+                   cap:0x2e3a40, plume:0xb8a060, mantle:0x3a4a52, collar:0x2a3238,
+                   belt:0x4a3524, medallion:0xb8a060, chain:0xb8a060,
+                   beard:0x8a7a68, scrollCase:0x5a4a3a },
+
+  // Short, broad, apron to the knee, hair tied back out of the way. The satchel
+  // is on the opposite hip from the pouch so she is asymmetric from both sides.
+  fishwife: { build:{bw:15,bh:45,bd:11,hr:4.4}, skin:0xd8b48c,
+              robe:0x5a6a72, robeShort:true, apron:0x8a9298, belt:0x4a3524,
+              satchel:0x5a4a3a, pouch:0x4a4038, longHair:0x4a3a2a },
+
+  // A shipwright is a smith who works in wood: the same broad build, the same
+  // tool belt, and a backpack because the work is wherever the hull is.
+  shipwright: { build:{bw:18,bh:48,bd:12,hr:4.3}, skin:0xb07a4e,
+                apron:0x6a5232, belt:0x4a3524, toolLoop:0x4a4a50,
+                backpack:0x5a4a3a, strap:0x4a3524, cap:0x4a5258,
+                mustache:0x3a2a1a },
+
+  // Deliberately plain. Villagers exist so the place is not three shopkeepers
+  // standing in an empty street, and a villager who out-dresses the shipwright
+  // reads as someone important you cannot talk to.
+  villager: { build:{bw:15,bh:46,bd:10,hr:4.3}, skin:0xc9a274,
+              robe:0x7a6a52, robeShort:true, belt:0x4a3524, hair:0x5a4a32 },
+
+  // Coastal raiders. The bandit's grammar — hood, scarf, sash — in salt-bleached
+  // colours, plus a pauldron: they board boats, and a bandit does not.
+  wrecker: { skin:0xb07a4e,
+             hood:0x46524a, maskScarf:0x2e3a34, sash:0x6a5a3a, belt:0x3a2a1c,
+             pauldron:0x7a8288, pouch:0x3a4a42 },
 
   // The two ferrymen. Weathered and heavy-shouldered, in an oilskin mantle
   // rather than a cloak — a cloak falls past the knee and reads as travel, a
@@ -4221,11 +4264,14 @@ function applyProp(g, kind, bw, bh, bd) {
 // humanoid rig-local space and has no meaning on a wolf.
 const ESTYLE = {
   bandit: 'bandit',
+  // Same reasoning as bandit: no GLB exists for a wrecker, so its procedural
+  // rig is the mob on every machine, and an undressed rig is a grey mannequin.
+  wrecker: 'wrecker',
 };
 
 // Per-type held weapon for enemies
 const PROP = {
-  bandit:'sword', goblin:'dagger', goblin_k:'sword', troll:'club', troll_l:'club',
+  bandit:'sword', wrecker:'axe', goblin:'dagger', goblin_k:'sword', troll:'club', troll_l:'club',
   ratman:'dagger', ratman_archer:'bow', ratman_wiz:'staff', piper:'flute',
 };
 
@@ -5777,6 +5823,18 @@ const _ferryMainRig  = spawnNPC(0x46545c, FERRY_MAIN.x,  FERRY_MAIN.y,  null, 'f
 const _ferryCoastRig = spawnNPC(0x46545c, FERRY_COAST.x, FERRY_COAST.y, null, 'ferryman');
 // Face each other's water rather than south, so both read as looking out to sea.
 _ferryMainRig.rotation.y = 0; _ferryCoastRig.rotation.y = 0;
+
+// ── Saltmere's people ───────────────────────────────────────────────────────
+// Positions come from world.js, which derived them from the village it placed
+// against the shoreline — so if the coast is regenerated they follow it instead
+// of standing in the sea.
+//
+// These are spawned like every other town NPC and so are animated and culled by
+// the same loop. They cost nothing until the player is within render distance,
+// which for a region reachable only by ferry is most of the time.
+const _coastRigs = COAST_NPCS.map(n =>
+  spawnNPC(RIG_STYLES[n.style] ? (RIG_STYLES[n.style].skin || 0x8a8a8a) : 0x8a8a8a,
+           n.x, n.y, n.prop, n.style));
 
 const FERRY_FARE = 0;   // free for now: the coast has nothing to sell yet, and a
                         // toll on an empty region is a wall, not an economy.
@@ -9399,6 +9457,7 @@ function drawInteractPrompts(){
     add(MAGE.x,MAGE.y,'[E] Mage Shop');
     add(FARRIER.x,FARRIER.y,'[E] Farrier');
     add(FLETCHER.x,FLETCHER.y,'[E] Fletcher');
+    for(const n of COAST_NPCS) if(n.label) add(n.x,n.y,'[E] '+n.label);
     add(FERRY_MAIN.x,FERRY_MAIN.y,'[E] Ferry to Saltmere');
     add(FERRY_COAST.x,FERRY_COAST.y,'[E] Ferry to the mainland');
     add(ANTIQUARIAN.x,ANTIQUARIAN.y,'[E] Antiquarian');
@@ -10018,6 +10077,8 @@ window.addEventListener('keydown',e=>{
           }
         }
         const _ferryDir = ferryNearby();
+        const _coastNpcNear = COAST_NPCS.find(n =>
+          n.label && Math.hypot(n.x-player.x, n.y-player.y) < TILE*2.5);
         if(!used&&Math.hypot(BANKER.x-player.x,BANKER.y-player.y)<TILE*2.5){closeShopPanels();G.bankOpen=true;}
         else if(!used&&Math.hypot(MERCHANT.x-player.x,MERCHANT.y-player.y)<TILE*2.5){closeShopPanels();G.tradeOpen=true;}
         else if(!used&&Math.hypot(BLACKSMITH.x-player.x,BLACKSMITH.y-player.y)<TILE*2.5){closeShopPanels();G.smithOpen=true;}
@@ -10030,6 +10091,17 @@ window.addEventListener('keydown',e=>{
         else if(!used&&nearbyWorldChest()){closeShopPanels();G.activeWorldChest=nearbyWorldChest();G.worldChestOpen=true;snd.pickup();}
         else if(!used&&Math.hypot(CONTRACT_BOARD.x-player.x,CONTRACT_BOARD.y-player.y)<TILE*2.5){closeShopPanels();ensureContracts();G.contractsOpen=true;}
         else if(!used&&_ferryDir){closeShopPanels();rideFerry(_ferryDir);}
+        else if(!used&&_coastNpcNear){
+          // Flavour only. They are not shops yet, and a silent NPC with an [E]
+          // prompt is worse than one with a line — the prompt promises
+          // something.
+          const lines = {
+            harbourmaster: "'Tide's with you. Mind the wreckers past the point.'",
+            fishwife:      "'Crab's biting. Careful, so do they.'",
+            shipwright:    "'Every hull I lay down, the sea asks for back.'",
+          };
+          addFloater(_coastNpcNear.x, _coastNpcNear.y-30, lines[_coastNpcNear.id] || "'...'");
+        }
         else if(!used&&Math.hypot(FLETCHER.x-player.x,FLETCHER.y-player.y)<TILE*2.5){addFloater(FLETCHER.x,FLETCHER.y-30,"'Arrows? Craft 'em from wood.'");}
       }
     }

@@ -72,6 +72,11 @@ const STYLES = {
   farrier:  { build:{bw:17,bh:47,bd:12,hr:4.3}, apron:0x5c4028, belt:0x4a3524, cap:0x6b5a3a, toolLoop:0x4a4a50, mustache:0x4a3418 },
   curator:  { build:{bw:16,bh:44,bd:11,hr:4.6}, cap:0x7a5a20, plume:0xb08030, robe:0xb08030, robeShort:true, belt:0x4a3524, beard:0xd0c8b8, medallion:0xb87333, chain:0xb87333, circlet:0xb87333 },
   bandit:   { hood:0x3a2f28, maskScarf:0x2a221c, sash:0x6a2a24, belt:0x3a2a1c },
+  harbourmaster: { build:{bw:16,bh:49,bd:11,hr:4.3}, cap:0x2e3a40, plume:0xb8a060, mantle:0x3a4a52, collar:0x2a3238, belt:0x4a3524, medallion:0xb8a060, chain:0xb8a060, beard:0x8a7a68, scrollCase:0x5a4a3a },
+  fishwife: { build:{bw:15,bh:45,bd:11,hr:4.4}, robe:0x5a6a72, robeShort:true, apron:0x8a9298, belt:0x4a3524, satchel:0x5a4a3a, pouch:0x4a4038, longHair:0x4a3a2a },
+  shipwright: { build:{bw:18,bh:48,bd:12,hr:4.3}, apron:0x6a5232, belt:0x4a3524, toolLoop:0x4a4a50, backpack:0x5a4a3a, strap:0x4a3524, cap:0x4a5258, mustache:0x3a2a1a },
+  villager: { build:{bw:15,bh:46,bd:10,hr:4.3}, robe:0x7a6a52, robeShort:true, belt:0x4a3524, hair:0x5a4a32 },
+  wrecker: { hood:0x46524a, maskScarf:0x2e3a34, sash:0x6a5a3a, belt:0x3a2a1c, pauldron:0x7a8288, pouch:0x3a4a42 },
   ferryman: { build:{bw:17,bh:48,bd:12,hr:4.3}, cap:0x3a4a52, mantle:0x46545c, belt:0x4a3524, collar:0x2e3a40, beard:0x6a5a4a, toolLoop:0x5a4a3a },
   fletcher: { build:{bw:15,bh:48,bd:10,hr:4.3}, cap:0x4a5c34, belt:0x4a3524, quiver:0x5a3a20, fletching:0xe4e0d4, hair:0x6a5030 },
 };

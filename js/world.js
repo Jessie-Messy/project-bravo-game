@@ -551,6 +551,14 @@ for (let y = 0; y < MAP_H; y++) {
 
 })();
 
+// Saltmere's mobs and its people -------------------------------------
+// Both are filled by generateCoast below, which is the only thing that knows
+// where the shoreline ended up — COAST_VILLAGE.y is derived from shore(), so
+// nothing here can be a literal without going stale the moment the coast is
+// regenerated.
+export const COAST_MOBS = [];      // [tx, ty, type]
+export const COAST_NPCS = [];      // { id, x, y, style, prop, label }
+
 // The mainland ferry jetty -------------------------------------------
 // The Saltmere end of the crossing is the long pier the coast generator lays
 // down; this is the other end, on the south bank of the y=360 river.
@@ -594,7 +602,15 @@ export const FERRY_MAINLAND = { x: COAST_MAINLAND_DOCK.x, y: COAST_MAINLAND_DOCK
 //
 // Saltmere village sits on the middle of the beach with piers out over the
 // shallows. The boat from the mainland ties up at the head of the long pier.
-export const COAST_VILLAGE = { x: COAST_X0 + 88, y: COAST_Y0 + 78, w: 26, h: 20 };
+// ⚠ y IS DERIVED FROM THE SHORELINE, NOT WRITTEN DOWN. The first version
+// hard-coded `COAST_Y0 + 78` while the coastline is a function of x, and at the
+// village's own x-range the beach turns out to sit at local ly 26-45. So
+// Saltmere — a fishing village, with piers — was built roughly FORTY TILES
+// INLAND, and the reason it still looked like a beach settlement is that the
+// footprint-clearing pass converts trees and rock to SAND: it had manufactured
+// its own little desert in the middle of the woods and sat in that.
+// The generator sets .y below, from shore() at the village's centre.
+export const COAST_VILLAGE = { x: COAST_X0 + 88, y: COAST_Y0 + 39, w: 26, h: 20 };
 export const COAST_HOUSE_PLOTS = [];   // flat, cleared 6x6 spots for player housing
 export const COAST_DOCK_TILES  = [];   // pier tiles, for the boat and for props
 
@@ -679,8 +695,14 @@ export const COAST_DOCK_TILES  = [];   // pier tiles, for the boat and for props
     }
   }
 
-  // Saltmere village.
-  const V = COAST_VILLAGE, vx = V.x - X0, vy = V.y - Y0;
+  // Saltmere village — placed against the waterline rather than at a number.
+  // shore() at the village's centre gives the sand; +4 puts the first row of
+  // huts just inland of it, and because the coast slopes across the village's
+  // width the western end sits nearer the water than the eastern one, which is
+  // what a village strung along a shore actually looks like.
+  const V = COAST_VILLAGE;
+  V.y = Y0 + Math.round(shore(V.x - X0 + Math.floor(V.w / 2))) + 4;
+  const vx = V.x - X0, vy = V.y - Y0;
   // Clear the footprint back to sand, so the huts sit on the beach rather than
   // in whatever grove happened to roll there.
   for (let ly = vy - 2; ly < vy + V.h + 2; ly++)
@@ -731,9 +753,47 @@ export const COAST_DOCK_TILES  = [];   // pier tiles, for the boat and for props
   // this is the line that disagrees first.
   COAST_LANDING.x = landing.x; COAST_LANDING.y = landing.y;
 
-  // Player house plots: flat 6x6 clearings east of the village.
+  // ── Who and what lives here ──────────────────────────────────────
+  // Positions are derived from the village the generator just placed, so they
+  // follow it if the shoreline moves.
+  const push = (id, lx, ly, style, prop, label) =>
+    COAST_NPCS.push({ id, x: (X0+lx)*TILE + TILE/2, y: (Y0+ly)*TILE + TILE/2, style, prop, label });
+  // The harbourmaster stands at the landward end of the long pier, where he can
+  // see every boat that ties up.
+  push('harbourmaster', vx + 12, vy - 2, 'harbourmaster', null, 'Harbourmaster');
+  // The village itself: a fishwife on the spine, a shipwright by the huts.
+  push('fishwife',   vx + 5,        vy + 7, 'fishwife',   null,     'Fishwife');
+  push('shipwright', vx + V.w - 6,  vy + 7, 'shipwright', 'hammer', 'Shipwright');
+  // Two villagers, for somewhere to look that is not a shop.
+  push('villager_a', vx + 10, vy + 7,  'villager', null, null);
+  push('villager_b', vx + 18, vy + 16, 'villager', null, null);
+
+  // Mobs. Crabs on the sand, serpents in the shallows, wreckers along the
+  // beach away from the village so the place is not under siege on arrival.
+  const beachAt = lx => Math.round(shore(lx));
+  for (let i = 0; i < 10; i++) {
+    const lx = 12 + i * 18;
+    if (lx >= W - 4) break;
+    COAST_MOBS.push([X0 + lx, Y0 + beachAt(lx) + 1, 'shore_crab']);
+  }
+  for (let i = 0; i < 7; i++) {
+    const lx = 20 + i * 24;
+    if (lx >= W - 4) break;
+    COAST_MOBS.push([X0 + lx, Y0 + beachAt(lx) - 4, 'reef_serpent']);
+  }
+  for (const lx of [22, 40, 150, 172]) {
+    COAST_MOBS.push([X0 + lx, Y0 + beachAt(lx) + 3, 'wrecker']);
+  }
+
+  // Player house plots: 6x6 clearings on the grass INLAND of the village.
+  //
+  // They used to sit east of it, which worked only while the village was in the
+  // middle of the region. With the village against the waterline the eastern
+  // strip is half beach and half sea, and three of the six plots were being
+  // rejected for standing in water. Inland is the dependable direction — the
+  // ground behind a shore settlement is the ground you would build on anyway.
   for (let i = 0; i < 6; i++) {
-    const px = vx + V.w + 6 + (i % 3) * 8, py = vy + 2 + Math.floor(i / 3) * 9;
+    const px = vx + 1 + (i % 3) * 9, py = vy + V.h + 3 + Math.floor(i / 3) * 8;
     let ok = true;
     for (let ly = 0; ly < 6 && ok; ly++) for (let lx = 0; lx < 6; lx++) {
       const c = at(px + lx, py + ly);
