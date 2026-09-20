@@ -23,6 +23,53 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-20 — v0.19.0: coast bosses and the drop tables
+
+The coast was risky but not worth it. This is the reward half, and the loop is now closed:
+**risk (open PvP) → reward (tier 6 + sigils) → progression (permanent, capped)**.
+
+**Two named bosses**, at opposite ends and both **well away from Saltmere** — the village
+is the only safe ground on this map, and a boss that could be pulled into it would be
+farmed from safety while the PvP rules never came into play.
+- **The Tidewrack** — a vast reef serpent in the shallows, western end. You fight it
+  standing in water with nowhere to back into.
+- **Drowned Kessel** — a wrecker chieftain on the eastern beach.
+
+**⚠ THEY RESPAWN (240s), unlike the dungeon's one-time kills.** A dungeon is a thing you
+clear; the coast is a thing you *live on*. It is the only source of tier 6 and sigils, and
+a permanent track you can exhaust in two kills is not a reason to stay anywhere. A
+respawning boss is also a place people gather — and people gathering is the point of a PvP
+map.
+
+| source | drop |
+|---|---|
+| coast trash | 6% abyssal ingot (wreckers 14%) |
+| boss kill | 3–5 abyssal ingots · **1–2 sigils** · ~24 gold · 400g bounty · high artifact roll |
+
+Measured: one boss kill → 3 ingots + a fortitude sigil + 24 gold. Sixty wreckers → 8
+ingots (**13.3%** against the 14% target).
+
+Thin on trash **on purpose** — a steady trickle makes the bosses pointless, and the bosses
+are where the risk lives. A guaranteed sigil per boss is the design: **capped at 10 each ×
+4 kinds = forty boss kills is the ENTIRE permanent-progression track**, on a map where
+other players can interrupt it.
+
+**Sigils apply on pickup**, not into the pack — there is nothing to decide about a
+permanent capped stat, and a slot for something you'd always use immediately exists only
+to be clicked.
+
+**Abyssal recipes:** sword / bow / pickaxe / armour, 4 ingots each. **⚠ There is no ore and
+no smelting recipe.** Ingots drop on the coast and nowhere else — that is what makes tier 6
+unobtainable on the safe map at any price.
+
+**⚠ FIXED IN PASSING: `mithril_ingot`, `mithril_ore`, `runic_ingot` and `runic_ore` were
+missing from `BAG_ITEMS`.** They exist in `inv`, are craftable, and drop from dungeon
+bosses — but with no entry the pack never displayed them and `itemLabel()` fell through to
+the raw key, so a pickup floated "+1 runic_ingot". Pre-existing. **If you add an inventory
+item, add it to `BAG_ITEMS` or it is invisible.**
+
+---
+
 ### 2026-09-20 — v0.18.0: wearable artifacts, tier 6, permanent stats
 
 **The twelve artifacts have bodies now.** `js/render/jewelry.js` builds each one
