@@ -23,6 +23,68 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-20 — v0.18.0: wearable artifacts, tier 6, permanent stats
+
+**The twelve artifacts have bodies now.** `js/render/jewelry.js` builds each one
+procedurally — necklaces, rings, bracelets — and hangs it on the skeleton.
+
+- **Why not GLBs:** armour attaches via `setSlotModel()`, which loads a file. Right for a
+  breastplate; a ring is a torus and a stone. Twelve files for shapes describable in four
+  lines each costs load time for no fidelity, and each would need placement tuned by hand.
+- **⚠ They are ~2.5x life size on purpose.** An anatomically-sized ring on a character
+  this height is **under a pixel** at play distance. Same argument `humanoid.js` makes for
+  the eyes.
+- One merged vertex-coloured geometry each → 5 draw calls for a fully decked character,
+  not 15. Cached per artifact id.
+- **⚠ There is a SECOND neck anchor** (`jewelNeck`). The gorget owns the first, and
+  sharing it means equipping a breastplate silently removes your amulet.
+- **⚠ The bracelet bone must be asked for BY NAME.** A regex for `/(left).*arm/` matches
+  **`LeftArm` — the bicep** — so every bracelet was worn above the elbow until it asked
+  for `LeftForeArm`. Verified on the real skeleton: neck y102, forearms y82, hands y64.
+- `updateArtifactVisuals()` hangs off **`recomputeArtifactBonus()`** — the one function
+  every equip, unequip, consume and save-load already funnels through, so the models
+  cannot drift out of step with the stats.
+
+**Tier 6 — Abyssal.** Coast-only; it does not exist on the mainland at any price.
+
+| | melee | arrow | DR |
+|---|---|---|---|
+| steel | 42 | 25 | 0.40 |
+| mithril | 53 | 32 | 0.56 |
+| runic | 66 | 40 | 0.72 |
+| **abyssal** | **82** | **49** | **0.85** |
+
+**⚠⚠ `tools/test/tiers.mjs` EXISTS BECAUSE THIS HANDOFF ALREADY RECORDS THE BUG.** The
+Mithril/Runic work added recipes and drops referencing tiers the lookup arrays did not
+reach, and every endgame weapon **silently produced NaN**. An out-of-range index gives
+`undefined`; `undefined` in arithmetic gives NaN; nothing is loud about it. The test
+parses the arrays out of `game3d.js` and asserts they agree, are monotonic, cover every
+tier the source references, and that every material above bronze has a `matTint` entry.
+**Proven by reproducing the original bug.** Run it before shipping any tier change.
+
+**Permanent stats — Abyssal Sigils.** Consumed, not worn: cannot be unequipped, swapped
+or traded, so it is *progress* rather than loadout. **⚠ Capped at 10 each, and the cap is
+the design** — permanent uncapped stacking stats turn an open-PvP map into a
+whoever-farmed-longest map, and the rules that make the coast interesting stop mattering.
+Clamped on **load** as well as on use (a save blob is client-authored). `armorDR()` is now
+clamped below 1.0 for when a fortitude line stacks on a full abyssal set; existing runic
+characters (0.72) are untouched.
+
+**`tools/test/jewelry.mjs` parses `ARTIFACT_DEFS` out of `game3d.js` rather than mirroring
+it** — a mirror is the thing that goes stale, and going stale is the failure it is for.
+Adding an artifact and forgetting its model otherwise renders a grey fallback band nobody
+notices on a rare drop.
+
+`_dev.wear()` puts artifacts on without farming twelve boss drops. `npm test` now runs
+**four** harnesses: 41 + 71 + 24 + 7.
+
+#### ⚠ Still open on the coast
+Sigils and abyssal gear **exist and work, but nothing drops them yet** — no coast bosses,
+no loot tables wired to either. `useSigil(kind)` and the tier-6 recipes are ready for
+whatever drops them.
+
+---
+
 ### 2026-09-20 — v0.17.0: two regions, two rulesets, notoriety, and the dev auth bypass
 
 #### The rules
