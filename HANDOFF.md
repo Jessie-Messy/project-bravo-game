@@ -23,6 +23,51 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-20 — DEPLOYED v0.19.0 to production
+
+Live at `orionsyndicateguild.org/games/medieval/`. First deploy since v0.12.5 (2026-09-11),
+so this shipped everything from the NPC models through to the coast bosses in one go.
+
+**Backups taken first**, on the VPS at `/home/ubuntu/bravo-backups/`:
+`bravo-server-20260920-212150.tgz` and `medieval-client-20260920-212150.tgz`.
+⚠ `/home/ubuntu/backups/` is **root-owned** and not writable by `ubuntu` — use
+`bravo-backups`.
+
+**Order:** asset budgets → build → server → client. Server before client so the new schema
+was live before new clients arrived; the gap is survivable either way because a missing
+`noto` reads as 0 (non-outlaw).
+
+**The two production guards both proved themselves in the boot log:**
+- `[orion-auth] ticket verification active` — a real secret is configured, so **the dev
+  auth bypass is OFF in production**, exactly as the three-condition guard intends.
+- `listening on 0.0.0.0:2567` — it binds loopback *only* when the bypass is active, so the
+  bind address is a second, independent confirmation.
+
+**The SQLite migration ran on the live database.** `players` columns are now
+`name,x,y,hp,kills,deaths,updated_at,token,blob,noto` — `noto` added, every existing
+column and row intact. That migration is why notoriety survives a reconnect.
+
+**Client build:** `build.mjs` matched every patch anchor first time despite the large
+`net.js` and `game3d.js` changes, picked up the new `js/render/jewelry.js`, rewrote bare
+specifiers in 26 files and vendored 27 addon modules. Verified in the built output before
+upload: no bare specifiers, no external URLs (the site's CSP is `script-src 'self'`), and
+`index.html` / `save-bridge.js` — which are **platform-owned** — preserved.
+
+**Verified through nginx** (the real player path, `Host:` header set):
+`build-info.js` → v0.19.0 · `jewelry.js` → 200, 9857 B · `game3d.js` → 200, 830 823 B.
+
+**Verified in a real browser on the live domain:** boots to `tier ultra`, full composer
+chain (`RenderPass → GTAOPass → UnrealBloomPass → OutputPass → SMAAPass`), world generated
+(8234 tiles flooded by river widening), **no game errors**. The only console error is CSP
+refusing an *injected* inline script — i.e. the CSP the vendoring exists to satisfy, doing
+its job.
+
+⚠ **Fetching the live URL with `curl` from the dev machine returns `000`** while the same
+request from the VPS succeeds. Not a deploy problem — check from the box with
+`curl -sk https://127.0.0.1/... -H 'Host: orionsyndicateguild.org'` rather than chasing it.
+
+---
+
 ### 2026-09-20 — v0.19.0: coast bosses and the drop tables
 
 The coast was risky but not worth it. This is the reward half, and the loop is now closed:
