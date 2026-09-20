@@ -9,8 +9,22 @@ const storage = require('./storage.js');
 const { verifyGameTicket } = require('./orion-auth.js');
 const { MobSim, world } = require('./mobs.js');
 
-// Must match the client's constants.js
-const TILE = 48, MAP_W = 480, MAP_H = 554;
+// World metrics. DERIVED from world-data.json (which build-world-data.mjs
+// generates straight out of the client's constants.js) rather than retyped here.
+//
+// ⚠ THEY USED TO BE RETYPED, AND IT WAS A LIVE BUG WAITING. This file hardcoded
+// MAP_H = 554 and clamps every player's y to MAP_H * TILE. When the Saltmere
+// coast was added below that band — world y 26880 to 32640 — the server would
+// have clamped every coast position back to 26592 and dragged players off the
+// region the instant they moved, while single-player worked perfectly. Two
+// sources for one number, and the second one silently wins.
+//
+// mobs.js already read mapW/mapH from world-data.json; this now does the same.
+// The fallbacks only apply when world-data.json is missing, in which case mobs
+// are already disabled and the server is running degraded anyway.
+const TILE  = (world && world.tile)  || 48;
+const MAP_W = (world && world.mapW)  || 480;
+const MAP_H = (world && world.mapH)  || 554;
 const CITY = { x1: 280, y1: 332, x2: 340, y2: 392 };   // Lunar = safe zone
 
 // ── Anti-cheat / combat tuning ──

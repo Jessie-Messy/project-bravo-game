@@ -114,6 +114,11 @@ export const G = {
   guardCallCooldown: 0, enemyRespawnClock: 0,
   _stepAcc: 0, _lastTileType: -1,
   inDungeon: false,
+  // Which surface region the player is standing on. Parallel to inDungeon, and
+  // declared HERE rather than created by an assignment in the loop: G{} is the
+  // shared home for this kind of flag, and one that exists only where it is
+  // written is invisible to anyone reading G to find out what state exists.
+  onCoast: false,
   smithOpen: false, mageOpen: false, farrierOpen: false,
   antiqOpen: false, cryptoOpen: false, curatorOpen: false, robberOpen: false,
   hotbarSel: 0,

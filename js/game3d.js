@@ -19,6 +19,8 @@ import { TILE, MAP_W, MAP_H, T, BLOCKING, CITY,
   BANK_W, BANK_H, BANK_PAD, BANK_HEADER, BANK_BTN_W, BANK_BTN_H,
   GUARD_CALL_COOLDOWN, MINIMAP_BASE,
   DUNGEON_X0, DUNGEON_Y0, DUNGEON_W, DUNGEON_H,
+  TERRAIN_MAP_H, COAST_X0, COAST_Y0, COAST_W, COAST_H,
+  COAST_LANDING, COAST_MAINLAND_DOCK,
   RACES, getXpForLevel,
 } from './constants.js';
 import { AccountManager, renderCharSelect, renderCharCreator, handleCharSelectClick, handleCharCreatorClick, openCreator, hideNameInput } from './char_creator.js';
@@ -35,7 +37,8 @@ import { prefs, setPref, resetPrefs, BIND_DEFS, binds, bindOf,
          setBind, resetBinds, keyLabel, canonKey, keyForDefault } from './settings.js';
 import { CHAMP_ALTARS, DUNGEON_PORTAL_A, DUNGEON_PORTAL_B,
   DUNGEON_ENTRY_TILE, DUNGEON_CITY_EXIT,
-  DUNGEON_FLOORS, DUNGEON_STAIRS, DUNGEON_BOSS_SPAWNS, WORLD_CHESTS, floorAt } from './world.js';
+  DUNGEON_FLOORS, DUNGEON_STAIRS, DUNGEON_BOSS_SPAWNS, WORLD_CHESTS, floorAt,
+  COAST_VILLAGE, COAST_HOUSE_PLOTS, COAST_DOCK_TILES } from './world.js';
 import { updateEnemy, champSpawnTick, damageEnemy, damagePlayer,
   spawnRandomEnemy, boxBlocked, populateWorld, populateDungeon, hooks,
   makeEnemy, ENEMY_CFG, extraBlocking, spawnDrops, BOSS_ABILITIES,
@@ -753,6 +756,12 @@ const TILE_COLORS = {
   // ORE_IRON had no entry, so every lookup hit the [0,0,0] fallback — a black
   // dot on the minimap. Matches ironMesh's 0x6a564d.
   [T.ORE_IRON]:     [106,86,77],
+  // Saltmere coast. SHALLOWS is deliberately much lighter than WATER: it is the
+  // colour you see THROUGH the water surface, and the surface shader is drawn
+  // over it, so painting it near-WATER made the wadeable strip indistinguishable
+  // from the drop-off and there was no visual cue for where you could walk.
+  [T.SAND]:         [201,178,133], [T.SHALLOWS]: [86,128,146],
+  [T.DOCK]:         [122,80,48],   [T.CLIFF]:    [124,116,104],
 };
 
 // Custom tiles (world editor): ids >= 100. Register their ground color,
@@ -790,9 +799,18 @@ const TERR_PX = (() => {
                  max + ', so the full-detail ' + (MAP_W*8) + 'x' + (MAP_H*8) + ' canvas would not upload.');
   return px;
 })();
+// ⚠ TERRAIN_MAP_H, NOT MAP_H. This canvas covers the overworld and the dungeon
+// only. Regions added below that band bring their own surface (see
+// ensureCoastSurface) precisely so this texture never grows again — it is
+// already ~65 MB and already larger than some devices can upload.
 const terrCanvas = document.createElement('canvas');
-terrCanvas.width = MAP_W * TERR_PX; terrCanvas.height = MAP_H * TERR_PX;
+terrCanvas.width = MAP_W * TERR_PX; terrCanvas.height = TERRAIN_MAP_H * TERR_PX;
 const terrCtx = terrCanvas.getContext('2d');
+
+// A ground SURFACE: a canvas, plus the tile rect it covers. The shared one
+// covers the overworld and the dungeon; see ensureCoastSurface for the other.
+const _mainSurface = { ctx: terrCtx, tx0: 0, ty0: 0,
+                       tx1: MAP_W - 1, ty1: TERRAIN_MAP_H - 1, tex: null, mesh: null };
 
 // Seeded noise for stable per-pixel terrain variation
 function _terrNoise(x, y) { let n=(x*374761393+y*668265263)^((x^y)*1274126177); n=(n^(n>>>15))*2246822519; n=(n^(n>>>13))*3266489917; return ((n^(n>>>16))>>>0)/4294967296; }
@@ -816,6 +834,14 @@ function _terrHash32(x, y){ let n=(x*374761393+y*668265263)^((x^y)*1274126177); 
 // documented above GROUND_TILE, where the minimap wants a symbol and the ground
 // wants a material.
 const GROUND_WATER_RGB = [72, 64, 52];
+// The same argument applies to SHALLOWS, and it is easy to miss because the
+// tile is a different colour on the minimap. The water surface covers shallows
+// too (see _isWaterTile), so painting the ground under it the shallows' own
+// blue would stack blue on blue and put the exact cobalt fringe described above
+// along every beach — the one place in the game where the waterline is the
+// thing you are looking at. This is wet sand: the SAND colour pulled toward the
+// bed, so the beach darkens as it goes under rather than changing hue.
+const GROUND_SHALLOWS_RGB = [138, 129, 105];
 let _pal=new Uint8Array(3);
 function _buildPalette(){
   let max=0; for(const k in TILE_COLORS){ const n=+k; if(n>max) max=n; }
@@ -824,6 +850,8 @@ function _buildPalette(){
     _pal[n*3]=c[0]; _pal[n*3+1]=c[1]; _pal[n*3+2]=c[2]; }
   const w=T.WATER*3;
   _pal[w]=GROUND_WATER_RGB[0]; _pal[w+1]=GROUND_WATER_RGB[1]; _pal[w+2]=GROUND_WATER_RGB[2];
+  const sh=T.SHALLOWS*3;
+  _pal[sh]=GROUND_SHALLOWS_RGB[0]; _pal[sh+1]=GROUND_SHALLOWS_RGB[1]; _pal[sh+2]=GROUND_SHALLOWS_RGB[2];
 }
 
 // ── Organic tile boundaries (kills the "Minecraft" stair-stepping) ─────
@@ -850,8 +878,14 @@ function _buildPalette(){
 // wall colour couldn't smear into grass — but now no tile carries a structural
 // colour on the ground at all, so boundaries can bend everywhere and obstacles
 // no longer punch square holes in the terrain.
+// Tiles whose own colour is painted on the ground. Everything else takes the
+// colour of its NEAREST ground tile, so no obstacle leaves a square under it.
+// SAND/SHALLOWS/DOCK are ground; CLIFF is an obstacle and is deliberately not
+// here (and not in FULL_COVER either) — ground shows around its base exactly as
+// it does around a boulder.
 const GROUND_TILE = new Set([T.GRASS, T.PATH, T.WATER, T.BRIDGE, T.CAVE_FLOOR,
-                             T.CAVE_ENTRANCE, T.TELEPORT]);
+                             T.CAVE_ENTRANCE, T.TELEPORT,
+                             T.SAND, T.SHALLOWS, T.DOCK]);
 function _isGroundType(t){
   if(GROUND_TILE.has(t)) return true;
   const d = customTileDefs[t];
@@ -1002,14 +1036,27 @@ function _tileIsInterior(tx, ty, g0){
 // Repaint a tile rect of the ground. Region-capable so an editor edit repaints a
 // 3×3 patch (its own tile plus the neighbours whose warp it changes) instead of
 // stamping a hard square into terrain that everything around it has bent.
-function paintTerrainRegion(tx0, ty0, tx1, ty1) {
-  tx0=Math.max(0,tx0); ty0=Math.max(0,ty0);
-  tx1=Math.min(MAP_W-1,tx1); ty1=Math.min(MAP_H-1,ty1);
+// `surface` says WHICH canvas to paint into and where its origin sits in tile
+// space. It defaults to the shared overworld+dungeon surface, so every existing
+// caller is unchanged. A region with its own ground passes its own.
+//
+// ⚠ gx/gy stay GLOBAL tile-pixel coordinates inside the loop even when the
+// target canvas starts elsewhere. The noise and the warp are both functions of
+// those coordinates, so making them surface-local would give the coast a
+// different grain from the mainland at the same world position — and would make
+// an edit near a surface boundary repaint one side with a different pattern.
+// Only the destination offset is surface-relative.
+function paintTerrainRegion(tx0, ty0, tx1, ty1, surface) {
+  const sf = surface || _mainSurface;
+  tx0=Math.max(sf.tx0,tx0); ty0=Math.max(sf.ty0,ty0);
+  tx1=Math.min(sf.tx1,tx1); ty1=Math.min(sf.ty1,ty1);
   if(tx1<tx0||ty1<ty0) return;
   _buildPalette();                     // custom tiles / skins can have added colours
   const W=(tx1-tx0+1)*TERR_PX, H=(ty1-ty0+1)*TERR_PX;
-  const img = terrCtx.createImageData(W,H), d = img.data;
+  const tctx = sf.ctx;
+  const img = tctx.createImageData(W,H), d = img.data;
   const ox=tx0*TERR_PX, oy=ty0*TERR_PX;
+  const dox=(tx0-sf.tx0)*TERR_PX, doy=(ty0-sf.ty0)*TERR_PX;
   const stamped=[];                    // drawn after putImageData, which would overwrite them
   for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
     // Paint the GROUND here, not the tile — an obstacle tile takes the colour of
@@ -1017,7 +1064,7 @@ function paintTerrainRegion(tx0, ty0, tx1, ty1) {
     const g0 = groundUnder[ty*MAP_W+tx];
     if (groundStamps[g0]) { stamped.push([tx,ty,g0]); continue; }   // custom art: verbatim, never warped
     const p0=g0*3, br=_pal[p0], bg=_pal[p0+1], bb=_pal[p0+2];
-    const isWater0 = g0===T.WATER||g0===T.BRIDGE;
+    const isWater0 = g0===T.WATER||g0===T.BRIDGE||g0===T.SHALLOWS;
     // Interior tiles can't be changed by the warp, so skip it for the bulk of
     // the map and only pay for the boundary pixels that actually bend.
     const interior = _tileIsInterior(tx, ty, g0);
@@ -1026,7 +1073,7 @@ function paintTerrainRegion(tx0, ty0, tx1, ty1) {
       let cr=br, cg=bg, cb=bb, isWater=isWater0;
       if(!interior){
         const t = _warpedTileAt(gx/TERR_PX, gy/TERR_PX, gx, gy, g0);
-        if(t!==g0){ const p=t*3; cr=_pal[p]; cg=_pal[p+1]; cb=_pal[p+2]; isWater = t===T.WATER||t===T.BRIDGE; }
+        if(t!==g0){ const p=t*3; cr=_pal[p]; cg=_pal[p+1]; cb=_pal[p+2]; isWater = t===T.WATER||t===T.BRIDGE||t===T.SHALLOWS; }
       }
       // Water used to be exempt so the sheet stayed flat and read as water.
       // It is a riverbed now, and a bed wants grain like every other surface.
@@ -1039,13 +1086,16 @@ function paintTerrainRegion(tx0, ty0, tx1, ty1) {
       d[i+3] = 255;   // createImageData is transparent black — without this the whole ground samples as black
     }
   }
-  terrCtx.putImageData(img, ox, oy);
+  tctx.putImageData(img, dox, doy);
   if(stamped.length){
-    terrCtx.imageSmoothingEnabled=false;
-    for(const [tx,ty,t0] of stamped) terrCtx.drawImage(groundStamps[t0], tx*TERR_PX, ty*TERR_PX);
+    tctx.imageSmoothingEnabled=false;
+    for(const [tx,ty,t0] of stamped)
+      tctx.drawImage(groundStamps[t0], (tx-sf.tx0)*TERR_PX, (ty-sf.ty0)*TERR_PX);
   }
 }
-function buildTerrainImage(){ paintTerrainRegion(0,0,MAP_W-1,MAP_H-1); }
+// The shared surface only. Regions below TERRAIN_MAP_H paint themselves when
+// they are first entered.
+function buildTerrainImage(){ paintTerrainRegion(0,0,MAP_W-1,TERRAIN_MAP_H-1,_mainSurface); }
 // ── Widen the rivers ──────────────────────────────────────────────
 // Done on the TILE MAP, and before the ground bake, so it lands ahead of every
 // consumer. Widening the render mask instead only stretches the painted
@@ -1092,6 +1142,10 @@ const terrTex = new THREE.CanvasTexture(terrCanvas);
 terrTex.magFilter = THREE.LinearFilter;
 terrTex.minFilter = THREE.LinearMipMapLinearFilter;
 terrTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+// _mainSurface is declared before this texture exists, so it is wired up here.
+// Every surface must carry its own texture: code that walks surfaces and marks
+// `sf.tex` dirty would otherwise silently do nothing for the overworld.
+_mainSurface.tex = terrTex;
 
 // Standard, not Lambert. The ground was the single largest surface in the game
 // and the only one still excluded from image-based lighting — walls, rocks and
@@ -1114,7 +1168,8 @@ terrTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
 // Each fades out over a few tiles so the boundary reads as a valley or a
 // plateau rather than a terrace.
 const FLAT_R = 3, CITY_MARGIN = 7;
-const _flatSet = new Set([T.WATER, T.BRIDGE, T.CAVE_FLOOR, T.CAVE_ENTRANCE, T.CAVE_WALL]);
+const _flatSet = new Set([T.WATER, T.BRIDGE, T.CAVE_FLOOR, T.CAVE_ENTRANCE, T.CAVE_WALL,
+                          T.SHALLOWS, T.DOCK]);
 function terrainFlatAt(tx, ty){
   if(ty >= DUNGEON_Y0 - 6) return 0;                       // dungeon strip
   if(tx >= CITY.x1-CITY_MARGIN && tx <= CITY.x2+CITY_MARGIN &&
@@ -1196,23 +1251,98 @@ function waterDepthAt(wx, wz){
   return Math.max(0, WATER_SURFACE_Y - heightAt(wx, wz));
 }
 // True where the player may wade through what boxBlocked calls solid.
+//
+// ⚠ RIVERS ONLY. This was written when every T.WATER tile in the game was a
+// river a few tiles wide, where wading across is the point. The Saltmere coast
+// reuses T.WATER for open SEA, and the coast is flat — terrainFlatAt returns 0
+// for everything at ty >= DUNGEON_Y0-6, so riverDepth never carves a bed there
+// and the drowning check can never fire. Left as it was, you could stroll off
+// the beach and keep walking to the edge of the ocean, which makes the boat
+// pointless. SHALLOWS is the wadeable water on the coast; deep water is not.
 function wadeableAt(wx, wz){
   const tx = Math.floor(wx/TILE), ty = Math.floor(wz/TILE);
-  return (map[ty] && map[ty][tx]) === T.WATER;
+  const t = map[ty] && map[ty][tx];
+  if(t === T.SHALLOWS) return true;
+  return t === T.WATER && ty < COAST_Y0;
 }
 
 // One segment per 2 tiles. The broad swells have a ~46-tile wavelength, so this
 // is far finer than the signal; going per-tile would quadruple the vertex count
 // for detail the height field doesn't contain.
+// ⚠ TERRAIN_MAP_H again: the mesh must match the canvas it is textured with, or
+// the UVs stretch the whole map. It stops where the shared texture stops.
 const terrMesh = new THREE.Mesh(
-  new THREE.PlaneGeometry(MAP_W * TILE, MAP_H * TILE, MAP_W >> 1, MAP_H >> 1),
+  new THREE.PlaneGeometry(MAP_W * TILE, TERRAIN_MAP_H * TILE, MAP_W >> 1, TERRAIN_MAP_H >> 1),
   new THREE.MeshStandardMaterial({ map: terrTex, roughness: 0.97, metalness: 0.0 })
 );
 terrMesh.rotation.x = -Math.PI / 2;
-terrMesh.position.set(MAP_W*TILE/2, 0, MAP_H*TILE/2);
-terrain.displacePlane(terrMesh.geometry, MAP_W*TILE/2, MAP_H*TILE/2);
+terrMesh.position.set(MAP_W*TILE/2, 0, TERRAIN_MAP_H*TILE/2);
+terrain.displacePlane(terrMesh.geometry, MAP_W*TILE/2, TERRAIN_MAP_H*TILE/2);
 terrMesh.receiveShadow = true;
 scene.add(terrMesh);
+
+// ── The Saltmere coast's ground ─────────────────────────────────────────────
+//
+// Its own canvas and its own mesh, 1600 x 960 — about 6 MB against the shared
+// surface's 65 MB — and neither exists until somebody sails there. That is the
+// whole reason the region did not simply extend MAP_H: the shared texture is
+// one upload for every player on every device, and it is already too large for
+// the 4096 cap that older phones report. A region nobody has visited should
+// cost nothing, and this one costs nothing.
+//
+// Built once and KEPT, rather than disposed on leaving. Re-baking 24 000 tiles
+// every trip to save 6 MB is the wrong trade — the bake is the expensive half,
+// not the memory.
+let coastSurface = null;
+function ensureCoastSurface(){
+  if(coastSurface) return coastSurface;
+  const cv = document.createElement('canvas');
+  cv.width = COAST_W * TERR_PX; cv.height = COAST_H * TERR_PX;
+  coastSurface = { ctx: cv.getContext('2d'), canvas: cv,
+                   tx0: COAST_X0, ty0: COAST_Y0,
+                   tx1: COAST_X0 + COAST_W - 1, ty1: COAST_Y0 + COAST_H - 1,
+                   tex: null, mesh: null };
+  const t0 = performance.now();
+  paintTerrainRegion(coastSurface.tx0, coastSurface.ty0, coastSurface.tx1, coastSurface.ty1, coastSurface);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipMapLinearFilter;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  coastSurface.tex = tex;
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(COAST_W * TILE, COAST_H * TILE, COAST_W >> 1, COAST_H >> 1),
+    new THREE.MeshStandardMaterial({ map: tex, roughness: 0.97, metalness: 0.0 })
+  );
+  mesh.rotation.x = -Math.PI / 2;
+  const cx = (COAST_X0 + COAST_W / 2) * TILE, cz = (COAST_Y0 + COAST_H / 2) * TILE;
+  mesh.position.set(cx, 0, cz);
+  terrain.displacePlane(mesh.geometry, cx, cz);
+  mesh.receiveShadow = true;
+  coastSurface.mesh = mesh;
+  scene.add(mesh);
+  console.log('[world] Saltmere ground built: ' + cv.width + 'x' + cv.height +
+              ' (' + ((cv.width*cv.height*4)/1048576).toFixed(1) + ' MB) in ' +
+              (performance.now()-t0).toFixed(0) + ' ms');
+  return coastSurface;
+}
+// Which surface owns this tile — so an edit repaints the canvas it is actually
+// drawn on. Returns null for tiles no surface covers (the band separators),
+// where there is nothing to repaint.
+// ⚠ KNOWN EDGE, deliberately not fixed. The warp lookup inside the painter
+// samples groundUnder from neighbouring TILES, and it does not know about
+// surface boundaries — so the coast's first row (ty 560) can pull a colour from
+// the separator row above it, which belongs to no surface at all. Today that is
+// invisible: the top 4-7 rows of the coast are CLIFF, the band is sealed, and
+// no player can stand there to see the fringe. Making the warp surface-aware
+// would mean threading the surface through _warpedTileAt and _tileIsInterior
+// for a seam nobody can reach. WORTH REVISITING the day a region puts walkable
+// ground hard against a band edge — that is when it becomes visible.
+function _surfaceAt(tx, ty){
+  if(ty >= COAST_Y0 && ty < COAST_Y0 + COAST_H && tx >= COAST_X0 && tx < COAST_X0 + COAST_W)
+    return coastSurface;                       // null until it has been visited
+  if(ty < TERRAIN_MAP_H) return _mainSurface;
+  return null;
+}
 
 function updateTerrPx(tx, ty) {
   // Repaint the 3×3 block: the warp reaches one tile, so editing this tile also
@@ -1222,14 +1352,21 @@ function updateTerrPx(tx, ty) {
   // nearest-ground fill is a BFS with no cheap local update — but it's only a
   // couple of ms over the whole map, so just re-derive it.
   buildGroundUnder();
-  paintTerrainRegion(tx-WARP_R-1, ty-WARP_R-1, tx+WARP_R+1, ty+WARP_R+1);
+  // ⚠ SKIP ONLY THE PAINT, NOT THE REST. _surfaceAt returns null for the band
+  // separators and for a region whose surface has not been built yet — and an
+  // early return here would take the water field and the mask with it, leaving
+  // the water disagreeing with the tile map exactly as the river-widening note
+  // above warns. There is no ground canvas to paint; everything else still has
+  // to happen.
+  const sf = _surfaceAt(tx, ty);
+  if(sf) paintTerrainRegion(tx-WARP_R-1, ty-WARP_R-1, tx+WARP_R+1, ty+WARP_R+1, sf);
   // The mask reads through the blur field as well as the warp, so an edit
   // perturbs a wider patch — and the field itself has to be re-derived first.
   buildWaterField();
   const R = WARP_R + WFIELD_R + 2;
   paintWaterMask(tx-R, ty-R, tx+R, ty+R);
   wMaskTex.needsUpdate = true;
-  terrTex.needsUpdate = true;
+  if(sf && sf.tex) sf.tex.needsUpdate = true;
 }
 
 // ── Minimap canvas (exactly 1 px per tile, like the original 2D map) ──
@@ -3260,7 +3397,10 @@ const waterTex = (() => {
 // from a coverage mask sampled through the same warp field as the ground. The
 // bank is wherever the mask crosses 0.5, so it wanders and curves freely, and
 // the painted bank underneath lines up because it used the identical field.
-const _isWaterTile = t => t===T.WATER||t===T.BRIDGE;
+// What the water SURFACE covers. SHALLOWS and DOCK are wet: a pier stands in
+// the sea and the sea has to be drawn under it, and shallows that the surface
+// skipped would read as a dry blue-grey stripe along every beach.
+const _isWaterTile = t => t===T.WATER||t===T.BRIDGE||t===T.SHALLOWS||t===T.DOCK;
 const WMASK_PX = 4;    // mask texels per tile (12 world units each)
 const wMaskCanvas = document.createElement('canvas');
 wMaskCanvas.width = MAP_W*WMASK_PX; wMaskCanvas.height = MAP_H*WMASK_PX;
@@ -3463,7 +3603,11 @@ function rebuildWater() {
 // making them nearly invisible. Now each BRIDGE tile gets a raised plank
 // deck, with wooden rails along every edge that borders open water.
 let nBridge=0;
-for (let ty=0;ty<MAP_H;ty++) for (let tx=0;tx<MAP_W;tx++) if(map[ty][tx]===T.BRIDGE) nBridge++;
+// DOCK counts here too: a pier is a bridge over the sea by another name, and
+// without a raised deck it would be a tinted tile UNDER the water surface —
+// which is exactly how bridges used to be nearly invisible.
+for (let ty=0;ty<MAP_H;ty++) for (let tx=0;tx<MAP_W;tx++)
+  if(map[ty][tx]===T.BRIDGE||map[ty][tx]===T.DOCK) nBridge++;
 const deckMesh = new THREE.InstancedMesh(
   new THREE.BoxGeometry(TILE,4,TILE),
   new THREE.MeshStandardMaterial({map:bridgeTex, roughness:0.85, metalness:0.0}), nBridge+800);
@@ -3481,14 +3625,19 @@ function rebuildBridges() {
   const dCap=deckMesh.instanceMatrix.count, rCap=railMesh.instanceMatrix.count, b=_obsBounds();
   const rail=(x,z,q)=>{ if(ri>=rCap)return; _pos.set(x,8.5,z); _sc1.set(1,1,1); _m4.compose(_pos,q,_sc1); railMesh.setMatrixAt(ri++,_m4); };
   for (let ty=b.ty0;ty<=b.ty1&&di<dCap;ty++) for (let tx=b.tx0;tx<=b.tx1&&di<dCap;tx++) {
-    if(map[ty][tx]!==T.BRIDGE) continue;
+    const dt=map[ty][tx];
+    if(dt!==T.BRIDGE&&dt!==T.DOCK) continue;
     const cx=tx*TILE+TILE/2, cz=ty*TILE+TILE/2;
     _pos.set(cx,2.5,cz); _sc1.set(1,1,1); _m4.compose(_pos,q0,_sc1); deckMesh.setMatrixAt(di++,_m4);
-    // rails only on edges facing open water — works for any width/orientation
-    if(map[ty][tx-1]===T.WATER) rail(tx*TILE+2.5,      cz, q90);
-    if(map[ty][tx+1]===T.WATER) rail(tx*TILE+TILE-2.5, cz, q90);
-    if(map[ty-1]?.[tx]===T.WATER) rail(cx, ty*TILE+2.5,      q0);
-    if(map[ty+1]?.[tx]===T.WATER) rail(cx, ty*TILE+TILE-2.5, q0);
+    // rails only on edges facing water — works for any width/orientation.
+    // SHALLOWS counts: a pier runs out across the wadeable strip before it ever
+    // reaches deep water, and railing only the deep end leaves the first half of
+    // every pier bare.
+    const wet = t => t===T.WATER||t===T.SHALLOWS;
+    if(wet(map[ty][tx-1])) rail(tx*TILE+2.5,      cz, q90);
+    if(wet(map[ty][tx+1])) rail(tx*TILE+TILE-2.5, cz, q90);
+    if(wet(map[ty-1]?.[tx])) rail(cx, ty*TILE+2.5,      q0);
+    if(wet(map[ty+1]?.[tx])) rail(cx, ty*TILE+TILE-2.5, q0);
   }
   markInst(deckMesh,di); markInst(railMesh,ri);
 }
@@ -4951,6 +5100,20 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     });
     return list.join(', ');
   },
+  // Sail to the Saltmere coast, or come back. The boat is the in-game route;
+  // this is for looking at the place without one.
+  coast(where){
+    if(where==='home'||where==='back'){
+      player.x = COAST_MAINLAND_DOCK.x*TILE+TILE/2; player.y = COAST_MAINLAND_DOCK.y*TILE+TILE/2;
+      return 'mainland dock';
+    }
+    ensureCoastSurface();
+    const L = (where==='village') ? {x:COAST_VILLAGE.x+13,y:COAST_VILLAGE.y+7} : COAST_LANDING;
+    player.x = L.x*TILE+TILE/2; player.y = L.y*TILE+TILE/2;
+    return JSON.stringify({at:[L.x,L.y], tile:map[L.y][L.x],
+      surface: coastSurface ? coastSurface.canvas.width+'x'+coastSurface.canvas.height : 'none',
+      plots: COAST_HOUSE_PLOTS.length, piers: COAST_DOCK_TILES.length});
+  },
   grass(o){
     if(o){
       if(o.wind!==undefined) _grassMat.uniforms.uWindAmt.value=o.wind;
@@ -5601,7 +5764,8 @@ function npcWalkable(x,y){
   const tx=Math.floor(x/TILE), ty=Math.floor(y/TILE);
   if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return false;
   const tt=map[ty][tx];
-  return tt===T.GRASS||tt===T.PATH||tt===T.BRIDGE||tt===T.CAVE_FLOOR;
+  return tt===T.GRASS||tt===T.PATH||tt===T.BRIDGE||tt===T.CAVE_FLOOR||
+         tt===T.SAND||tt===T.DOCK||tt===T.SHALLOWS;
 }
 // Measure the true rendered height of a skinned model. A Box3 is wrong here:
 // it measures the BIND pose, and these characters are posed by their skeleton,
@@ -12125,9 +12289,19 @@ function update(dt){
     for(const wh of WORLD_HEALERS){if(!wh.healTimer)wh.healTimer=6;if(Math.hypot(wh.x-player.x,wh.y-player.y)<TILE*3.5){wh.healTimer-=dt;if(wh.healTimer<=0){wh.healTimer=8;if(!player.dead&&!player.ghost&&player.hp<player.maxHp){const amt=Math.min(player.maxHp-player.hp,12);player.hp+=amt;snd.heal();addFloater(wh.x,wh.y-34,'✨ +'+amt);}}}}
     if(!uiBlocking()&&!modalOpen()){if(mouse.down)doAttack(worldMouseX,worldMouseY,mouse.sx,mouse.sy);if(action.active){const aw=screenToWorld(action.sx,action.sy);doAttack(aw.x,aw.y,action.sx,action.sy);}}
   }
-  G.inDungeon=player.y>=DUNGEON_Y0*TILE;
+  // ⚠ AN UPPER BOUND, NOT JUST A LOWER ONE. This was `player.y >= DUNGEON_Y0*TILE`
+  // alone, which was correct while the dungeon band was the last thing on the
+  // map. The Saltmere coast sits BELOW it, so without the second half of this
+  // test the whole beach counts as dungeon: cave ambience, cave music, the
+  // dungeon floor readout and anything else gated on G.inDungeon, in daylight
+  // on a beach.
+  G.inDungeon = player.y >= DUNGEON_Y0*TILE && player.y < TERRAIN_MAP_H*TILE;
   if(G.inDungeon){ const f=floorAt(Math.floor(player.x/TILE),Math.floor(player.y/TILE)); if(f)G.dungeonFloor=f.n; }
   else G.dungeonFloor=0;
+  // First arrival on the coast pays for its ground; every later frame is a
+  // pointer compare.
+  G.onCoast = player.y >= COAST_Y0*TILE;
+  if(G.onCoast && !coastSurface) ensureCoastSurface();
   if(G.portalCooldown<=0){
     const ptx=Math.floor(player.x/TILE), pty=Math.floor(player.y/TILE);
     if(ptx>=0&&pty>=0&&ptx<MAP_W&&pty<MAP_H&&map[pty][ptx]===T.TELEPORT){

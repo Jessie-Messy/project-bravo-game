@@ -1,6 +1,7 @@
 // world.js — map generation, resource system, NPC spawn data, champ altars
 import { TILE, MAP_W, MAP_H, T, TREE_HP, STONE_HP, IRON_HP, RESPAWN_TREE, RESPAWN_STONE, RESPAWN_IRON,
   DUNGEON_X0, DUNGEON_Y0, DUNGEON_W, DUNGEON_H,
+  COAST_X0, COAST_Y0, COAST_W, COAST_H, COAST_LANDING,
 } from './constants.js';
 import { map, resourceHp, respawnAt, origTile, playerPlacedWalls, enemies } from './state.js';
 
@@ -548,6 +549,174 @@ for (let y = 0; y < MAP_H; y++) {
     DUNGEON_BOSS_SPAWNS.push({floor:f.n, boss:f.boss, x:g.arena.x, y:g.arena.y});
   }
 
+})();
+
+// The Saltmere coast ------------------------------------------------
+// The second surface region. Generated exactly like the dungeon floors -- into
+// the same tile array, in its own band, from its own fixed seed -- so nothing
+// in the engine has to learn about "maps". What IS new is that it brings its
+// own ground texture rather than extending the shared one; see TERRAIN_MAP_H in
+// constants.js for why that was worth splitting.
+//
+// Layout: sea to the south-west, land to the north-east, with the coastline
+// running as a noisy diagonal so no stretch of it reads as a straight edge.
+//
+//   deep WATER | SHALLOWS | SAND | grass/TREE inland | CLIFF ridge
+//
+// Saltmere village sits on the middle of the beach with piers out over the
+// shallows. The boat from the mainland ties up at the head of the long pier.
+export const COAST_VILLAGE = { x: COAST_X0 + 88, y: COAST_Y0 + 78, w: 26, h: 20 };
+export const COAST_HOUSE_PLOTS = [];   // flat, cleared 6x6 spots for player housing
+export const COAST_DOCK_TILES  = [];   // pier tiles, for the boat and for props
+
+(function generateCoast(){
+  const rng = makeRng(20260920);
+  const X0 = COAST_X0, Y0 = COAST_Y0, W = COAST_W, H = COAST_H;
+  const at  = (lx, ly) => (lx < 0 || ly < 0 || lx >= W || ly >= H) ? T.CAVE_WALL : map[Y0 + ly][X0 + lx];
+  const put = (lx, ly, t) => { if (lx >= 0 && ly >= 0 && lx < W && ly < H) map[Y0 + ly][X0 + lx] = t; };
+
+  // Separator rows 554-559, so the dungeon band and the coast band are not
+  // walkable into one another. Same trick the dungeon uses at 480-489.
+  for (let y = 554; y < Y0; y++)
+    for (let x = 0; x < MAP_W; x++) map[y][x] = T.CAVE_WALL;
+  // Seal everything in the band that is not the region. The band is 200 wide
+  // inside a 480-wide array, and the remainder would otherwise be reachable
+  // open grass that nobody authored.
+  for (let y = Y0; y < Y0 + H; y++)
+    for (let x = X0 + W; x < MAP_W; x++) map[y][x] = T.CAVE_WALL;
+  for (let y = Y0 + H; y < MAP_H; y++)
+    for (let x = 0; x < MAP_W; x++) map[y][x] = T.CAVE_WALL;
+
+  // The shoreline. Three sine terms of different periods: one alone gives a
+  // wave you can see repeating, three do not.
+  const shore = lx =>
+    46 + Math.sin(lx * 0.055) * 13 + Math.sin(lx * 0.021 + 1.7) * 8
+       + Math.sin(lx * 0.13 + 0.4) * 3;
+
+  for (let lx = 0; lx < W; lx++) {
+    const sh = shore(lx);
+    for (let ly = 0; ly < H; ly++) {
+      const d = ly - sh;                       // <0 seaward, >0 inland
+      let t;
+      if      (d < -9) t = T.WATER;            // open sea
+      else if (d < -2) t = T.SHALLOWS;         // wadeable
+      else if (d <  4) t = T.SAND;             // beach
+      else             t = T.GRASS;            // inland
+      put(lx, ly, t);
+    }
+  }
+
+  // Ragged the band edges. Without this every boundary is a clean curve and
+  // the whole coast reads as printed rather than eroded.
+  for (let pass = 0; pass < 2; pass++) {
+    const edits = [];
+    for (let lx = 1; lx < W - 1; lx++) for (let ly = 1; ly < H - 1; ly++) {
+      const c = at(lx, ly);
+      if (c !== T.SAND && c !== T.SHALLOWS && c !== T.GRASS) continue;
+      const n = [at(lx-1, ly), at(lx+1, ly), at(lx, ly-1), at(lx, ly+1)];
+      const other = n.find(v => v !== c && (v === T.SAND || v === T.SHALLOWS || v === T.GRASS));
+      if (other !== undefined && rng() < 0.22) edits.push([lx, ly, other]);
+    }
+    for (const e of edits) put(e[0], e[1], e[2]);
+  }
+
+  // Cliff ridge along the inland edge. It is the region's back wall, but a
+  // wall made of rock reads as landscape.
+  for (let lx = 0; lx < W; lx++) {
+    const top = 4 + Math.round(Math.sin(lx * 0.045 + 2.1) * 3 + Math.sin(lx * 0.11) * 1.5);
+    for (let ly = 0; ly < top; ly++) put(lx, ly, T.CLIFF);
+  }
+  // A second broken ridge further in, for shape rather than for blocking.
+  for (let lx = 0; lx < W; lx++) {
+    if (rng() < 0.35) continue;
+    const base = 74 + Math.round(Math.sin(lx * 0.037) * 9);
+    const tall = 1 + Math.floor(rng() * 3);
+    for (let k = 0; k < tall; k++) if (at(lx, base + k) === T.GRASS) put(lx, base + k, T.CLIFF);
+  }
+
+  // Inland cover.
+  for (let i = 0; i < 70; i++) {
+    const cx = Math.floor(rng() * W), cy = Math.floor(rng() * H), r = 2 + Math.floor(rng() * 3);
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (at(cx + dx, cy + dy) !== T.GRASS) continue;
+      if (rng() < 0.62) put(cx + dx, cy + dy, T.TREE);
+    }
+  }
+  for (let i = 0; i < 40; i++) {
+    const cx = Math.floor(rng() * W), cy = Math.floor(rng() * H), r = 1 + Math.floor(rng() * 2);
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (at(cx + dx, cy + dy) !== T.GRASS) continue;
+      if (rng() < 0.55) put(cx + dx, cy + dy, T.STONE);
+    }
+  }
+
+  // Saltmere village.
+  const V = COAST_VILLAGE, vx = V.x - X0, vy = V.y - Y0;
+  // Clear the footprint back to sand, so the huts sit on the beach rather than
+  // in whatever grove happened to roll there.
+  for (let ly = vy - 2; ly < vy + V.h + 2; ly++)
+    for (let lx = vx - 2; lx < vx + V.w + 2; lx++) {
+      const c = at(lx, ly);
+      if (c === T.TREE || c === T.STONE || c === T.CLIFF) put(lx, ly, T.SAND);
+    }
+  // Six huts in two rows: a hollow WALL ring each, doorway facing the sea.
+  for (let row = 0; row < 2; row++) for (let col = 0; col < 3; col++) {
+    const hx = vx + 2 + col * 8, hy = vy + 2 + row * 9, hw = 5, hh = 5;
+    for (let ly = 0; ly < hh; ly++) for (let lx = 0; lx < hw; lx++) {
+      const edge = (lx === 0 || ly === 0 || lx === hw - 1 || ly === hh - 1);
+      put(hx + lx, hy + ly, edge ? T.WALL : T.PATH);
+    }
+    put(hx + 2, hy + hh - 1, T.PATH);              // doorway
+  }
+  // Village path spine.
+  for (let lx = vx - 1; lx < vx + V.w + 1; lx++) {
+    const ly = vy + 7;
+    if (at(lx, ly) !== T.WALL) put(lx, ly, T.PATH);
+  }
+
+  // Piers. Each runs seaward from the beach; the long one is the boat landing.
+  const pierAt = (lx, stopAtDeep) => {
+    let ly = vy + 7;
+    for (; ly > 0; ly--) if (at(lx, ly) === T.SHALLOWS || at(lx, ly) === T.WATER) break;
+    let laid = 0, k = 0;
+    for (k = 0; k < 40 && ly - k > 0; k++) {
+      const c = at(lx, ly - k);
+      if (c === T.CLIFF || c === T.WALL) break;
+      const wasDeep = (c === T.WATER);
+      put(lx, ly - k, T.DOCK);
+      COAST_DOCK_TILES.push({ x: X0 + lx, y: Y0 + ly - k });
+      laid++;
+      if (stopAtDeep) { if (wasDeep && laid > 4) break; }
+      else if (laid >= 7) break;
+    }
+    return { x: X0 + lx, y: Y0 + ly - laid + 1 };
+  };
+  pierAt(vx + 4, false);
+  pierAt(vx + V.w - 5, false);
+  const landing = pierAt(vx + 12, true);          // the long pier
+  // Join the piers to the spine so you can walk off them.
+  for (const px of [vx + 4, vx + 12, vx + V.w - 5])
+    for (let ly = vy + 7; ly < vy + 9; ly++) if (at(px, ly) === T.SAND) put(px, ly, T.PATH);
+
+  // The declared landing must BE the pier head. If the generator ever drifts,
+  // this is the line that disagrees first.
+  COAST_LANDING.x = landing.x; COAST_LANDING.y = landing.y;
+
+  // Player house plots: flat 6x6 clearings east of the village.
+  for (let i = 0; i < 6; i++) {
+    const px = vx + V.w + 6 + (i % 3) * 8, py = vy + 2 + Math.floor(i / 3) * 9;
+    let ok = true;
+    for (let ly = 0; ly < 6 && ok; ly++) for (let lx = 0; lx < 6; lx++) {
+      const c = at(px + lx, py + ly);
+      if (c === T.WATER || c === T.SHALLOWS || c === T.WALL || c === T.DOCK || c === T.CAVE_WALL) { ok = false; break; }
+    }
+    if (!ok) continue;
+    for (let ly = 0; ly < 6; ly++) for (let lx = 0; lx < 6; lx++) {
+      const c = at(px + lx, py + ly);
+      if (c === T.TREE || c === T.STONE || c === T.CLIFF) put(px + lx, py + ly, T.GRASS);
+    }
+    COAST_HOUSE_PLOTS.push({ x: X0 + px, y: Y0 + py, size: 6 });
+  }
 })();
 
 // -- Resource HP + respawn arrays ----------------------------------
