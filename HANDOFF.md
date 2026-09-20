@@ -23,6 +23,48 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-20 — v0.16.0: Saltmere moved onto the shore, and got a population
+
+**⚠⚠ THE VILLAGE WAS FORTY TILES INLAND, AND IT LOOKED CORRECT.** `COAST_VILLAGE.y`
+was the literal `COAST_Y0 + 78` while the coastline is a **function of x** — at the
+village's own x-range the beach is at local ly **26–45**. So a fishing village with
+piers generated in the middle of the woods. What hid it: the footprint-clearing pass
+turns trees and rock into SAND, so the village **manufactured its own small desert and
+sat in it**, and every check of it showed huts on sand exactly as designed.
+
+**The lesson worth keeping: when one value is derived and a related one is a literal,
+the literal is wrong the moment the derivation changes — and a generator will happily
+build something self-consistent and plausible around it.** `.y` is now
+`shore(centre) + 4`. The house plots moved inland for the same reason: east of the
+village is half sea once the village is against the water, and 3 of 6 plots were being
+silently rejected.
+
+**⚠ `makeEnemy` could not place a beach mob at all.** It chose between exactly two
+ground types — `CAVE_FLOOR` for cave dwellers, `GRASS` for everything else — so a crab
+aimed at the sand searched outward for grass and either landed inland or returned null.
+`ENEMY_CFG` entries may now declare **`spawnTiles`**; without one the old two-way choice
+applies unchanged. Verified: 10 crabs on SAND, 7 serpents on SHALLOWS, 4 wreckers on
+SAND.
+
+**Population.** 5 NPCs (harbourmaster, fishwife, shipwright, 2 villagers) and 21 mobs
+(shore crab, reef serpent, wrecker). NPC positions are **derived in world.js from the
+village the generator placed**, so they follow the shoreline rather than being written
+down beside it. They spawn through the same `spawnNPC` path as every town NPC, so they
+animate and cull with the same loop. Each named one has an `[E]` prompt *and a line* — a
+silent NPC with a prompt is worse than no prompt, because the prompt promises something.
+
+Crabs are the **quadruped rig made broader than it is long**; serpents are the
+**bodyless blob**. Neither needed a model. Five new rig styles; the dressing harness now
+covers 18 (41 checks).
+
+#### Still open on the coast
+No shops (the harbourmaster, fishwife and shipwright only talk), `COAST_HOUSE_PLOTS` is
+still only read by `_dev.house(null)` — nothing steers a player to the plots or reserves
+them — and coast mobs are **client-side**, like every type except wolf and bandit, which
+are the only two the server simulates.
+
+---
+
 ### 2026-09-20 — v0.14.1 the Saltmere crossing, v0.15.0 housing
 
 **The ferry (v0.14.1).** A ferryman at each end and an `[E]` prompt. Until this, the
