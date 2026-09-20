@@ -23,6 +23,79 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-20 — v0.16.1: how far the multiplayer actually stretches
+
+**There is now a way to ask the question.** `_dev.mpLoad(n[,radius])` puts *n* synthetic
+players straight into `net.remotes` — exactly what `syncRemotePlayers` reads —
+and `_dev.mpBench(frames)` drives `update()` / `render3D()` **by hand** and times them.
+
+⚠ **Driving the frame function directly is the trick that makes this measurable at all.**
+A backgrounded pane throttles rAF to nothing (see the preview-pane gotcha), so any timing
+loop built on frames never runs. A synchronous call does identical work and can be timed
+anywhere — including from a hidden tab.
+
+⚠ **`renderer.info.render` RESETS ON EVERY `render()` CALL**, and the composer makes
+several per frame. The first version of the harness read it afterwards and reported
+**`drawCalls: 1`** for a 150-player crowd — it was seeing the final fullscreen quad.
+`info.autoReset = false`, reset once, then divide by frames.
+
+#### What it measured (desktop, standing in the city, everyone inside the animation radius)
+
+| remotes | draw calls/frame | median ms |
+|---|---|---|
+| 0 | 164 | 3.2 |
+| 50 | 455 | 4.0 |
+| 100 | 749 | 5.5 |
+| 150 | 1043 | 6.3 |
+
+≈ **5.9 draw calls per visible player** — a body plus a weapon, times the ~3 scene renders
+the composer performs. **Triangles barely moved** (481k → 590k), so this is
+*submission*-bound, not geometry-bound. And **animation was never the cost**:
+`MAX_ANIMATED_REMOTES` held it at 20 throughout.
+
+#### The cap was on the wrong thing
+There was a ceiling on how many remotes **animate** and none on how many are **drawn** —
+backwards for the case that hurts, a crowd. `MAX_VISIBLE_REMOTES = 60` draws the nearest
+60 and hides the rest; they keep their position and nameplate, so nothing gameplay-facing
+changes.
+
+| remotes | calls before → after | ms before → after |
+|---|---|---|
+| 100 | 749 → 516 | 5.5 → 4.2 |
+| 150 | 1043 → 519 | 6.3 → 4.2 |
+| 250 | — → 521 | — → 4.9 |
+
+**Cost is now flat in crowd size: 250 players cost what 60 do.** The client is bounded.
+
+#### ⚠ THE NEXT CEILING IS THE SERVER, AND IT IS O(N²)
+`bravo-room.js` has **no interest management** — its own `maxClients = 120` comment says
+so. Every player's state syncs to every player, so message volume grows with N². At 120
+players that is ~14 400 player-updates per patch tick across the room. `x`, `y` and `dir`
+are declared `'number'`, which in `@colyseus/schema` is **float64** — 8 bytes each where
+`float32` would do (0.002 precision at the map's far corner) and `int16` would do with
+scaling.
+
+Two fixes, in order of value: **interest management** (only sync players near you), then
+**narrower field types**. Neither is done.
+
+#### ⚠⚠ AND YOU CANNOT TEST EITHER ONE LOCALLY RIGHT NOW
+**A clean clone cannot run local multiplayer.** The repo's `js/net.js` joins with
+`{ name, token }` — a localStorage device token. The repo's `server/bravo-room.js`
+`onAuth` requires a **signed Orion ticket**, and `verifyGameTicket` returns `null`
+whenever no secret is configured, so **every join is rejected**:
+
+  client sends device token → server wants signed ticket → `throw new Error('bad-ticket')`
+
+This is a consequence of the 2026-09-19 Phase 0 fix that pulled the live server into the
+repo, and it was still the right call — the alternative was a repo whose server could
+overwrite production's auth with a version any browser can spoof. But it means **setting
+up a working local MP environment is the actual prerequisite for the next multiplayer
+work**, not an afterthought. The options are: run the Orion platform locally so the built
+client gets real tickets, or give `orion-auth.js` an explicit, loudly-logged dev mode —
+which is an auth bypass and should not be added casually.
+
+---
+
 ### 2026-09-20 — v0.16.0: Saltmere moved onto the shore, and got a population
 
 **⚠⚠ THE VILLAGE WAS FORTY TILES INLAND, AND IT LOOKED CORRECT.** `COAST_VILLAGE.y`
