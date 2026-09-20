@@ -5109,6 +5109,29 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     });
     return list.join(', ');
   },
+  // Housing, without walking the whole loop every time.
+  //   _dev.house()                  what could be built right here, and why not
+  //   _dev.house('house_stilt')     build that one at the player's feet
+  //   _dev.house(null)              list the coast's cleared plots
+  house(id){
+    if(id===null) return JSON.stringify(COAST_HOUSE_PLOTS);
+    const tx=Math.floor(player.x/TILE), ty=Math.floor(player.y/TILE);
+    if(!id){
+      const out={};
+      for(const t of HOUSES){
+        const off=Math.floor(t.size/2);
+        out[t.id] = houseBlockReason(tx-off, ty-off, t.size, t) || 'OK';
+      }
+      return JSON.stringify({at:[tx,ty], tile:map[ty][tx], canBuild:out});
+    }
+    const t=HOUSES.find(h=>h.id===id);
+    if(!t) return 'no such house type: '+HOUSES.map(h=>h.id).join(', ');
+    G.placingHouse=t;
+    const ok=placeHouse(player.x, player.y);
+    G.placingHouse=null; G.housePlacementMode=false;
+    const h=G.placedHouses[G.placedHouses.length-1];
+    return JSON.stringify({built:ok, house: ok?{type:h.type,doorSide:h.doorSide,at:[h.x0,h.y0],size:h.size}:null});
+  },
   // Sail to the Saltmere coast, or come back. The boat is the in-game route;
   // this is for looking at the place without one.
   coast(where){
@@ -9781,19 +9804,14 @@ function loadGame(blob){
         h.isPublic=h.isPublic||false;
         h.friends=h.friends||[];
         h.doorOpen=h.doorOpen||false;
-        const {x0,y0,size}=h;
-        for(let dy=0;dy<size;dy++)for(let dx=0;dx<size;dx++){
-          const x=x0+dx,y=y0+dy;
-          const isBorder=(dy===0||dy===size-1||dx===0||dx===size-1);
-          const isDoor=(dy===size-1&&dx===Math.floor(size/2));
-          if(isBorder&&!isDoor){
-            map[y][x]=T.WALL;origTile[y][x]=T.WALL;playerPlacedWalls[y][x]=true;
-          }else{
-            map[y][x]=T.PATH;origTile[y][x]=T.PATH;playerPlacedWalls[y][x]=false;
-          }
-          respawnAt[y][x]=null;
-          bakeStaticTile(x,y);minimapUpdateTile(x,y);
-        }
+        // ⚠ THIS USED TO BE A SECOND COPY OF applyHouseTiles, INLINE — the same
+        // loop with the door hard-coded to the south wall and the floor to
+        // PATH. It was harmless while there was one house type, and the moment
+        // types existed it went stale: a stilt house saved with a plank floor
+        // reloaded with a beaten path, a longhouse lost its windows, and any
+        // door not on the south wall moved. Two implementations of one thing,
+        // and only one of them got updated. Call the real one.
+        applyHouseTiles(h.x0, h.y0, h.size, HOUSES.find(t => t.id === h.type));
       }
       updateHouseSigns();
     }
@@ -11038,13 +11056,58 @@ function renderRobberPanel(){
 }
 
 // ── Housing System ────────────────────────────────────────────────
+// ── What you can build ──────────────────────────────────────────────────────
+//
+// There used to be exactly one entry here, and `canPlaceHouseAt` hard-coded
+// `map[y][x] !== T.GRASS` — which is why the six cleared plots on the Saltmere
+// beach were unbuildable the moment they existed: they are SAND.
+//
+// So a house type now declares the GROUND it may stand on. Everything else in
+// the panel already derived itself from this list (`HOUSE_H` sizes the panel
+// from `HOUSES.length`, `houseRects()` builds one rect per entry), so adding
+// types was a data change rather than a layout change.
+//
+// ⚠ `id` of the 9x9 must stay 'house_9x9' — saved houses reference it.
+// ⚠ Sizes must stay within 3..15: the world server rejects anything outside
+//    that range in its house_place handler, and a rejected placement is a
+//    desync, not an error message.
+const HOUSE_GROUND_DEFAULT = [T.GRASS];
 const HOUSES = [
+  {
+    id: 'house_7x7',
+    label: '7x7 Crofter\'s Hut',
+    size: 7,
+    cost: { gold: 40, planks: 16, stone: 8 },
+    ground: [T.GRASS, T.SAND],
+    sub: () => `Needs: 40g, 16 planks, 8 stone`
+  },
   {
     id: 'house_9x9',
     label: '9x9 Cozy Cabin',
     size: 9,
     cost: { gold: 100, planks: 30, stone: 20 },
+    ground: [T.GRASS, T.SAND],
     sub: () => `Needs: 100g, 30 planks, 20 stone`
+  },
+  {
+    id: 'house_13x13',
+    label: '13x13 Longhouse',
+    size: 13,
+    cost: { gold: 320, planks: 90, stone: 70 },
+    ground: [T.GRASS, T.SAND],
+    windows: true,          // STAINED_GLASS set into the long walls
+    sub: () => `Needs: 320g, 90 planks, 70 stone`
+  },
+  {
+    // The reason the coast got house plots at all. Stilts let it stand on the
+    // wadeable strip, which is the one thing you cannot build on anywhere else.
+    id: 'house_stilt',
+    label: '9x9 Stilt House',
+    size: 9,
+    cost: { gold: 180, planks: 60, stone: 10 },
+    ground: [T.SAND, T.SHALLOWS, T.DOCK, T.GRASS],
+    floor: 'DOCK',          // planks, not a beaten path — it is over water
+    sub: () => `Needs: 180g, 60 planks, 10 stone  ·  builds over shallows`
   }
 ];
 
@@ -11076,48 +11139,146 @@ function canAffordHouse(cost) {
   return inv.gold >= cost.gold && (inv.planks || 0) >= cost.planks && (inv.stone || 0) >= cost.stone;
 }
 
-function canPlaceHouseAt(tx, ty, size) {
-  // footprint bounds in world units (+ a small margin) — used to reject
-  // placing on top of any player, so nobody gets walled in
+// Why a placement failed, not just that it did.
+//
+// This returned a bare boolean and the caller printed "cannot place here!",
+// which is the least useful thing it could have said: on a beach the reason is
+// the ground, in town it is a buried object, next to your own cabin it is the
+// server's buffer rule. All three look identical to the player, who then moves
+// one tile and tries again.
+//
+// Returns null when placement is fine, or a short reason string.
+function houseBlockReason(tx, ty, size, type) {
+  const allowed = (type && type.ground) || HOUSE_GROUND_DEFAULT;
+  const TNAME = { [T.WATER]:'open water', [T.TREE]:'trees', [T.STONE]:'rock',
+                  [T.WALL]:'a wall', [T.CAVE_WALL]:'rock', [T.CLIFF]:'a cliff',
+                  [T.ORE_IRON]:'an ore vein', [T.SHALLOWS]:'the shallows',
+                  [T.PATH]:'a path', [T.SAND]:'sand', [T.BRIDGE]:'a bridge',
+                  [T.DOCK]:'the pier', [T.STAINED_GLASS]:'a window' };
+
+  // ⚠ MIRRORS THE SERVER'S RULE, INCLUDING THE 1-TILE BUFFER. bravo-room.js
+  // rejects a house that comes within one tile of another, and the client used
+  // to check only the tile type — which happens to prevent overlap (a built
+  // house is WALL/PATH, not GRASS) but NOT adjacency. So building flush against
+  // your own cabin succeeded locally, the server silently dropped it, and the
+  // house existed on one machine only. Same numbers on both sides now.
+  // Guarded because the rest of this file guards it — G.placedHouses is [] in
+  // state.js but several call sites test it for truthiness before iterating,
+  // and a reason string is not worth a throw in the middle of placement.
+  for (const h of (G.placedHouses || [])) {
+    if (tx < h.x0 + h.size + 1 && h.x0 < tx + size + 1 &&
+        ty < h.y0 + h.size + 1 && h.y0 < ty + size + 1)
+      return 'too close to another house (needs a tile of clearance)';
+  }
+
   const wx0 = tx * TILE, wy0 = ty * TILE, wx1 = (tx + size) * TILE, wy1 = (ty + size) * TILE;
   const insideFootprint = (px, py) => px >= wx0 - TILE && px < wx1 + TILE && py >= wy0 - TILE && py < wy1 + TILE;
-  for (const [, st] of net.remotes) if (!st.dead && insideFootprint(st.x, st.y)) return false;
+  for (const [, st] of net.remotes)
+    if (!st.dead && insideFootprint(st.x, st.y)) return 'someone is standing there';
+
   for (let dy = 0; dy < size; dy++) {
     for (let dx = 0; dx < size; dx++) {
-      const x = tx + dx;
-      const y = ty + dy;
-      if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return false;
-      if (map[y][x] !== T.GRASS) return false;
-
-      const cx = x * TILE + TILE/2;
-      const cy = y * TILE + TILE/2;
-      if (placedObjects.some(o => Math.abs(o.x - cx) < TILE/2 && Math.abs(o.y - cy) < TILE/2)) return false;
+      const x = tx + dx, y = ty + dy;
+      if (x < 1 || y < 1 || x >= MAP_W - 1 || y >= MAP_H - 1) return 'off the edge of the world';
+      const t = map[y][x];
+      if (!allowed.includes(t)) return 'cannot build on ' + (TNAME[t] || 'that ground');
+      const cx = x * TILE + TILE/2, cy = y * TILE + TILE/2;
+      if (placedObjects.some(o => Math.abs(o.x - cx) < TILE/2 && Math.abs(o.y - cy) < TILE/2))
+        return 'something is in the way';
     }
   }
-  return true;
+  return null;
+}
+function canPlaceHouseAt(tx, ty, size, type) {
+  return houseBlockReason(tx, ty, size, type) === null;
 }
 
 // lay a house's wall/floor tiles into the map (used by local placement AND
 // houses arriving from the server)
-function applyHouseTiles(x0, y0, size) {
+// Which side the door goes on.
+//
+// It was always the south wall. That is fine in a field and wrong everywhere
+// else: a stilt house on the beach faces the sea to the north-west, so a south
+// door opened onto deeper water, and a hut backed against the cliff ridge
+// opened into rock. Pick the side whose outside tile you can actually stand on,
+// preferring south so nothing changes for existing inland houses.
+function houseDoorSide(x0, y0, size) {
+  const mid = Math.floor(size / 2);
+  const walkable = (x, y) => {
+    if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return false;
+    return BLOCKING[map[y][x]] === false;
+  };
+  const sides = [
+    { side: 'S', dx: mid,      dy: size - 1, ox: x0 + mid,      oy: y0 + size },
+    { side: 'N', dx: mid,      dy: 0,        ox: x0 + mid,      oy: y0 - 1 },
+    { side: 'E', dx: size - 1, dy: mid,      ox: x0 + size,     oy: y0 + mid },
+    { side: 'W', dx: 0,        dy: mid,      ox: x0 - 1,        oy: y0 + mid },
+  ];
+  for (const s of sides) if (walkable(s.ox, s.oy)) return s;
+  return sides[0];                      // nowhere is walkable — keep the old behaviour
+}
+
+function applyHouseTiles(x0, y0, size, type) {
+  const floorTile = (type && type.floor === 'DOCK') ? T.DOCK : T.PATH;
+  const door = houseDoorSide(x0, y0, size);
+  const mid = Math.floor(size / 2);
   for (let dy = 0; dy < size; dy++) for (let dx = 0; dx < size; dx++) {
     const x = x0 + dx, y = y0 + dy;
     const isBorder = (dy === 0 || dy === size - 1 || dx === 0 || dx === size - 1);
-    const isDoor = (dy === size - 1 && dx === Math.floor(size / 2));
+    const isDoor = (dx === door.dx && dy === door.dy);
+    // Windows: a pair set into each long wall, clear of the corners and of the
+    // doorway. STAINED_GLASS is blocking, so this costs no walkability change —
+    // it is the same wall with a different face.
+    const isWindow = !!(type && type.windows) && isBorder && !isDoor &&
+      ((dy === 0 || dy === size - 1) ? (dx === mid - 2 || dx === mid + 2)
+                                     : (dy === mid - 2 || dy === mid + 2));
     if (isBorder && !isDoor) {
-      map[y][x] = T.WALL; origTile[y][x] = T.WALL; playerPlacedWalls[y][x] = true;
+      const t = isWindow ? T.STAINED_GLASS : T.WALL;
+      map[y][x] = t; origTile[y][x] = t; playerPlacedWalls[y][x] = true;
     } else {
-      map[y][x] = T.PATH; origTile[y][x] = T.PATH; playerPlacedWalls[y][x] = false;
+      map[y][x] = floorTile; origTile[y][x] = floorTile; playerPlacedWalls[y][x] = false;
     }
     respawnAt[y][x] = null;
     bakeStaticTile(x, y); minimapUpdateTile(x, y);
   }
+  return door;
 }
 // erase a house (a remote owner demolished it) back to grass
+// What ground a demolished house should leave behind.
+//
+// ⚠ IT USED TO BE T.GRASS, UNCONDITIONALLY. That was invisible while every house
+// stood in a field. Demolish a stilt house standing over the shallows and it
+// left a 9x9 LAWN IN THE MIDDLE OF THE SEA; a beach hut left a grass square on
+// the sand. Same family as the coloured-squares-under-trees bug in HANDOFF: a
+// tile was given a colour that had nothing to do with what surrounds it.
+//
+// Taken from the ring just outside the footprint rather than remembered at build
+// time, because houses arriving from the server were not built by this client
+// and carry no history to remember. Walls, trees and rock are skipped (they are
+// not ground), and so are PATH and DOCK — those are usually the house's own
+// floor or its pier, and restoring to them would just leave a different square.
+function houseGroundRestore(h) {
+  const counts = new Map();
+  const consider = (x, y) => {
+    if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return;
+    const t = map[y][x];
+    if (!GROUND_TILE.has(t)) return;
+    if (t === T.PATH || t === T.DOCK) return;
+    counts.set(t, (counts.get(t) || 0) + 1);
+  };
+  for (let d = -1; d <= h.size; d++) {
+    consider(h.x0 + d, h.y0 - 1); consider(h.x0 + d, h.y0 + h.size);
+    consider(h.x0 - 1, h.y0 + d); consider(h.x0 + h.size, h.y0 + d);
+  }
+  let best = T.GRASS, bestN = -1;
+  for (const [t, n] of counts) if (n > bestN) { best = t; bestN = n; }
+  return best;
+}
 function clearHouseTiles(h) {
+  const ground = houseGroundRestore(h);
   for (let dy = 0; dy < h.size; dy++) for (let dx = 0; dx < h.size; dx++) {
     const x = h.x0 + dx, y = h.y0 + dy;
-    map[y][x] = T.GRASS; origTile[y][x] = T.GRASS; playerPlacedWalls[y][x] = false;
+    map[y][x] = ground; origTile[y][x] = ground; playerPlacedWalls[y][x] = false;
     respawnAt[y][x] = null;
     bakeStaticTile(x, y); minimapUpdateTile(x, y);
   }
@@ -11139,8 +11300,14 @@ function applyServerHouses(list) {
   // truth (freshly migrated ones blink out and return on the round-trip)
   for (const h of local) if (!srvKeys.has(key(h))) clearHouseTiles(h);
   // lay tiles for new-to-us houses
-  for (const h of list) if (!localMap.has(key(h))) applyHouseTiles(h.x0, h.y0, h.size);
+  for (const h of list) if (!localMap.has(key(h)))
+    applyHouseTiles(h.x0, h.y0, h.size, HOUSES.find(t => t.id === h.type));
+  // type and doorSide travel with the house. Dropping them here meant every
+  // server sync silently reverted a stilt house to a cabin and moved its door
+  // back to the south wall, because houseDoorTile falls back to south when
+  // doorSide is absent.
   G.placedHouses = list.map(h => ({ x0: h.x0, y0: h.y0, size: h.size, isPublic: !!h.isPublic,
+    type: h.type, doorSide: h.doorSide,
     friends: h.friends || [], doorOpen: !!h.doorOpen, owner: h.owner || '' }));
   rebuildHouseProps();
 }
@@ -11153,8 +11320,9 @@ function placeHouse(wx, wy) {
   const x0 = tx - offset;
   const y0 = ty - offset;
   
-  if (!canPlaceHouseAt(x0, y0, size)) {
-    addFloater(wx, wy - 12, "cannot place here!");
+  const why = houseBlockReason(x0, y0, size, G.placingHouse);
+  if (why) {
+    addFloater(wx, wy - 12, why);
     snd.hurt();
     return false;
   }
@@ -11164,15 +11332,20 @@ function placeHouse(wx, wy) {
   inv.planks -= cost.planks;
   inv.stone -= cost.stone;
 
-  applyHouseTiles(x0, y0, size);
-  const newHouse = {x0, y0, size, isPublic: false, friends: [], doorOpen: false, owner: playerName()};
+  const door = applyHouseTiles(x0, y0, size, G.placingHouse);
+  // `type` is new; every reader must tolerate its absence, because houses saved
+  // before this release do not have one and neither do houses the server
+  // broadcasts from an older client.
+  const newHouse = {x0, y0, size, type: G.placingHouse.id, doorSide: door.side,
+                    isPublic: false, friends: [], doorOpen: false, owner: playerName()};
   G.placedHouses.push(newHouse);
   if(G.placedHouses.length===1) grantAchiev('house');  // "Homesteader" — first house placed
   netHousePlace(newHouse);   // share it with the world (server assigns ownership)
   rebuildHouseProps();
   
-  player.x = (x0 + Math.floor(size / 2)) * TILE + TILE/2;
-  player.y = (y0 + size) * TILE + TILE/2;
+  // Step out of the door that was actually cut, not the one we used to assume.
+  player.x = door.ox * TILE + TILE/2;
+  player.y = door.oy * TILE + TILE/2;
   
   G.housePlacementMode = false;
   buildHighlight.visible = false;
@@ -11288,10 +11461,38 @@ const houseDoorMeshes = [];   // {pivot, house}
 
 // Tile coords of a house's door (middle of the south wall) + the sign
 // position (in the yard, just south-east of the door so it never blocks).
-function houseDoorTile(h){ return {tx:h.x0+Math.floor(h.size/2), ty:h.y0+h.size-1}; }
+// Where the door is. This used to assume the south wall unconditionally, which
+// was true of every house in the game until a stilt house on the beach wanted to
+// open toward the shore instead of into deeper water.
+//
+// ⚠ `h.doorSide` is absent on every house saved before it existed, and on any
+// the server rebroadcasts from an older client, so the default branch must stay
+// exactly the old south-wall answer.
+function houseDoorTile(h){
+  const mid = Math.floor(h.size/2);
+  switch(h.doorSide){
+    case 'N': return {tx:h.x0+mid,        ty:h.y0};
+    case 'E': return {tx:h.x0+h.size-1,   ty:h.y0+mid};
+    case 'W': return {tx:h.x0,            ty:h.y0+mid};
+    default:  return {tx:h.x0+mid,        ty:h.y0+h.size-1};   // 'S' and legacy
+  }
+}
+// Unit vector pointing OUT of the house through the door — signposts, the exit
+// step and the door swing all want it.
+function houseDoorOut(h){
+  switch(h.doorSide){
+    case 'N': return {dx: 0, dy:-1};
+    case 'E': return {dx: 1, dy: 0};
+    case 'W': return {dx:-1, dy: 0};
+    default:  return {dx: 0, dy: 1};
+  }
+}
 function houseSignPos(h){
   const {tx,ty}=houseDoorTile(h);
-  return { x:(tx+1)*TILE+6, z:(ty+1)*TILE+TILE*0.5 };
+  const o=houseDoorOut(h);
+  // One tile outside the door, offset to the side so it does not stand in the
+  // doorway. The old constant (+1,+1) was that same idea hard-coded for south.
+  return { x:(tx+o.dx+(o.dx?0:1))*TILE+6, z:(ty+o.dy+(o.dy?0:1))*TILE+TILE*0.5 };
 }
 
 function rebuildHouseProps() {
@@ -11315,12 +11516,20 @@ function rebuildHouseProps() {
     scene.add(grp);
     houseSignMeshes.push({grp, plaqueMat, house:h});
 
-    // ── hinged door in the south-wall gap ──
+    // ── hinged door in the doorway gap ──
+    // The slab geometry extends +X from its hinge, which is right for a doorway
+    // in a horizontal (N/S) wall. A doorway in a vertical (E/W) wall runs the
+    // other way, so the whole pivot turns a quarter and the hinge moves to the
+    // north edge instead of the west one.
     const {tx,ty}=houseDoorTile(h);
-    const hingeX = tx*TILE + 3;                 // pivot on the west edge of the doorway
-    const cz     = ty*TILE + TILE/2;
+    const vertical = (h.doorSide === 'E' || h.doorSide === 'W');
     const pivot = new THREE.Group();
-    pivot.position.set(hingeX, 0, cz);
+    if(vertical){
+      pivot.position.set(tx*TILE + TILE/2, 0, ty*TILE + 3);
+      pivot.rotation.y = -Math.PI/2;            // +X swings round to +Z
+    } else {
+      pivot.position.set(tx*TILE + 3, 0, ty*TILE + TILE/2);
+    }
     const slab = new THREE.Mesh(_hgDoorSlab, _hgDoorMat);
     slab.position.set((TILE-6)/2, WALL_H*0.46, 0);   // extends east from the hinge
     slab.castShadow = true;
@@ -12141,7 +12350,9 @@ function renderHousePlacementOverlay() {
     const x0 = tx - offset;
     const y0 = ty - offset;
     
-    const valid = canPlaceHouseAt(x0, y0, size);
+    // Same rule the placement uses, type and all. Without the type the preview
+    // greens a sand tile for a cabin that then refuses to build on it.
+    const valid = canPlaceHouseAt(x0, y0, size, G.placingHouse);
     const cx = (x0 + size / 2) * TILE;
     const cy = (y0 + size / 2) * TILE;
     

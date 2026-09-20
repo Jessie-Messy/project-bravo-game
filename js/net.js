@@ -207,7 +207,12 @@ export function netTradeCancel() { if (net.status==='online'&&net.room) net.room
 // Shared houses: place / update / remove through the server (owner-checked there)
 export function netHousePlace(h) {
   if (net.status === 'online' && net.room)
-    net.room.send('house_place', { x0: h.x0, y0: h.y0, size: h.size, isPublic: !!h.isPublic });
+    // type and doorSide travel too. Without them the server stores a house with
+    // no type, broadcasts it back, and every client rebuilds a stilt house as a
+    // plain cabin with its door moved to the south wall — the client-side
+    // fallbacks are all "behave like the old single house type".
+    net.room.send('house_place', { x0: h.x0, y0: h.y0, size: h.size,
+                                   isPublic: !!h.isPublic, type: h.type, doorSide: h.doorSide });
 }
 export function netHouseUpdate(idx, fields) {
   if (net.status === 'online' && net.room)

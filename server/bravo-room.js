@@ -259,7 +259,13 @@ class BravoRoom extends Room {
           return;
         }
       }
-      this.houses.push({ x0, y0, size, isPublic: !!m.isPublic, friends: [], doorOpen: false, owner: p.name });
+      // Both are cosmetic and client-chosen, so they are bounded rather than
+      // trusted: an unknown type falls back to the default house on every
+      // client, and an unknown side falls back to the south wall.
+      const type = (typeof m.type === 'string') ? m.type.slice(0, 24) : undefined;
+      const doorSide = (m.doorSide === 'N' || m.doorSide === 'E' || m.doorSide === 'W') ? m.doorSide : 'S';
+      this.houses.push({ x0, y0, size, type, doorSide,
+                         isPublic: !!m.isPublic, friends: [], doorOpen: false, owner: p.name });
       this.saveHouses(); this.broadcastHouses();
       console.log(`[bravo] house placed by ${p.name} at ${x0},${y0} (${size})`);
     });
