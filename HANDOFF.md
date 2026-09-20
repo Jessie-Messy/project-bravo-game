@@ -13,10 +13,77 @@ handoff is invisible to the next session and causes collisions.
   clone, and don't commit it.
 - Run locally: `start_game.bat` (serves on http://localhost:5173, opens `medieval_prototype.html`).
 - Main game code is one big module: `js/game3d.js`. Shared state: `js/state.js`. Tunables: `js/constants.js`.
-- ⚠ **Never commit the deploy `.bat` helpers** (`VPS_GIT_PULL.bat`,
-  `VPS_SETUP_AND_DEPLOY.bat`, `COMMIT_AND_DEPLOY.bat`, `DEPLOY.bat`) — two of them
-  carry the VPS password in plaintext. They are gitignored as of 2026-08-26 and the
-  password has **never** been in git history (verified across all refs).
+- ⚠ **Never commit ANY deploy `.bat` helper.** All six — `VPS_GIT_PULL.bat`,
+  `VPS_SETUP_AND_DEPLOY.bat`, `COMMIT_AND_DEPLOY.bat`, `DEPLOY.bat`, and as of
+  2026-09-19 also **`deploy_to_vps.bat`** and **`deploy_server_to_vps.bat`** — are
+  gitignored. Two carry the VPS password in plaintext (that password has **never** been
+  in git history, verified across all refs); the other four carry the **origin IP and
+  SSH user**, and **this repo is public**. The last two were deleted from the remote on
+  2026-09-12 as part of the response to the origin-exposure incident; a branch cut
+  before that date will silently re-add them. **`git fetch` before you branch, and read
+  `git status` before you `git add -A`.**
+
+### Stopping point — 2026-09-19 (Phase 0: safety baseline)
+
+**~3.3k lines of source and 12 new modules were uncommitted, on one disk only.** The
+last local commit was 2026-08-26 (v0.7.x era) but `build-info.js` read **v0.12.5** and
+the VPS had been serving v0.12.5 since 2026-09-11. Everything between those two points
+— mobile panel layout, the character-select rebuild, `settings.js`, the whole
+procedural tree system, `humanoid.js`, `fire.js`, `camera-modes.js`, `loading.js`,
+`spider-gait.js`, and the `tools/` asset pipeline — had no backup anywhere. Now
+committed as `1610624`, tag `baseline-v0.12.5`, pushed to `origin/master`.
+
+**Local matched the VPS exactly.** Verified file-by-file before committing, not
+assumed: the deployed client differs from `js/` ONLY by `build.mjs`'s documented
+patches (vendored three.js / Draco / KTX2 import paths; Orion identity in `net.js`).
+All 41 GLBs are md5-identical to the deployed set. 20 of 27 modules are byte-identical.
+Nothing on the server was newer than this tree — so no work was lost in either
+direction.
+
+#### ⚠⚠ THREE THINGS THIS TURNED UP. Read these before any deploy.
+
+**1. `origin/master` was AHEAD of local, and the two commits it had were security
+deletions.** On 2026-09-12 `deploy_to_vps.bat` and `deploy_server_to_vps.bat` were
+deleted from the remote (`cc03caf`, `8cd0f0f`) — four days after the origin had to be
+locked to Cloudflare ranges because 82% of traffic was bypassing the CDN and hitting it
+directly. **This repo is public** (`"visibility": "public"`), and both scripts carry
+the VPS origin IP and SSH user. A branch cut from `bf4c4fe` — which is what this
+session started on — does not contain those deletions, so committing the working tree
+and pushing *resurrects both files and republishes the origin IP*. That very nearly
+happened here.
+  - **Both scripts are now in `.gitignore`.** They stay on disk and keep working; they
+    just never get tracked again. **Do not `git add -A` and assume it is safe — check
+    `git status` for them, and always `git fetch` before branching.**
+  - The IP is still in the history of `9dca81c` and `cc03caf^`. Scrubbing that is a
+    force-push over published history and is **Jessie's call, not a thing to do
+    unprompted**. Rotating the origin IP would be the more complete fix.
+
+**2. `deploy_server_to_vps.bat` would have broken live multiplayer auth.** It `scp`s
+`server/` **raw** — there is no patch step, unlike the client. But the repo's
+`bravo-room.js` was the **pre-Orion-auth** version: `maxClients = 16`, first-come
+localStorage name claim, no `verifyGameTicket`. Live runs signed-ticket auth at
+`maxClients = 120`. Running that script would have replaced signed-ticket auth with a
+version any browser can spoof and cut capacity 120 → 16, with no error anywhere. Same
+failure class as the ticket-secret encoding bug that once rejected 100% of joins.
+  - Fixed: the repo now holds the copies the live server actually runs
+    (`server/bravo-room.js`, plus `server/orion-auth.js`, which was missing from the
+    repo entirely). `orion-auth.js` reads its key from `ORION_SECRET` /
+    `ORION_SECRET_FILE`, so no secret is committed.
+  - ⚠ `orion-auth.js` decodes `ORION_SECRET` as **utf8** but `ORION_SECRET_FILE` as
+    **hex**. Production uses the FILE path and works. If anyone ever switches to the
+    env var, the mismatch rejects every join — that has already cost one outage.
+
+**3. Local-only deploy-script fixes (they are gitignored, so this note IS the record):**
+  - `deploy_to_vps.bat` pointed at
+    `Desktop\ORION_GUILD_WEBSITE_WORKING_FOLDER\orion-platform`, which no longer
+    exists — the platform repo moved under **`Desktop\Server Migration\`**. The client
+    deploy aborted at step 2 as written. Path corrected.
+  - `deploy_server_to_vps.bat` now (a) includes `orion-auth.js` in the `scp` list, since
+    the room `require`s it at startup and the server would crash on boot without it, and
+    (b) refuses to deploy a `bravo-room.js` that does not call `verifyGameTicket`, so
+    fault 2 above becomes a loud abort instead of a silent auth downgrade.
+
+---
 
 ### Stopping point — 2026-08-26
 Achievement system / boss HP bar / NPC minimap dots committed and pushed; client and
