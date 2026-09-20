@@ -38,7 +38,7 @@ import { prefs, setPref, resetPrefs, BIND_DEFS, binds, bindOf,
 import { CHAMP_ALTARS, DUNGEON_PORTAL_A, DUNGEON_PORTAL_B,
   DUNGEON_ENTRY_TILE, DUNGEON_CITY_EXIT,
   DUNGEON_FLOORS, DUNGEON_STAIRS, DUNGEON_BOSS_SPAWNS, WORLD_CHESTS, floorAt,
-  COAST_VILLAGE, COAST_HOUSE_PLOTS, COAST_DOCK_TILES } from './world.js';
+  COAST_VILLAGE, COAST_HOUSE_PLOTS, COAST_DOCK_TILES, FERRY_MAINLAND } from './world.js';
 import { updateEnemy, champSpawnTick, damageEnemy, damagePlayer,
   spawnRandomEnemy, boxBlocked, populateWorld, populateDungeon, hooks,
   makeEnemy, ENEMY_CFG, extraBlocking, spawnDrops, BOSS_ABILITIES,
@@ -3881,6 +3881,15 @@ const RIG_STYLES = {
   bandit:   { skin:0xb07a4e,
               hood:0x3a2f28, maskScarf:0x2a221c, sash:0x6a2a24, belt:0x3a2a1c },
 
+  // The two ferrymen. Weathered and heavy-shouldered, in an oilskin mantle
+  // rather than a cloak — a cloak falls past the knee and reads as travel, a
+  // mantle sits on the shoulders and reads as standing in weather all day.
+  // Both ends of the crossing wear the same thing on purpose: it is how you
+  // recognise the far one as the same trade when you arrive.
+  ferryman: { build:{bw:17,bh:48,bd:12,hr:4.3}, skin:0xb07a4e,
+              cap:0x3a4a52, mantle:0x46545c, belt:0x4a3524, collar:0x2e3a40,
+              beard:0x6a5a4a, toolLoop:0x5a4a3a },
+
   // The fletcher's stand-in. He has a GLB, but it only loads on hardware that
   // can skin — this is what the rest see, and a bowyer with no quiver is just a
   // man in a hat.
@@ -5730,6 +5739,54 @@ const FLETCHER = { x:313*48+24, y:354*48+24, r:13 };
 // exist — his corner of the market was simply empty, and for the first second
 // or two of every load on every device it was empty for everyone.
 const _fletcherRig = spawnNPC(0x4a5c34, FLETCHER.x, FLETCHER.y, 'bow', 'fletcher');
+
+// ── The Saltmere crossing ───────────────────────────────────────────────────
+// A ferryman at each end. This is the ONLY way into the coast in normal play —
+// the region is sealed by CAVE_WALL on every side and the band separator, so
+// without these two the whole place is unreachable except from the console.
+//
+// The landing points are pulled one tile SHOREWARD of each pier head. Standing
+// a figure on the last plank looks like he is about to step off it, and it also
+// puts him where the player wants to stand when they arrive.
+const FERRY_MAIN = { x: FERRY_MAINLAND.x*TILE + TILE/2, y: (FERRY_MAINLAND.y-1)*TILE + TILE/2 };
+const FERRY_COAST = { x: COAST_LANDING.x*TILE + TILE/2, y: (COAST_LANDING.y+1)*TILE + TILE/2 };
+const _ferryMainRig  = spawnNPC(0x46545c, FERRY_MAIN.x,  FERRY_MAIN.y,  null, 'ferryman');
+const _ferryCoastRig = spawnNPC(0x46545c, FERRY_COAST.x, FERRY_COAST.y, null, 'ferryman');
+// Face each other's water rather than south, so both read as looking out to sea.
+_ferryMainRig.rotation.y = 0; _ferryCoastRig.rotation.y = 0;
+
+const FERRY_FARE = 0;   // free for now: the coast has nothing to sell yet, and a
+                        // toll on an empty region is a wall, not an economy.
+function ferryNearby(){
+  if(Math.hypot(FERRY_MAIN.x - player.x,  FERRY_MAIN.y - player.y)  < TILE*2.5) return 'coast';
+  if(Math.hypot(FERRY_COAST.x - player.x, FERRY_COAST.y - player.y) < TILE*2.5) return 'main';
+  return null;
+}
+// Sail. Deliberately a hard cut rather than an animated crossing: the two ends
+// are 14 000 world units apart with sealed rock between them, so there is no
+// route to animate along, and a fake boat ride would be a loading screen with a
+// boat on it.
+function rideFerry(to){
+  if(player.dead || player.ghost){ addFloater(player.x, player.y-30, 'not in this state'); return; }
+  if(FERRY_FARE > 0 && (inv.gold||0) < FERRY_FARE){
+    addFloater(player.x, player.y-30, 'the crossing costs ' + FERRY_FARE + 'g'); return;
+  }
+  if(FERRY_FARE > 0) inv.gold -= FERRY_FARE;
+  if(to === 'coast'){
+    ensureCoastSurface();                       // pay for the ground before arriving
+    player.x = FERRY_COAST.x; player.y = FERRY_COAST.y + TILE;
+    addFloater(player.x, player.y-40, '⛵ Saltmere');
+  } else {
+    player.x = FERRY_MAIN.x; player.y = FERRY_MAIN.y + TILE;
+    addFloater(player.x, player.y-40, '⛵ the mainland');
+  }
+  G.portalCooldown = 1.2;                       // same guard the dungeon portals use
+  // No sound. snd.cave() was the obvious candidate and it is the wrong cue —
+  // it is the enclosed-space echo the game plays walking into a cave, and
+  // playing it on an open beach tells the player something false about where
+  // they are. Better nothing than a wrong cue; a proper gull-and-water sting
+  // belongs with the rest of the coast audio when that exists.
+}
 
 // ── GLB town NPCs (banker, smith, fletcher) ───────────────────────
 // Static skinned character models — no animation, facing south (toward
@@ -9319,6 +9376,8 @@ function drawInteractPrompts(){
     add(MAGE.x,MAGE.y,'[E] Mage Shop');
     add(FARRIER.x,FARRIER.y,'[E] Farrier');
     add(FLETCHER.x,FLETCHER.y,'[E] Fletcher');
+    add(FERRY_MAIN.x,FERRY_MAIN.y,'[E] Ferry to Saltmere');
+    add(FERRY_COAST.x,FERRY_COAST.y,'[E] Ferry to the mainland');
     add(ANTIQUARIAN.x,ANTIQUARIAN.y,'[E] Antiquarian');
     add(CRYPTOLOGIST.x,CRYPTOLOGIST.y,'[E] Cryptologist');
     add(CURATOR.x,CURATOR.y,'[E] Museum Curator');
@@ -9940,6 +9999,7 @@ window.addEventListener('keydown',e=>{
             used=true;break;
           }
         }
+        const _ferryDir = ferryNearby();
         if(!used&&Math.hypot(BANKER.x-player.x,BANKER.y-player.y)<TILE*2.5){closeShopPanels();G.bankOpen=true;}
         else if(!used&&Math.hypot(MERCHANT.x-player.x,MERCHANT.y-player.y)<TILE*2.5){closeShopPanels();G.tradeOpen=true;}
         else if(!used&&Math.hypot(BLACKSMITH.x-player.x,BLACKSMITH.y-player.y)<TILE*2.5){closeShopPanels();G.smithOpen=true;}
@@ -9951,6 +10011,7 @@ window.addEventListener('keydown',e=>{
         else if(!used&&Math.hypot(GRAVE_ROBBER.x-player.x,GRAVE_ROBBER.y-player.y)<TILE*2.5){closeShopPanels();G.robberOpen=true;}
         else if(!used&&nearbyWorldChest()){closeShopPanels();G.activeWorldChest=nearbyWorldChest();G.worldChestOpen=true;snd.pickup();}
         else if(!used&&Math.hypot(CONTRACT_BOARD.x-player.x,CONTRACT_BOARD.y-player.y)<TILE*2.5){closeShopPanels();ensureContracts();G.contractsOpen=true;}
+        else if(!used&&_ferryDir){closeShopPanels();rideFerry(_ferryDir);}
         else if(!used&&Math.hypot(FLETCHER.x-player.x,FLETCHER.y-player.y)<TILE*2.5){addFloater(FLETCHER.x,FLETCHER.y-30,"'Arrows? Craft 'em from wood.'");}
       }
     }

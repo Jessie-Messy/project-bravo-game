@@ -1,7 +1,7 @@
 // world.js — map generation, resource system, NPC spawn data, champ altars
 import { TILE, MAP_W, MAP_H, T, TREE_HP, STONE_HP, IRON_HP, RESPAWN_TREE, RESPAWN_STONE, RESPAWN_IRON,
   DUNGEON_X0, DUNGEON_Y0, DUNGEON_W, DUNGEON_H,
-  COAST_X0, COAST_Y0, COAST_W, COAST_H, COAST_LANDING,
+  COAST_X0, COAST_Y0, COAST_W, COAST_H, COAST_LANDING, COAST_MAINLAND_DOCK,
 } from './constants.js';
 import { map, resourceHp, respawnAt, origTile, playerPlacedWalls, enemies } from './state.js';
 
@@ -549,6 +549,35 @@ for (let y = 0; y < MAP_H; y++) {
     DUNGEON_BOSS_SPAWNS.push({floor:f.n, boss:f.boss, x:g.arena.x, y:g.arena.y});
   }
 
+})();
+
+// The mainland ferry jetty -------------------------------------------
+// The Saltmere end of the crossing is the long pier the coast generator lays
+// down; this is the other end, on the south bank of the y=360 river.
+//
+// ⚠ BUILT FROM DOCK TILES ALL THE WAY TO THE BANK, INCLUDING THE APPROACH, AND
+// THAT IS DELIBERATE. game3d.js widens every river by 3 tiles AFTER this module
+// has run, and the widener floods GRASS and PATH. A jetty with a path approach
+// would have had its approach turn into river, leaving the ferryman standing on
+// an island. DOCK is not in the floodable set, so the whole structure survives.
+export const FERRY_MAINLAND = { x: COAST_MAINLAND_DOCK.x, y: COAST_MAINLAND_DOCK.y };
+(function buildMainlandJetty(){
+  const jx = COAST_MAINLAND_DOCK.x;
+  // Run north from the standing point toward the river; the widened bank ends
+  // up around y 364, so this reaches the water once the widener has run.
+  for (let jy = COAST_MAINLAND_DOCK.y; jy >= 364; jy--) {
+    if (jy < 0 || jy >= MAP_H) continue;
+    const t = map[jy][jx];
+    if (t === T.WALL || t === T.CAVE_WALL) break;
+    map[jy][jx] = T.DOCK;
+    if (jx + 1 < MAP_W && map[jy][jx+1] !== T.WALL) map[jy][jx+1] = T.DOCK;   // two planks wide
+  }
+  // A little cleared apron on the land side so you can walk onto it.
+  for (let dy = 0; dy <= 2; dy++) for (let dx = -2; dx <= 3; dx++) {
+    const x = jx + dx, y = COAST_MAINLAND_DOCK.y + dy;
+    if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) continue;
+    if (map[y][x] === T.TREE || map[y][x] === T.STONE) map[y][x] = T.PATH;
+  }
 })();
 
 // The Saltmere coast ------------------------------------------------
