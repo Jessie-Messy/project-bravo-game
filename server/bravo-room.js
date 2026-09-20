@@ -42,6 +42,64 @@ function inCity(x, y) {
   return tx >= CITY.x1 && tx <= CITY.x2 && ty >= CITY.y1 && ty <= CITY.y2;
 }
 
+// ── Region rules ────────────────────────────────────────────────────────────
+//
+// Read from world-data.json, which build-world-data.mjs generates out of
+// js/constants.js and js/world.js. NOT retyped here — see the MAP_H note above
+// for what happens when a number lives in two places.
+//
+//   MAINLAND  safe zones throughout; you may attack ONLY an already-`bad`
+//             player, and a `bad` player may not swing first — they may only
+//             answer somebody who has just hit them.
+//   COAST     open PvP outside Saltmere village. Kills here earn notoriety.
+//
+// Notoriety is EARNED on the coast and PAID FOR on the mainland. The server is
+// the only thing that decides any of this; the client merely predicts it so it
+// can grey out a prompt.
+const R = (world && world.rules) || {};
+const COAST_Y0        = R.coastY0        !== undefined ? R.coastY0        : 560;
+const NOTO_BAD_AT     = R.notoBadAt      !== undefined ? R.notoBadAt      : 2;
+const NOTO_DECAY_MS   = R.notoDecayMs    !== undefined ? R.notoDecayMs    : 30 * 60 * 1000;
+const COMBAT_WINDOW_MS= R.combatWindowMs !== undefined ? R.combatWindowMs : 30 * 1000;
+const COAST_SAFE      = R.coastSafeZone  || { x1:0, y1:0, x2:0, y2:0 };
+
+const onCoast = y => (y / TILE) >= COAST_Y0;
+function inCoastVillage(x, y) {
+  const tx = x / TILE, ty = y / TILE;
+  return tx >= COAST_SAFE.x1 && tx <= COAST_SAFE.x2 && ty >= COAST_SAFE.y1 && ty <= COAST_SAFE.y2;
+}
+// The mainland is safe ground wherever the old city rule said so; the coast is
+// safe ONLY inside the village.
+function inSafeZone(x, y) {
+  return onCoast(y) ? inCoastVillage(x, y) : inCity(x, y);
+}
+const isBad = p => (p.noto | 0) >= NOTO_BAD_AT;
+
+// Why `atk` may not hit `tgt` right now — or null when the swing is legal.
+// One function, one place, used by both the pvp handler and the guard call.
+function attackBlockedReason(atk, tgt, tgtSid, amt, now) {
+  if (atk.dead || atk.ghost || tgt.dead || tgt.ghost) return 'dead';
+  if (inSafeZone(atk.x, atk.y) || inSafeZone(tgt.x, tgt.y)) return 'safe-zone';
+  // Cross-region swings are not a thing: the two bands are 14k units apart with
+  // sealed rock between, so a hit spanning them is a spoofed position.
+  if (onCoast(atk.y) !== onCoast(tgt.y)) return 'cross-region';
+
+  if (onCoast(atk.y)) return null;             // coast: open PvP outside the village
+
+  // ── mainland ──
+  if (!isBad(tgt)) return 'target-not-outlaw';
+  if (isBad(atk)) {
+    // An outlaw cannot start a fight here. They may answer anyone who has hit
+    // them inside the combat window — anyone, not just the last one, or a gang
+    // could lock them out by taking turns.
+    const rec = amt && amt.recentAttackers;
+    if (!rec) return 'outlaw-cannot-initiate';
+    const at = rec.get(tgtSid);
+    if (!at || now - at > COMBAT_WINDOW_MS) return 'outlaw-cannot-initiate';
+  }
+  return null;
+}
+
 class PlayerState extends Schema {}
 defineTypes(PlayerState, {
   name:    'string',
@@ -53,6 +111,10 @@ defineTypes(PlayerState, {
   maxHp:   'number',
   kills:   'number',
   deaths:  'number',
+  // Notoriety. Broadcast because every client needs it: it decides who may be
+  // attacked, whether guards will answer a call, and what colour the nameplate
+  // is. Derived entirely on the server.
+  noto:    'number',
   dead:    'boolean',
   ghost:   'boolean',
   onHorse: 'boolean',
@@ -129,6 +191,20 @@ class BravoRoom extends Room {
           const killer = this.state.players.get(mt.lastHitBy);
           if (killer) {
             killer.kills++;
+            // ⚠ NOTORIETY IS EARNED ON THE COAST ONLY. A mainland kill can only
+            // ever be a lawful one — the rules do not permit any other kind —
+            // so crediting notoriety for it would punish the person enforcing
+            // them. The victim's position decides, not the killer's: they are
+            // in the same region anyway (cross-region swings are refused) and
+            // the victim is the one who just died there.
+            if (onCoast(p.y)) {
+              killer.noto = (killer.noto | 0) + 1;
+              const kmt = this.meta.get(mt.lastHitBy);
+              if (kmt) kmt.notoAt = now;
+              if (killer.noto === NOTO_BAD_AT)
+                this.broadcast('feed', { text: `☠ ${killer.name} is now an outlaw.` });
+              console.log(`[bravo] noto ${killer.name} -> ${killer.noto}`);
+            }
             this.broadcast('feed', { text: `⚔ ${killer.name} slew ${p.name}!` });
             console.log(`[bravo] PVP KILL: ${killer.name} -> ${p.name}`);
           }
@@ -181,14 +257,28 @@ class BravoRoom extends Room {
       const cfg = PVP[m.w];
       if (!atk || !tgt || !mt || !tmt || !cfg) return;
       if ('' + m.t === client.sessionId) return;
-      if (atk.dead || atk.ghost || tgt.dead || tgt.ghost) return;
-      if (inCity(atk.x, atk.y) || inCity(tgt.x, tgt.y)) return;   // town = safe
       const now = Date.now();
+      // Region rules decide legality. The client greys the prompt out, but the
+      // client is not trusted — this is the only check that counts.
+      const blocked = attackBlockedReason(atk, tgt, '' + m.t, mt, now);
+      if (blocked) {
+        // Tell the attacker why, so a refused swing reads as a rule rather than
+        // as the game eating an input. Only to them: broadcasting it would leak
+        // everyone's position and state to everyone.
+        client.send('pvp_blocked', { reason: blocked, t: '' + m.t });
+        return;
+      }
       if (now - (mt.lastAtkAt || 0) < cfg.cooldownMs) return;
       if (Math.hypot(tgt.x - atk.x, tgt.y - atk.y) > cfg.range) return;
       mt.lastAtkAt = now;
       tmt.lastHitBy = client.sessionId;
       tmt.lastHitAt = now;
+      // Remember who hit them, so an outlaw can answer back on the mainland.
+      if (!tmt.recentAttackers) tmt.recentAttackers = new Map();
+      tmt.recentAttackers.set(client.sessionId, now);
+      // Prune on write — this only ever holds people from the last window.
+      for (const [sid, at] of tmt.recentAttackers)
+        if (now - at > COMBAT_WINDOW_MS) tmt.recentAttackers.delete(sid);
       // integrity accumulator — only count hits the victim's iframes wouldn't eat
       if (now - (tmt.lastCountedHit || 0) >= 800) {
         tmt.lastCountedHit = now;
@@ -234,6 +324,55 @@ class BravoRoom extends Room {
     this.worldTimeTimer = this.clock.setInterval(() => {
       this.broadcast('worldtime', { t: Date.now() / 1000 });
     }, 60000);
+
+    // ── Notoriety decay ──
+    // Without it an outlaw is hunted forever with no way back, which turns a
+    // punishment into a dead character. One point falls off per NOTO_DECAY_MS of
+    // CONNECTED time — connected, not wall-clock, so it cannot be waited out by
+    // logging off and coming back tomorrow. Set NOTO_DECAY_MS to 0 in
+    // constants.js to make notoriety permanent.
+    if (NOTO_DECAY_MS > 0) {
+      this.notoTimer = this.clock.setInterval(() => {
+        const now = Date.now();
+        this.state.players.forEach((p, sid) => {
+          if ((p.noto | 0) <= 0) return;
+          const mt = this.meta.get(sid);
+          if (!mt) return;
+          if (now - (mt.notoAt || now) < NOTO_DECAY_MS) return;
+          mt.notoAt = now;
+          const was = p.noto | 0;
+          p.noto = was - 1;
+          if (was === NOTO_BAD_AT && p.noto < NOTO_BAD_AT)
+            this.broadcast('feed', { text: `${p.name} is no longer an outlaw.` });
+          console.log(`[bravo] noto decay ${p.name} ${was} -> ${p.noto}`);
+        });
+      }, 60000);
+    }
+
+    // ── Calling the guards on an outlaw ──
+    // The client already musters guards against MOBS by itself. This is the
+    // player case, and it is refereed here for the same reason the swing is: the
+    // question "is that person lawfully attackable" must have exactly one
+    // answer, and the client is not it.
+    this.onMessage('call_guards', (client, m) => {
+      const caller = this.state.players.get(client.sessionId);
+      const mt = this.meta.get(client.sessionId);
+      if (!caller || !mt || typeof m !== 'object' || m === null) return;
+      const now = Date.now();
+      if (now - (mt.lastGuardCallAt || 0) < 15000) return;      // rate limit
+      const tgt = this.state.players.get('' + m.t);
+      if (!tgt) return;
+      if (!isBad(tgt)) { client.send('guards_refused', { reason: 'not-an-outlaw' }); return; }
+      if (Math.hypot(tgt.x - caller.x, tgt.y - caller.y) > TILE * 14) {
+        client.send('guards_refused', { reason: 'too-far' }); return;
+      }
+      mt.lastGuardCallAt = now;
+      // Everyone nearby sees them arrive, so a hunt is a public event rather
+      // than a private one. The outlaw is told too — being hunted should be
+      // legible to the person it is happening to.
+      this.broadcast('guards_called', { t: '' + m.t, by: caller.name, x: tgt.x, y: tgt.y });
+      console.log(`[bravo] guards called on ${tgt.name} by ${caller.name}`);
+    });
 
     // ── Shared houses ──
     // The server owns the house list (persisted to data/houses.json) and
@@ -510,6 +649,7 @@ class BravoRoom extends Room {
     p.y = saved ? saved.y : 360 * TILE + 24;
     p.kills = saved ? saved.kills : 0;
     p.deaths = saved ? saved.deaths : 0;
+    p.noto   = saved && saved.noto ? saved.noto | 0 : 0;
     p.dir = Math.PI; p.weapon = 'sword'; p.hp = 100; p.maxHp = 100;
     this.state.players.set(client.sessionId, p);
     const blob = storage.loadBlob(name);   // server-side save (source of truth online)
@@ -524,6 +664,7 @@ class BravoRoom extends Room {
     this.meta.set(client.sessionId, {
       lastMoveAt: Date.now(), lastTpAt: Date.now(),   // join placement counts as a tp
       lastAtkAt: 0, lastChatAt: 0, lastHitBy: null, lastHitAt: 0, speedFlags: 0,
+      notoAt: Date.now(), recentAttackers: new Map(),
       pvpTaken: 0, lastCountedHit: 0, strikes: 0, devTp: 0,
     });
     console.log(`[bravo] + ${name} (${client.sessionId}) — ${this.state.players.size} online`);

@@ -25,8 +25,10 @@ globalThis.document = {
 };
 
 const { map, HEALER, WORLD_HEALERS, customTileDefs } = await import(pathToUrl('js/state.js'));
-const { T, BLOCKING, MAP_W, MAP_H, CITY } = await import(pathToUrl('js/constants.js'));
-const { WOLF_SPAWNS, BANDIT_SPAWNS } = await import(pathToUrl('js/world.js'));
+const { T, BLOCKING, MAP_W, MAP_H, CITY,
+        COAST_Y0, NOTO_BAD_AT, NOTO_DECAY_MS, COMBAT_WINDOW_MS,
+      } = await import(pathToUrl('js/constants.js'));
+const { WOLF_SPAWNS, BANDIT_SPAWNS, COAST_SAFE_ZONE } = await import(pathToUrl('js/world.js'));
 
 function pathToUrl(p) { return 'file:///' + path.join(root, p).replace(/\\/g, '/'); }
 
@@ -61,7 +63,22 @@ const out = {
   portals,
   healers: [[HEALER.x, HEALER.y]].concat(WORLD_HEALERS.map(h => [h.x, h.y])),
   city: CITY,
+  // ── Region rules, copied straight out of js/constants.js ──
+  // The server reads these from here rather than retyping them, for the same
+  // reason it stopped retyping MAP_H: two sources for one number means the
+  // second goes stale and the disagreement is silent. COAST_SAFE_ZONE comes from
+  // world.js because only the generator knows where the village ended up.
+  rules: {
+    coastY0: COAST_Y0,
+    notoBadAt: NOTO_BAD_AT,
+    notoDecayMs: NOTO_DECAY_MS,
+    combatWindowMs: COMBAT_WINDOW_MS,
+    coastSafeZone: { ...COAST_SAFE_ZONE },
+  },
 };
 writeFileSync(path.join(here, 'world-data.json'), JSON.stringify(out));
 console.log('wrote server/world-data.json —',
   `${portals.length} portals, ${out.wolfSpawns.length} wolf + ${out.banditSpawns.length} bandit spawns`);
+console.log('  rules: coast from y' + out.rules.coastY0 +
+  ', bad at ' + out.rules.notoBadAt + ' kills, safe zone ' +
+  JSON.stringify(out.rules.coastSafeZone));

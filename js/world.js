@@ -557,7 +557,38 @@ for (let y = 0; y < MAP_H; y++) {
 // nothing here can be a literal without going stale the moment the coast is
 // regenerated.
 export const COAST_MOBS = [];      // [tx, ty, type]
+// Saltmere's safe ground — the ONLY safe zone on the coast. Filled by
+// generateCoast from the village it actually placed, in TILE coordinates, and
+// exported into world-data.json so the server enforces the same rectangle the
+// client draws.
+export const COAST_SAFE_ZONE = { x1: 0, y1: 0, x2: 0, y2: 0 };
+
+// ── The Saltmere gate ───────────────────────────────────────────────
+// A standing arch in Lunar City that opens onto the coast, and its twin in
+// Saltmere village. The ferry is the scenic route; this is the one you use when
+// you already know where you are going.
+//
+// Keyed by "tx,ty" and checked BEFORE the dungeon branch in the TELEPORT
+// handler — a bare TELEPORT tile in the city would otherwise drop you into the
+// dungeon, because that branch only asks whether you are currently underground.
+export const COAST_PORTALS = {};
+export const CITY_COAST_GATE = { x: 288, y: 384 };
 export const COAST_NPCS = [];      // { id, x, y, style, prop, label }
+
+// The Saltmere gate, city end ----------------------------------------
+// Inside the outer wall, in the open south-west of the courtyard, clear of the
+// inner keep. A small paved plaza so the arch is obviously a thing rather than
+// a tile that happens to be a different colour.
+(function buildCityGate(){
+  const g = CITY_COAST_GATE;
+  for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+    const x = g.x + dx, y = g.y + dy;
+    if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) continue;
+    if (map[y][x] === T.WALL || map[y][x] === T.STAINED_GLASS) continue;   // never carve the city wall
+    map[y][x] = T.PATH;
+  }
+  map[g.y][g.x] = T.TELEPORT;
+})();
 
 // The mainland ferry jetty -------------------------------------------
 // The Saltmere end of the crossing is the long pier the coast generator lays
@@ -752,6 +783,30 @@ export const COAST_DOCK_TILES  = [];   // pier tiles, for the boat and for props
   // The declared landing must BE the pier head. If the generator ever drifts,
   // this is the line that disagrees first.
   COAST_LANDING.x = landing.x; COAST_LANDING.y = landing.y;
+
+  // The village and one tile of apron around it is the coast's safe ground.
+  // Derived from the placed village rather than written down, so it cannot drift
+  // away from the huts the way the village itself drifted from the shoreline.
+  COAST_SAFE_ZONE.x1 = V.x - 2;          COAST_SAFE_ZONE.y1 = V.y - 2;
+  COAST_SAFE_ZONE.x2 = V.x + V.w + 2;    COAST_SAFE_ZONE.y2 = V.y + V.h + 2;
+
+  // ── The Saltmere gate, village end ───────────────────────────────
+  // On the spine, at the inland end of the village so it does not crowd the
+  // piers. Both ends are registered together so they can never point at
+  // something that was never built.
+  {
+    const gx = vx + V.w - 3, gy = vy + 7;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const c = at(gx + dx, gy + dy);
+      if (c === T.TREE || c === T.STONE || c === T.CLIFF) put(gx + dx, gy + dy, T.PATH);
+    }
+    put(gx, gy, T.TELEPORT);
+    const cityG = CITY_COAST_GATE;
+    // village gate -> city, and city gate -> village. Arrival tiles are one
+    // step clear of the arch so you do not land on it and bounce straight back.
+    COAST_PORTALS[(X0 + gx) + ',' + (Y0 + gy)] = { sx: cityG.x, sy: cityG.y + 2, to: 'mainland' };
+    COAST_PORTALS[cityG.x + ',' + cityG.y]     = { sx: X0 + gx, sy: Y0 + gy + 2, to: 'coast' };
+  }
 
   // ── Who and what lives here ──────────────────────────────────────
   // Positions are derived from the village the generator just placed, so they

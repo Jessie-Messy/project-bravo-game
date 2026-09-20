@@ -13,6 +13,9 @@ export const net = {
   chatLog: [],          // [{name,text,t}] last 50
   onChat: null,         // set by game3d.js for floaters/log rendering
   onPvpHit: null,       // server-validated PvP hit {from,to,w,dmg}
+  onPvpBlocked: null,   // our swing was refused by the region rules {reason,t}
+  onGuardsCalled: null, // guards summoned on an outlaw {t,by,x,y}
+  onFeed: null,         // world feed line {text} — kills, outlawry, decay
   onMobAtk: null,       // server mob swings {id,to,dmg}
   onMobDead: null,      // server mob died {id,killer}
   onHouses: null,       // full shared-house list from the server
@@ -124,6 +127,10 @@ export async function initNet(getSelfFn) {
       if (net.onChat) net.onChat(m);
     });
     room.onMessage('pvp_hit', m => { if (net.onPvpHit) net.onPvpHit(m); });
+    room.onMessage('pvp_blocked', m => { if (net.onPvpBlocked) net.onPvpBlocked(m); });
+    room.onMessage('guards_called', m => { if (net.onGuardsCalled) net.onGuardsCalled(m); });
+    room.onMessage('guards_refused', m => { if (net.onPvpBlocked) net.onPvpBlocked(m); });
+    room.onMessage('feed', m => { if (net.onFeed) net.onFeed(m); });
     room.onMessage('feed', m => {          // kill feed → chat log, no speaker
       net.chatLog.push({ name: '', text: m.text, t: Date.now() });
       if (net.chatLog.length > 50) net.chatLog.shift();
@@ -182,6 +189,11 @@ export function netPvp(targetId, weapon) {
 
 // Damage intent against a server-authoritative mob (server clamps + referees)
 let _lastMobHit = 0;
+// Ask the guards to deal with an outlaw. The server decides whether they come —
+// it is the only thing that knows the target's real notoriety.
+export function netCallGuards(targetId) {
+  if (net.status === 'online' && net.room) net.room.send('call_guards', { t: targetId });
+}
 export function netMobHit(id, dmg) {
   if (net.status !== 'online' || !net.room) return;
   const now = performance.now();

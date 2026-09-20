@@ -71,6 +71,39 @@ export const COAST_H  = 120;
 export const COAST_LANDING     = { x: COAST_X0 + 96, y: COAST_Y0 + 92 };
 export const COAST_MAINLAND_DOCK = { x: 150, y: 372 };
 
+// ── Region rules ────────────────────────────────────────────────────
+//
+// The two surface regions play by different rules, and BOTH SIDES MUST AGREE —
+// the world server referees every PvP swing, the client only predicts so it can
+// grey out a prompt. These constants are the single source: build-world-data.mjs
+// copies them into world-data.json, and the server reads them from there rather
+// than retyping them, for exactly the reason bravo-room.js no longer retypes
+// MAP_H.
+//
+//   MAINLAND  safe zones throughout; you may attack ONLY players who are already
+//             `bad` notoriety; a `bad` player may NOT swing first here and can
+//             only answer someone who has just hit them.
+//   COAST     open PvP outside Saltmere village, which is its only safe ground.
+//             Kills here are what earn notoriety in the first place.
+//
+// That split is what makes the loop work: notoriety is EARNED on the coast and
+// PAID FOR on the mainland, where it makes you huntable and takes away your
+// ability to start a fight.
+export const REGION_MAINLAND = 'mainland';
+export const REGION_COAST    = 'coast';
+
+// Kills on the coast needed to be flagged `bad`. "Multiple kills" — the first is
+// a duel, the second is a habit.
+export const NOTO_BAD_AT = 2;
+// Notoriety is not permanent. Without decay a bad player is hunted forever with
+// no way back, which turns a punishment into a dead character — so a point falls
+// off every 30 minutes of connected time. Set to 0 to make it permanent.
+export const NOTO_DECAY_MS = 30 * 60 * 1000;
+// How long after being hit a `bad` player may hit back on the mainland. Long
+// enough to finish the fight somebody else started, short enough that it is not
+// a licence.
+export const COMBAT_WINDOW_MS = 30 * 1000;
+
 // Combat
 export const HARVEST_RANGE = TILE * 1.6;
 export const SWORD_RANGE   = TILE * 1.8;

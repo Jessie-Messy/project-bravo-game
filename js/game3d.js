@@ -5,7 +5,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
-import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave,
+import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave, netCallGuards,
   netHousePlace, netHouseUpdate, netHouseRemove,
   netDropAdd, netDropTake, netTradeReq, netTradeAccept, netTradeOffer, netTradeConfirm, netTradeCancel,
   playerName, MP_ENABLED } from './net.js';
@@ -21,6 +21,7 @@ import { TILE, MAP_W, MAP_H, T, BLOCKING, CITY,
   DUNGEON_X0, DUNGEON_Y0, DUNGEON_W, DUNGEON_H,
   TERRAIN_MAP_H, COAST_X0, COAST_Y0, COAST_W, COAST_H,
   COAST_LANDING, COAST_MAINLAND_DOCK,
+  REGION_MAINLAND, REGION_COAST, NOTO_BAD_AT, COMBAT_WINDOW_MS,
   RACES, getXpForLevel,
 } from './constants.js';
 import { AccountManager, renderCharSelect, renderCharCreator, handleCharSelectClick, handleCharCreatorClick, openCreator, hideNameInput } from './char_creator.js';
@@ -38,8 +39,9 @@ import { prefs, setPref, resetPrefs, BIND_DEFS, binds, bindOf,
 import { CHAMP_ALTARS, DUNGEON_PORTAL_A, DUNGEON_PORTAL_B,
   DUNGEON_ENTRY_TILE, DUNGEON_CITY_EXIT,
   DUNGEON_FLOORS, DUNGEON_STAIRS, DUNGEON_BOSS_SPAWNS, WORLD_CHESTS, floorAt,
+  COAST_PORTALS, CITY_COAST_GATE,
   COAST_VILLAGE, COAST_HOUSE_PLOTS, COAST_DOCK_TILES, FERRY_MAINLAND,
-  COAST_NPCS } from './world.js';
+  COAST_NPCS, COAST_SAFE_ZONE } from './world.js';
 import { updateEnemy, champSpawnTick, damageEnemy, damagePlayer,
   spawnRandomEnemy, boxBlocked, populateWorld, populateDungeon, hooks,
   makeEnemy, ENEMY_CFG, extraBlocking, spawnDrops, BOSS_ABILITIES,
@@ -5155,6 +5157,33 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     });
     return list.join(', ');
   },
+  // Who you may lawfully strike right now, and why not. The client's PREDICTION
+  // of the rules — the server decides for real — but they read the same
+  // constants, so a disagreement here is a bug worth chasing.
+  //   _dev.pvp()                      the full picture
+  //   _dev.pvp({noto: 2})             ...pretending every visible player is an outlaw
+  //   _dev.pvp({myNoto: 2})           ...pretending YOU are the outlaw
+  pvp(opts){
+    if(opts && typeof opts.noto === 'number')
+      for(const [,st] of net.remotes) st.noto = opts.noto;
+    const mine = (opts && typeof opts.myNoto === 'number') ? opts.myNoto : myNoto();
+    const out = { you: { region: regionAt(player.y),
+                         onSafeGround: inSafeZoneW(player.x, player.y),
+                         noto: mine, outlaw: mine >= NOTO_BAD_AT },
+                  rule: regionAt(player.y) === REGION_COAST
+                        ? 'coast: open PvP outside Saltmere village'
+                        : 'mainland: outlaws only, and an outlaw cannot swing first',
+                  targets: {} };
+    for(const [rid, st] of net.remotes){
+      const why = attackBlockedClient(st, rid, mine);
+      out.targets[st.name || rid] = {
+        noto: (st.noto|0), outlaw: isOutlaw(st),
+        region: regionAt(st.y), onSafeGround: inSafeZoneW(st.x, st.y),
+        mayStrike: !why, reason: why || 'ok' };
+    }
+    return JSON.stringify(out);
+  },
+
   // ── Multiplayer load harness ───────────────────────────────────────────────
   //
   // The question "how many players can this hold" was never measurable: you
@@ -5910,6 +5939,65 @@ _ferryMainRig.rotation.y = 0; _ferryCoastRig.rotation.y = 0;
 const _coastRigs = COAST_NPCS.map(n =>
   spawnNPC(RIG_STYLES[n.style] ? (RIG_STYLES[n.style].skin || 0x8a8a8a) : 0x8a8a8a,
            n.x, n.y, n.prop, n.style));
+
+// ── Region rules, client side ───────────────────────────────────────────────
+//
+// ⚠ THIS IS A PREDICTION, NOT A DECISION. The world server referees every swing
+// (attackBlockedReason in bravo-room.js) and is the only thing whose answer
+// counts. This exists so the UI can grey out a prompt and say why, instead of
+// the player swinging into silence. The two must agree — both read the same
+// constants, and the coast safe zone comes from the same generated village —
+// but when they disagree the SERVER is right and the client will simply have
+// drawn an optimistic prompt.
+//
+//   MAINLAND  safe zones throughout; attack only an already-outlaw player; an
+//             outlaw cannot swing first and may only answer a recent attacker.
+//   COAST     open PvP outside Saltmere village.
+function regionAt(wy){ return wy >= COAST_Y0*TILE ? REGION_COAST : REGION_MAINLAND; }
+function inCoastVillageW(wx, wy){
+  const tx = wx/TILE, ty = wy/TILE;
+  return tx >= COAST_SAFE_ZONE.x1 && tx <= COAST_SAFE_ZONE.x2 &&
+         ty >= COAST_SAFE_ZONE.y1 && ty <= COAST_SAFE_ZONE.y2;
+}
+// Safe ground. The mainland keeps the city rule; the coast has only the village.
+function inSafeZoneW(wx, wy){
+  return regionAt(wy) === REGION_COAST ? inCoastVillageW(wx, wy) : inCityAt(wx, wy);
+}
+const isOutlaw = st => ((st && st.noto) | 0) >= NOTO_BAD_AT;
+// Who has hit US recently — the mainland retaliation window. Fed by onPvpHit.
+const _recentAttackers = new Map();
+// `notoOverride` is for _dev.pvp() only: it lets the outlaw-cannot-initiate
+// branch be exercised without actually having to go and murder two people.
+function attackBlockedClient(st, stId, notoOverride){
+  if(!st) return 'gone';
+  if(st.dead && !st.ghost) return 'dead';
+  if(inSafeZoneW(player.x, player.y) || inSafeZoneW(st.x, st.y)) return 'safe-zone';
+  if(regionAt(player.y) !== regionAt(st.y)) return 'cross-region';
+  if(regionAt(player.y) === REGION_COAST) return null;          // open PvP
+  if(!isOutlaw(st)) return 'target-not-outlaw';
+  const mineNoto = (typeof notoOverride === 'number') ? notoOverride : myNoto();
+  if(mineNoto >= NOTO_BAD_AT){
+    const at = _recentAttackers.get(stId);
+    if(!at || performance.now() - at > COMBAT_WINDOW_MS) return 'outlaw-cannot-initiate';
+  }
+  return null;
+}
+// Our own notoriety, as the server last told us.
+function myNoto(){
+  const me = net.selfId && net.room && net.room.state && net.room.state.players
+    ? net.room.state.players.get(net.selfId) : null;
+  return me ? (me.noto | 0) : 0;
+}
+const PVP_BLOCK_TEXT = {
+  'safe-zone':             'safe ground — no violence here',
+  'target-not-outlaw':     'only outlaws may be struck on the mainland',
+  'outlaw-cannot-initiate':'outlaws cannot start fights here',
+  'cross-region':          'too far away',
+  'not-an-outlaw':         'the guards will not touch an honest traveller',
+  'too-far':               'no guard is close enough',
+  'dead':                  'already down',
+  'gone':                  'they are gone',
+};
 
 const FERRY_FARE = 0;   // free for now: the coast has nothing to sell yet, and a
                         // toll on an empty region is a wall, not an economy.
@@ -7086,12 +7174,16 @@ function swordSwingAttack(wx,wy,sx,sy){
     if(lv>=8 && e.hp / (e.maxHp||1) < 0.3) dmg = Math.round(dmg * 1.5);
     damageEnemy(e,dmg);addSkillXp(skills.tactics,8);
   }
-  // PvP: remote players caught in the swing arc — the server referees the hit
+  // PvP: remote players caught in the swing arc — the server referees the hit.
+  // The client check below is a PREDICTION so an illegal swing says why instead
+  // of vanishing; the server refuses it again regardless.
   for(const [rid,st] of net.remotes){
     if(st.dead||st.ghost) continue;
     const rdx=st.x-player.x,rdy=st.y-player.y;
     if(Math.hypot(rdx,rdy)>SWORD_RANGE*1.15) continue;
     if(angleDiff(Math.atan2(rdy,rdx),swordSwing.angle)>swingArc/2) continue;
+    const why=attackBlockedClient(st,rid);
+    if(why){ addFloater(player.x,player.y-34,'✋ '+(PVP_BLOCK_TEXT[why]||why)); continue; }
     netPvp(rid,'sword');
   }
   // harvest a tree the pointer is over (canopy included), else the ground tile
@@ -7981,10 +8073,32 @@ function findOpenTileNear(stx,sty,entityR){
   }
   return{x:stx*TILE+TILE/2,y:sty*TILE+TILE/2};
 }
-function inCity(){const tx=Math.floor(player.x/TILE),ty=Math.floor(player.y/TILE);return tx>=CITY.x1&&tx<=CITY.x2&&ty>=CITY.y1&&ty<=CITY.y2;}
+// Positional version, because the region rules have to ask about OTHER people's
+// positions too, not just the player's. inCity() delegates so there is still one
+// implementation of the rectangle.
+function inCityAt(wx, wy){
+  const tx=Math.floor(wx/TILE), ty=Math.floor(wy/TILE);
+  return tx>=CITY.x1&&tx<=CITY.x2&&ty>=CITY.y1&&ty<=CITY.y2;
+}
+function inCity(){ return inCityAt(player.x, player.y); }
 function callGuards(){
-  if(!inCity()){addFloater(player.x,player.y-30,'not in city!');return;}
   if(G.guardCallCooldown>0){addFloater(player.x,player.y-30,'cooldown: '+Math.ceil(G.guardCallCooldown)+'s');return;}
+  // An outlaw in sight takes priority over wildlife — that is what the call is
+  // FOR on the mainland. The server decides whether the guards actually come;
+  // it is the only thing that knows their real notoriety.
+  let worst=null,wd=TILE*14;
+  for(const [rid,st] of net.remotes){
+    if(!isOutlaw(st)||st.dead) continue;
+    const d=Math.hypot(st.x-player.x,st.y-player.y);
+    if(d<wd){ wd=d; worst=rid; }
+  }
+  if(worst){
+    G.guardCallCooldown=GUARD_CALL_COOLDOWN;
+    netCallGuards(worst);
+    addFloater(player.x,player.y-30,'🛡 calling the guards!');
+    return;
+  }
+  if(!inCity()){addFloater(player.x,player.y-30,'not in city!');return;}
   const threats=enemies.filter(e=>e.state!=='dead'&&e.state!=='respawning'&&Math.hypot(e.x-player.x,e.y-player.y)<TILE*12);
   if(!threats.length){addFloater(player.x,player.y-30,'no threat nearby!');return;}
   G.guardCallCooldown=GUARD_CALL_COOLDOWN;
@@ -8010,12 +8124,42 @@ function updateGuard(g,dt){
   if(g.dead) return;
   g.lifetime-=dt;if(g.lifetime<=0){g.dead=true;return;}
   if(g.iframes>0)g.iframes-=dt;if(g.attackTimer>0)g.attackTimer-=dt;
+  // A guard mustered against an OUTLAW hunts that person and ignores wildlife.
+  // Their damage goes through netPvp so the server referees it exactly like a
+  // player's swing — a guard is not a way around the region rules, it is a way
+  // of enforcing them, and the server has to agree the target is lawful.
+  if(g.huntId){
+    const st=net.remotes.get(g.huntId);
+    if(!st||st.dead){ g.dead=true; return; }
+    const dx=st.x-g.x, dy=st.y-g.y, dist=Math.hypot(dx,dy);
+    if(dist>TILE*20){ g.dead=true; return; }            // lost them
+    if(dist>g.attackRange*0.8){
+      const nx=g.x+(dx/dist)*g.speed*dt; if(!boxBlocked(nx,g.y,g.r))g.x=nx;
+      const ny=g.y+(dy/dist)*g.speed*dt; if(!boxBlocked(g.x,ny,g.r))g.y=ny;
+    }
+    if(dist<=g.attackRange&&g.attackTimer<=0){ g.attackTimer=g.attackCooldown; netPvp(g.huntId,'sword'); }
+    return;
+  }
   let target=null,best=TILE*16;
   for(const e of enemies){if(e.state==='dead'||e.state==='respawning')continue;const d=Math.hypot(e.x-g.x,e.y-g.y);if(d<best){best=d;target=e;}}
   if(target){
     const dx=target.x-g.x,dy=target.y-g.y,dist=Math.hypot(dx,dy);
     if(dist>g.attackRange*0.8){const nx=g.x+(dx/dist)*g.speed*dt;if(!boxBlocked(nx,g.y,g.r))g.x=nx;const ny=g.y+(dy/dist)*g.speed*dt;if(!boxBlocked(g.x,ny,g.r))g.y=ny;}
     if(dist<=g.attackRange&&g.attackTimer<=0){g.attackTimer=g.attackCooldown;damageEnemy(target,g.damage);}
+  }
+}
+// Muster guards onto a specific outlaw. Called from the server's guards_called
+// broadcast, so every client sees the same hunt begin.
+function musterGuardsOn(targetId, atx, aty){
+  for(let i=0;i<3;i++){
+    const ang=(i/3)*Math.PI*2;
+    let tx=Math.floor(atx/TILE)+Math.round(Math.cos(ang)*3);
+    let ty=Math.floor(aty/TILE)+Math.round(Math.sin(ang)*3);
+    tx=Math.max(0,Math.min(MAP_W-1,tx)); ty=Math.max(0,Math.min(MAP_H-1,ty));
+    const sp=findOpenTileNear(tx,ty,13);
+    guards.push({x:sp.x,y:sp.y,hp:120,maxHp:120,r:13,speed:185,damage:24,
+                 attackRange:TILE*1.5,attackCooldown:1.0,attackTimer:0.3+i*0.25,
+                 iframes:0,lifetime:45,dead:false,huntId:targetId});
   }
 }
 
@@ -9521,7 +9665,10 @@ function drawInteractPrompts(){
   // name tags over remote players (multiplayer) — hidden players stay hidden
   if(prefs.showNames!==false)
     for(const [,st] of net.remotes) if(!st.hidden&&(!st.dead||st.ghost))
-      add(st.x,st.y,(st.ghost?'👻 ':'')+st.name,TILE*(prefs.nameDist||46),150);
+      // An outlaw is marked, because the whole mainland rule turns on knowing
+      // who is lawful game before you swing at them.
+      add(st.x,st.y,(st.ghost?'👻 ':'')+(isOutlaw(st)?'☠ ':'')+st.name,
+          TILE*(prefs.nameDist||46),150);
   if(player.ghost){
     add(HEALER.x,HEALER.y,'[E] Resurrect',TILE*3);
     for(const wh of WORLD_HEALERS)add(wh.x,wh.y,'[E] Resurrect',TILE*3);
@@ -12724,6 +12871,18 @@ function update(dt){
   if(G.portalCooldown<=0){
     const ptx=Math.floor(player.x/TILE), pty=Math.floor(player.y/TILE);
     if(ptx>=0&&pty>=0&&ptx<MAP_W&&pty<MAP_H&&map[pty][ptx]===T.TELEPORT){
+      // ⚠ COAST GATES FIRST. The dungeon branch below only asks whether you are
+      // currently underground, so a TELEPORT tile standing in the city would
+      // send you down a hole rather than to the coast.
+      const gate=COAST_PORTALS[ptx+','+pty];
+      if(gate){
+        if(gate.to==='coast') ensureCoastSurface();       // pay for the ground first
+        player.x=gate.sx*TILE+TILE/2; player.y=gate.sy*TILE+TILE/2;
+        G.portalCooldown=1.2;
+        addFloater(player.x,player.y-40, gate.to==='coast'?'⛩ Saltmere':'⛩ Lunar City');
+        netTp(player.x,player.y,'portal');
+        return;
+      }
       const stair=DUNGEON_STAIRS[ptx+','+pty];
       if(!G.inDungeon){                                   // overworld → floor 1
         G.dungeonEntryX=player.x; G.dungeonEntryY=player.y;
@@ -14398,10 +14557,45 @@ if(MP_ENABLED){
     if(m.name===playerName()) addFloater(player.x,player.y-40,'💬 '+m.text);
     else for(const [,st] of net.remotes) if(st.name===m.name){ addFloater(st.x,st.y-40,'💬 '+m.text); break; }
   };
+  // A swing the region rules refused. This must read as a RULE, not as the game
+  // eating the input — otherwise the first conclusion a player draws is that
+  // combat is broken.
+  net.onPvpBlocked=m=>{
+    addFloater(player.x,player.y-34,'✋ '+(PVP_BLOCK_TEXT[m&&m.reason]||'you cannot do that here'));
+  };
+  // World feed: kills, outlawry, notoriety decay. Straight into the chat log.
+  net.onFeed=m=>{
+    if(!m||!m.text) return;
+    net.chatLog.push({name:'',text:m.text,t:Date.now(),feed:true});
+    if(net.chatLog.length>50) net.chatLog.shift();
+    renderChatLog();
+  };
+  // The guards have been called on somebody. Everyone nearby musters them, so a
+  // hunt is a public event.
+  net.onGuardsCalled=m=>{
+    if(!m||!m.t) return;
+    const st=net.remotes.get(m.t);
+    const ax=st?st.x:m.x, ay=st?st.y:m.y;
+    if(Math.hypot(ax-player.x,ay-player.y)>TILE*24) return;   // not our business
+    musterGuardsOn(m.t,ax,ay);
+    addFloater(ax,ay-46,'🛡 guards called by '+(m.by||'someone'));
+  };
   // server-validated PvP hit: victim takes the damage through the normal
   // damage path (armor DR + iframes apply); everyone sees the strike
   net.onPvpHit=m=>{
     remoteAttackCue(m.from);                     // play the attacker's swing anim
+    // Remember who hit us: on the mainland this is what lets an outlaw answer
+    // back. Keyed by attacker, so a gang cannot lock one out by taking turns —
+    // each of them re-opens the window against themselves.
+    if(m.to===net.selfId&&m.from){
+      const nowMs=performance.now();
+      _recentAttackers.set(m.from,nowMs);
+      // Prune on write. The read path already ignores stale entries, so this is
+      // housekeeping rather than correctness — but without it the map keeps one
+      // entry per person who has ever hit you, for the life of the session.
+      for(const [sid,at] of _recentAttackers)
+        if(nowMs-at>COMBAT_WINDOW_MS) _recentAttackers.delete(sid);
+    }
     if(m.to===net.selfId){
       const from=net.remotes.get(m.from);
       damagePlayer(m.dmg);

@@ -24,6 +24,12 @@ try {
   )`);
   try { db.exec('ALTER TABLE players ADD COLUMN token TEXT'); } catch (e) { /* column exists */ }
   try { db.exec('ALTER TABLE players ADD COLUMN blob TEXT'); } catch (e) { /* column exists */ }
+  // ⚠ NOTORIETY MUST PERSIST. It decides who may be attacked and whether guards
+  // answer a call, so if it lived only in memory the entire outlaw system would
+  // be defeated by pressing reconnect. Added as a migration rather than to the
+  // CREATE TABLE above, because that statement is CREATE TABLE IF NOT EXISTS and
+  // every existing database has already run it.
+  try { db.exec('ALTER TABLE players ADD COLUMN noto INTEGER DEFAULT 0'); } catch (e) { /* column exists */ }
   console.log('[storage] SQLite (data/bravo.db)');
 } catch (e) {
   console.warn('[storage] better-sqlite3 unavailable (' + e.message.split('\n')[0] + ') — using JSON fallback');
@@ -56,7 +62,7 @@ function jsonFlush() {
 })();
 
 function load(name) {
-  if (db) return db.prepare('SELECT x,y,hp,kills,deaths FROM players WHERE name=?').get(name) || null;
+  if (db) return db.prepare('SELECT x,y,hp,kills,deaths,noto FROM players WHERE name=?').get(name) || null;
   return jsonLoad()[name] || null;
 }
 
@@ -104,14 +110,16 @@ function setToken(name, token) {
 
 function save(name, p) {
   if (db) {
-    db.prepare(`INSERT INTO players (name,x,y,hp,kills,deaths,updated_at)
-      VALUES (@name,@x,@y,@hp,@kills,@deaths,@t)
-      ON CONFLICT(name) DO UPDATE SET x=@x,y=@y,hp=@hp,kills=@kills,deaths=@deaths,updated_at=@t`)
-      .run({ name, x: p.x, y: p.y, hp: p.hp | 0, kills: p.kills | 0, deaths: p.deaths | 0, t: Date.now() });
+    db.prepare(`INSERT INTO players (name,x,y,hp,kills,deaths,noto,updated_at)
+      VALUES (@name,@x,@y,@hp,@kills,@deaths,@noto,@t)
+      ON CONFLICT(name) DO UPDATE SET x=@x,y=@y,hp=@hp,kills=@kills,deaths=@deaths,noto=@noto,updated_at=@t`)
+      .run({ name, x: p.x, y: p.y, hp: p.hp | 0, kills: p.kills | 0, deaths: p.deaths | 0,
+             noto: p.noto | 0, t: Date.now() });
     return;
   }
   const s = jsonLoad();
-  s[name] = Object.assign(s[name] || {}, { x: p.x, y: p.y, hp: p.hp | 0, kills: p.kills | 0, deaths: p.deaths | 0 });
+  s[name] = Object.assign(s[name] || {}, { x: p.x, y: p.y, hp: p.hp | 0, kills: p.kills | 0,
+                                           deaths: p.deaths | 0, noto: p.noto | 0 });
   jsonFlush();   // merge, never replace — the record also carries the name-claim token
 }
 
