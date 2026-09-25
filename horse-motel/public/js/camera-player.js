@@ -59,7 +59,7 @@ export function cameraCard(cam, { tz } = {}) {
         try {
           const Hls = await loadHls();
           if (!Hls.isSupported()) { onError('This browser can’t play live video. Try Chrome, Edge, Firefox or Safari.'); return; }
-          hls = new Hls({ lowLatencyMode: true, liveSyncDurationCount: 2, xhrSetup: (xhr) => { xhr.withCredentials = true; } });
+          hls = new Hls({ lowLatencyMode: false, liveSyncDurationCount: 3, xhrSetup: (xhr) => { xhr.withCredentials = true; } });
           hls.on(Hls.Events.ERROR, (_, data) => {
             if (!data.fatal) return;
             if (data.response?.code === 403) { onError('Your access to this camera has ended.'); hls.destroy(); return; }

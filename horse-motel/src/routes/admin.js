@@ -2,8 +2,9 @@ import express from 'express';
 import { z } from 'zod';
 import { audit } from '../db.js';
 import { randomToken, sha256 } from '../security/crypto.js';
-import { isIsoDate, todayIn, addDays } from '../dates.js';
+import { isIsoDate, todayIn, addDays, daysBetween } from '../dates.js';
 import { requireAdmin } from '../security/sessions.js';
+import { seal, unseal } from '../security/secretbox.js';
 import { BookingError } from '../services/inventory.js';
 
 const isoDate = z.string().refine(isIsoDate, 'Use a real date.');
@@ -73,6 +74,11 @@ export function adminRoutes({ db, cfg, inventory, bookings, cameras }) {
       note: z.string().trim().max(200).optional(),
     }).strict().parse(req.body);
     if (body.checkOut <= body.checkIn) throw new BookingError('The end date must be after the start date.');
+    const today = todayIn(cfg.ranch.timezone);
+    if (body.checkIn < addDays(today, -1) || body.checkOut > addDays(today, cfg.inventory.bookingWindowDays + 1) ||
+        daysBetween(body.checkIn, body.checkOut) > 366) {
+      throw new BookingError('Blocks must be within the booking window and at most a year long.');
+    }
     if (!body.house && !body.stalls && !body.rvSites) throw new BookingError('Choose what to block.');
     const b = bookings.block(body, req.user.id);
     res.status(201).json({ ok: true, ref: b.ref });
@@ -86,7 +92,7 @@ export function adminRoutes({ db, cfg, inventory, bookings, cameras }) {
   r.get('/cameras', (req, res) => {
     const list = db.prepare('SELECT * FROM cameras ORDER BY name').all().map((c) => {
       let host = '';
-      try { host = c.source_url ? new URL(c.source_url).host : ''; } catch { /* ignore */ }
+      try { host = c.source_url ? new URL(unseal(c.source_url)).host : ''; } catch { /* ignore */ }
       const units = db.prepare('SELECT unit_id FROM camera_units WHERE camera_id = ?').all(c.id).map((x) => x.unit_id);
       return { id: c.id, publicId: c.public_id, name: c.name, sourceType: c.source_type, host, active: !!c.active, unitIds: units };
     });
@@ -111,7 +117,7 @@ export function adminRoutes({ db, cfg, inventory, bookings, cameras }) {
   function sourceFor(body, existing) {
     // Leaving the address blank on edit keeps the stored one (it is never sent to the browser).
     if (existing && !body.sourceUrl && body.sourceType === existing.source_type) return existing.source_url;
-    try { return cameras.checkSourceUrl(body.sourceUrl, body.sourceType); }
+    try { return seal(cameras.checkSourceUrl(body.sourceUrl, body.sourceType)); }
     catch (e) { throw new BookingError(e.message); }
   }
 

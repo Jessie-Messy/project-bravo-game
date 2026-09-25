@@ -15,7 +15,7 @@ const contactSchema = z.object({
 
 export function publicRoutes({ cfg, db, inventory, bookings, payments }) {
   const r = express.Router();
-  const bookingLimiter = rateLimit({ windowMs: 3600e3, limit: 15, standardHeaders: 'draft-7', legacyHeaders: false,
+  const bookingLimiter = rateLimit({ windowMs: 3600e3, limit: cfg.rateLimits.bookingsPerHour, standardHeaders: 'draft-7', legacyHeaders: false,
     message: { error: 'Too many booking attempts. Please wait a while or call us.' } });
 
   r.get('/site', (req, res) => {
@@ -125,9 +125,6 @@ export function webhookRoute({ db, payments, bookings, cameras }) {
       case 'checkout.session.async_payment_succeeded':
         if (ref && s.payment_status === 'paid') {
           await bookings.confirmPaid(ref, { sessionId: s.id, amountPaid: s.amount_total, currency: s.currency, paymentIntent: s.payment_intent });
-        } else if (ref) {
-          // Paid by a delayed method (e.g. bank debit): keep holding until Stripe reports back.
-          db.prepare("UPDATE bookings SET hold_expires_at = ? WHERE ref = ? AND status = 'pending'").run(Date.now() + 10 * 86400e3, ref);
         }
         break;
       case 'checkout.session.expired':

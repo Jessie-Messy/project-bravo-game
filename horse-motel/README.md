@@ -50,8 +50,10 @@ book.example.com {
 
 ```bash
 cd horse-motel
+umask 077              # so .env, the database and backups are readable only by you
 npm ci --omit=dev
 cp .env.example .env   # then edit it — see below
+openssl rand -base64 32   # paste into DATA_KEY in .env, and keep a copy somewhere safe
 npm run create-admin -- you@example.com
 node src/server.js     # run it under systemd or pm2 so it restarts
 ```
@@ -78,7 +80,7 @@ PrivateTmp=true
 WantedBy=multi-user.target
 ```
 
-Data lives in `data/ranch.db` (SQLite). **Back it up daily** — e.g. `sqlite3 data/ranch.db ".backup /backups/ranch-$(date +%F).db"`.
+Data lives in `data/ranch.db` (SQLite). **Back it up daily** — e.g. `(umask 077; sqlite3 data/ranch.db ".backup /backups/ranch-$(date +%F).db")` — and keep `DATA_KEY` backed up separately: 2-step secrets and camera addresses in the database are encrypted with it.
 
 ### 2. Settings (`.env`)
 
@@ -87,13 +89,14 @@ Every setting is documented in [`.env.example`](.env.example). The ones that mat
 | Setting | What it is |
 |---|---|
 | `APP_ORIGIN` | Your public `https://` address. |
+| `DATA_KEY` | Encryption key for secrets in the database (`openssl rand -base64 32`). |
 | `PRICE_*_CENTS` | **Your real prices, in cents.** The defaults are placeholders. |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | From your Stripe dashboard (next step). |
 | `SMTP_URL`, `MAIL_FROM` | An email provider (Postmark, SendGrid, Amazon SES, Google Workspace SMTP…). Guests' set-up links go out by email. |
 | `ADMIN_ALERT_EMAIL` | Where you get new-booking alerts. |
-| `CAMERA_ALLOWED_HOSTS` | The address(es) of your camera box (see below). |
+| `CAMERA_ALLOWED_HOSTS` | The address(es) of your camera box (see below). Required. |
 
-The server **refuses to start** in production if HTTPS, Stripe or email are missing, so a half-configured site can never take bookings.
+The server **refuses to start** in production if HTTPS, Stripe, email, `DATA_KEY` or the camera allow-list are missing, or if any setting is out of range, so a half-configured site can never take bookings. Test payments only ever run on `localhost`.
 
 ### 3. Stripe
 
@@ -115,6 +118,8 @@ Guests never connect to a camera directly. The site relays video from your camer
 3. Put the box's private address in `CAMERA_ALLOWED_HOSTS`.
 4. In **Admin → Cameras**, add each camera: name, "Live video (HLS)", its `.m3u8` address, and tick the stall(s) it shows. Use **Test** to check it plays.
 
+**One camera per stall is best.** If a camera shows two stalls, a guest who rents either stall can see both horses while their stay overlaps with the other guest's. When the same stall has back-to-back guests, the leaving guest's view ends at check-out time and the next guest's starts after it, so they never overlap.
+
 Cameras that can only produce still pictures work too: choose "Still picture" and give the snapshot URL (`http://user:pass@host/snapshot.jpg` style credentials are supported and never shown to anyone). Guests' pages refresh the picture every 2 seconds.
 
 ---
@@ -134,15 +139,17 @@ Unpaid holds are released automatically (after checking with Stripe that no paym
 
 ## Security
 
-- **Payments**: Stripe Checkout (PCI handled by Stripe). Prices are computed on the server; the amount Stripe collected is checked against the booking before confirming. Webhooks are signature-verified and idempotent.
+- **Payments**: Stripe Checkout, cards only (PCI handled by Stripe). Prices are computed on the server; the amount Stripe collected is checked against the booking before confirming. Webhooks are signature-verified and idempotent, and a late or replayed payment event can never revive a cancelled or refunded booking.
+- **Holds can't be abused**: unpaid holds are limited per network, per email and site-wide, so nobody can take the calendar off sale by starting checkouts they never finish.
 - **No double booking**: `UNIQUE(unit, night)` in the database — enforced even under simultaneous requests.
-- **Accounts**: passwords hashed with scrypt (N=2¹⁷); at least 12 characters; common passwords refused. Accounts lock for 15 minutes after 5 failed sign-ins; rate limits on every sign-in, reset and booking endpoint. Sign-in errors don't reveal whether an email has an account.
-- **Two-step verification** (authenticator app, RFC 6238) — optional for guests, **required for admins**. Codes can't be replayed.
-- **Sessions**: random 256-bit tokens, stored only as hashes; `HttpOnly`, `SameSite=Lax`, `Secure`, `__Host-` cookie; 2-hour idle and 7-day absolute timeout; rotated at sign-in; all sessions revoked on password change/reset.
+- **Accounts**: passwords hashed with scrypt (N=2¹⁷), at most two hashes at once so a login flood gets a fast "busy" instead of exhausting the server; at least 12 characters; common passwords refused. Sign-in attempts are counted per account *before* the password check (parallel guessing can't slip through); after 5 failed passwords **or** 2-step codes the account locks for 15 minutes, doubling each time up to 24 hours, and the owner is emailed. Rate limits on every sign-in, reset and booking endpoint. Sign-in errors don't reveal whether an email has an account.
+- **Two-step verification** (authenticator app, RFC 6238) — optional for guests, **required for admins** (including to view cameras). Codes can't be replayed. Secrets are encrypted at rest (AES-256-GCM).
+- **Sessions**: random 256-bit tokens, stored only as hashes; `HttpOnly`, `SameSite=Lax`, `Secure`, `__Host-` cookie; 2-hour idle and 7-day absolute timeout; rotated at sign-in; all sessions, unused reset links and pending sign-ins revoked on password change/reset or "sign out everywhere".
 - **Links in emails** (set-up, reset) are single-use, expire, are stored hashed, and travel in the URL fragment so they never appear in server logs or `Referer` headers.
 - **CSRF**: same-origin check on every write, JSON-only bodies, plus a per-session token for signed-in requests.
+- **Email** is only ever sent encrypted (`smtps://`, or STARTTLS required).
 - **Headers**: strict Content-Security-Policy (`script-src 'self'`, no inline scripts or styles, no third-party scripts or fonts), HSTS, `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, locked-down `Permissions-Policy`.
-- **Cameras**: per-request authorization tied to booking + time window; camera URLs/credentials never sent to browsers; upstream host allow-list; playlist rewriting blocks path traversal and off-host redirects; responses size-capped; every view is logged.
+- **Cameras**: per-request authorization tied to booking + time window; camera URLs/credentials never sent to browsers and encrypted at rest; mandatory upstream host allow-list; playlist rewriting blocks path traversal and off-host redirects; upstream responses size-capped while streaming; requests in flight capped per account and per camera; segments shared between viewers through a short cache; views are logged.
 - **Admin**: requires two-step verification on every session; activity log of sign-ins, bookings and camera views.
 - The server refuses to start with an unsafe production configuration.
 

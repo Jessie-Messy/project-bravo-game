@@ -36,6 +36,9 @@ export function buildConfig(overrides = {}) {
     // Number of reverse proxies in front of the app (e.g. 1 for Caddy/nginx). Needed so
     // rate limits key on the real client IP, never trusted blindly.
     trustProxy: int(e.TRUST_PROXY, 0),
+    // 32 random bytes, base64 (openssl rand -base64 32). Encrypts 2-step secrets and camera
+    // addresses in the database. Required in production.
+    dataKey: e.DATA_KEY || '',
     dataDir: e.DATA_DIR || path.join(ROOT, 'data'),
     cookieSecure: e.COOKIE_SECURE ? e.COOKIE_SECURE === 'true' : origin.startsWith('https://'),
 
@@ -71,6 +74,8 @@ export function buildConfig(overrides = {}) {
     cameraAccess: {
       hoursBeforeCheckIn: int(e.CAMERA_HOURS_BEFORE_CHECKIN, 3),
       hoursAfterCheckOut: int(e.CAMERA_HOURS_AFTER_CHECKOUT, 2),
+      // Hosts the server may fetch camera video from. Required in production.
+      allowedHosts: (e.CAMERA_ALLOWED_HOSTS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean),
     },
 
     payments: {
@@ -93,9 +98,19 @@ export function buildConfig(overrides = {}) {
       absoluteHours: int(e.SESSION_ABSOLUTE_HOURS, 24 * 7),
     },
 
+    // Per-IP request limits. Only the test suite changes these (everything there comes
+    // from 127.0.0.1); the per-account lockout is what really stops password guessing.
+    rateLimits: {
+      authPer15Min: int(e.RATE_AUTH_PER_15MIN, 30),
+      accountPer15Min: int(e.RATE_ACCOUNT_PER_15MIN, 20),
+      bookingsPerHour: int(e.RATE_BOOKINGS_PER_HOUR, 15),
+      apiPerMinute: int(e.RATE_API_PER_MINUTE, 300),
+    },
+
     auth: {
-      maxFailedLogins: 5,
+      maxFailedLogins: 5,   // per lock step; each further 5 failures doubles the lock
       lockMinutes: 15,
+      maxLockHours: 24,
       setupTokenHours: 72,
       resetTokenMinutes: 30,
     },
@@ -105,8 +120,29 @@ export function buildConfig(overrides = {}) {
   return cfg;
 }
 
+const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
+
 function validate(cfg) {
   const problems = [];
+  const numbers = {
+    PORT: [cfg.port, 1, 65535], TRUST_PROXY: [cfg.trustProxy, 0, 5],
+    CHECK_IN_HOUR: [cfg.ranch.checkInHour, 0, 23], CHECK_OUT_HOUR: [cfg.ranch.checkOutHour, 0, 23],
+    STALL_COUNT: [cfg.inventory.stalls, 0, 100], RV_SITE_COUNT: [cfg.inventory.rvSites, 0, 100],
+    HOUSE_MAX_GUESTS: [cfg.inventory.maxGuests, 1, 50], MAX_NIGHTS: [cfg.inventory.maxNights, 1, 90],
+    BOOKING_WINDOW_DAYS: [cfg.inventory.bookingWindowDays, 1, 730],
+    CAMERA_HOURS_BEFORE_CHECKIN: [cfg.cameraAccess.hoursBeforeCheckIn, 0, 48],
+    CAMERA_HOURS_AFTER_CHECKOUT: [cfg.cameraAccess.hoursAfterCheckOut, 0, 48],
+    SESSION_IDLE_MINUTES: [cfg.session.idleMinutes, 5, 1440], SESSION_ABSOLUTE_HOURS: [cfg.session.absoluteHours, 1, 720],
+  };
+  for (const [name, [v, lo, hi]] of Object.entries(numbers)) {
+    if (!Number.isInteger(v) || v < lo || v > hi) problems.push(`${name} must be a whole number from ${lo} to ${hi}`);
+  }
+  if (cfg.dataKey && Buffer.from(cfg.dataKey, 'base64').length !== 32) problems.push('DATA_KEY must be 32 random bytes, base64 (openssl rand -base64 32)');
+  // Test payments confirm bookings for free, so they only ever run on a private dev machine.
+  if (cfg.payments.mode === 'mock' && !cfg.test &&
+      (cfg.production || cfg.origin.startsWith('https://') || !LOOPBACK.has(cfg.host))) {
+    problems.push('Test payments (PAYMENTS_MODE=mock) only run on localhost over http. Set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET.');
+  }
   if (cfg.production) {
     if (!cfg.origin.startsWith('https://')) problems.push('APP_ORIGIN must be https:// in production');
     if (!cfg.cookieSecure) problems.push('COOKIE_SECURE cannot be false in production');
@@ -114,6 +150,8 @@ function validate(cfg) {
     if (!cfg.payments.stripeSecretKey) problems.push('STRIPE_SECRET_KEY is required');
     if (!cfg.payments.stripeWebhookSecret) problems.push('STRIPE_WEBHOOK_SECRET is required');
     if (!cfg.mail.smtpUrl) problems.push('SMTP_URL is required (guests are onboarded by email)');
+    if (!cfg.dataKey) problems.push('DATA_KEY is required (openssl rand -base64 32)');
+    if (!cfg.cameraAccess.allowedHosts.length) problems.push('CAMERA_ALLOWED_HOSTS is required (the address of your camera box)');
   }
   if (!['stripe', 'mock'].includes(cfg.payments.mode)) problems.push('PAYMENTS_MODE must be stripe or mock');
   if (cfg.payments.mode === 'stripe' && !cfg.test &&

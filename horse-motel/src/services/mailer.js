@@ -9,7 +9,14 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 
 export function createMailer(cfg) {
   const outbox = [];
-  const transport = cfg.mail.smtpUrl ? nodemailer.createTransport(cfg.mail.smtpUrl) : null;
+  // smtps:// is TLS from the first byte; plain smtp:// must upgrade with STARTTLS or fail,
+  // so a network attacker can't strip encryption and read set-up links or the SMTP password.
+  let transport = null;
+  if (cfg.mail.smtpUrl) {
+    const url = new URL(cfg.mail.smtpUrl);
+    if (url.protocol === 'smtp:' && !['localhost', '127.0.0.1', '::1'].includes(url.hostname)) url.searchParams.set('requireTLS', 'true');
+    transport = nodemailer.createTransport(url.toString());
+  }
 
   async function send({ to, subject, text, action }) {
     // Every email is plain text plus a simple, accessible HTML version with one button.

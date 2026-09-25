@@ -6,6 +6,8 @@ import { z } from 'zod';
 import { ROOT } from './config.js';
 import { sessionMiddleware, csrfMiddleware } from './security/sessions.js';
 import { inventoryService, BookingError } from './services/inventory.js';
+import { HashBusyError } from './security/password.js';
+import { initSecretBox } from './security/secretbox.js';
 import { bookingService } from './services/bookings.js';
 import { cameraService } from './services/cameras.js';
 import { publicRoutes, webhookRoute } from './routes/public.js';
@@ -16,10 +18,10 @@ import { adminRoutes } from './routes/admin.js';
 import { createRenderer, PAGES } from './views.js';
 
 export function createApp({ cfg, db, payments, mailer }) {
+  initSecretBox(cfg);
   const inventory = inventoryService(db, cfg);
   const bookings = bookingService({ db, cfg, inventory, payments, mailer });
-  const allowedHosts = (process.env.CAMERA_ALLOWED_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
-  const cameras = cameraService({ db, cfg, allowedHosts });
+  const cameras = cameraService({ db, cfg });
   const ctx = { cfg, db, payments, mailer, inventory, bookings, cameras };
 
   const app = express();
@@ -60,7 +62,7 @@ export function createApp({ cfg, db, payments, mailer }) {
   // Stripe needs the raw body to check its signature, so this route comes before JSON parsing.
   app.use('/api/webhooks', webhookRoute(ctx));
 
-  const apiLimiter = rateLimit({ windowMs: 60e3, limit: 300, standardHeaders: 'draft-7', legacyHeaders: false,
+  const apiLimiter = rateLimit({ windowMs: 60e3, limit: cfg.rateLimits.apiPerMinute, standardHeaders: 'draft-7', legacyHeaders: false,
     skip: (req) => req.path.startsWith('/cameras/') });
   app.use('/api', apiLimiter, (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.use('/api', express.json({ limit: '20kb', strict: true }));
@@ -105,6 +107,9 @@ export function createApp({ cfg, db, payments, mailer }) {
       return res.status(400).json({ error: issue.message, field });
     }
     if (err instanceof BookingError) return res.status(err.status).json({ error: err.message });
+    if (err instanceof HashBusyError) {
+      return res.status(503).set('Retry-After', '10').json({ error: 'We’re very busy right now. Please try again in a few seconds.' });
+    }
     if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large.' });
     if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Malformed request.' });
     console.error('[error]', req.method, req.path, err);

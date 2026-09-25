@@ -8,7 +8,8 @@ import { addDays, todayIn } from '../src/dates.js';
 process.env.NODE_ENV = 'test';
 
 export async function startServer(overrides = {}, { payments: paymentsOverride } = {}) {
-  const cfg = buildConfig({ NODE_ENV: 'test', PAYMENTS_MODE: 'mock', APP_ORIGIN: 'http://localhost:0', ...overrides });
+  const cfg = buildConfig({ NODE_ENV: 'test', PAYMENTS_MODE: 'mock', APP_ORIGIN: 'http://localhost:0',
+    RATE_AUTH_PER_15MIN: '1000', RATE_ACCOUNT_PER_15MIN: '1000', RATE_BOOKINGS_PER_HOUR: '1000', RATE_API_PER_MINUTE: '5000', ...overrides });
   const db = openDb(cfg, { memory: true });
   const mailer = createMailer(cfg);
   const payments = paymentsOverride || createPayments(cfg);

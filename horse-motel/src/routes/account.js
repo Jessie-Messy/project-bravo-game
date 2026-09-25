@@ -7,13 +7,19 @@ import { hashPassword, verifyPassword, passwordProblem } from '../security/passw
 import { newTotpSecret, totpUri, verifyTotp } from '../security/totp.js';
 import { requireUser, createSession, destroySession, destroyAllSessions } from '../security/sessions.js';
 import { publicUser } from './auth.js';
+import { seal, unseal } from '../security/secretbox.js';
 
 export function accountRoutes({ db, cfg, inventory, cameras }) {
   const r = express.Router();
   r.use(requireUser);
-  const sensitive = rateLimit({ windowMs: 15 * 60e3, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false,
+  const sensitive = rateLimit({ windowMs: 15 * 60e3, limit: cfg.rateLimits.accountPer15Min, standardHeaders: 'draft-7', legacyHeaders: false,
     message: { error: 'Too many attempts. Please wait 15 minutes.' } });
   const loadUser = (id) => db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  function revokeEverything(userId) {
+    destroyAllSessions(db, userId);
+    db.prepare('DELETE FROM auth_tokens WHERE user_id = ? AND used_at IS NULL').run(userId);
+    db.prepare('DELETE FROM mfa_challenges WHERE user_id = ?').run(userId);
+  }
 
   r.get('/', (req, res) => {
     const rows = db.prepare(`SELECT id, ref, status, check_in, check_out, house, stalls, rv_sites, guests, amount_cents, currency
@@ -47,15 +53,16 @@ export function accountRoutes({ db, cfg, inventory, cameras }) {
     const problem = passwordProblem(body.next, { email: user.email });
     if (problem) return res.status(400).json({ error: problem, field: 'next' });
     db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(await hashPassword(body.next), user.id);
-    // Sign out every other device, then give this one a fresh session.
-    destroyAllSessions(db, user.id);
+    // Sign out every other device, kill any outstanding reset links, then give this one a
+    // fresh session.
+    revokeEverything(user.id);
     const csrf = createSession(db, cfg, res, user.id, { mfaPassed: req.session.mfaPassed });
     audit(db, { userId: user.id, action: 'account.password_changed', ip: req.ip });
     res.json({ ok: true, csrf });
   });
 
   r.post('/logout-everywhere', (req, res) => {
-    destroyAllSessions(db, req.user.id);
+    revokeEverything(req.user.id);
     destroySession(db, cfg, req, res);
     audit(db, { userId: req.user.id, action: 'account.logout_all', ip: req.ip });
     res.json({ ok: true });
@@ -70,7 +77,7 @@ export function accountRoutes({ db, cfg, inventory, cameras }) {
     }
     if (user.totp_enabled) return res.status(400).json({ error: 'Two-step verification is already on.' });
     const secret = newTotpSecret();
-    db.prepare('UPDATE users SET totp_secret = ? WHERE id = ?').run(secret, user.id);
+    db.prepare('UPDATE users SET totp_secret = ? WHERE id = ?').run(seal(secret), user.id);
     const uri = totpUri(secret, user.email, cfg.ranch.name);
     const qr = await QRCode.toDataURL(uri, { margin: 1, width: 220, errorCorrectionLevel: 'M' });
     res.json({ secret, qr });
@@ -79,7 +86,7 @@ export function accountRoutes({ db, cfg, inventory, cameras }) {
   r.post('/mfa/confirm', sensitive, (req, res) => {
     const body = z.object({ code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code.') }).strict().parse(req.body);
     const user = loadUser(req.user.id);
-    const step = user.totp_secret && !user.totp_enabled ? verifyTotp(user.totp_secret, body.code, user.totp_last_step) : 0;
+    const step = user.totp_secret && !user.totp_enabled ? verifyTotp(unseal(user.totp_secret), body.code, user.totp_last_step) : 0;
     if (!step) return res.status(400).json({ error: 'That code didn’t match. Codes change every 30 seconds — try the current one.', field: 'code' });
     db.prepare('UPDATE users SET totp_enabled = 1, totp_last_step = ? WHERE id = ?').run(step, user.id);
     destroyAllSessions(db, user.id);
@@ -92,7 +99,7 @@ export function accountRoutes({ db, cfg, inventory, cameras }) {
     const body = z.object({ password: z.string().max(200), code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code.') }).strict().parse(req.body);
     const user = loadUser(req.user.id);
     if (user.role === 'admin') return res.status(403).json({ error: 'Admin accounts must keep two-step verification on.' });
-    const step = verifyTotp(user.totp_secret, body.code, user.totp_last_step);
+    const step = verifyTotp(unseal(user.totp_secret), body.code, user.totp_last_step);
     if (!(await verifyPassword(body.password, user.password_hash)) || !step) {
       return res.status(400).json({ error: 'Password or code is not right.' });
     }

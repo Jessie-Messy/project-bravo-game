@@ -18,6 +18,8 @@ if (!user) {
   user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
 } else {
   db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(user.id);
+  // Existing sessions were created as a guest; make them sign in again as an admin.
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
 }
 if (process.argv.includes('--reset-mfa')) {
   db.prepare('UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?').run(user.id);

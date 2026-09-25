@@ -27,6 +27,9 @@ export function createPayments(cfg) {
       const back = `${cfg.origin}/booking?ref=${encodeURIComponent(booking.ref)}&t=${encodeURIComponent(statusToken)}`;
       const session = await stripe.checkout.sessions.create({
         mode: 'payment',
+        // Cards (incl. Apple Pay / Google Pay) settle instantly, so a hold never has to
+        // outlive the 30-minute checkout waiting on a slow bank payment.
+        payment_method_types: ['card'],
         customer_email: booking.email,
         client_reference_id: booking.ref,
         metadata: { booking_ref: booking.ref },

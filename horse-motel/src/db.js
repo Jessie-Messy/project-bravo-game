@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
   totp_enabled    INTEGER NOT NULL DEFAULT 0,
   totp_last_step  INTEGER NOT NULL DEFAULT 0,
   failed_logins   INTEGER NOT NULL DEFAULT 0,
+  lock_level      INTEGER NOT NULL DEFAULT 0,
   locked_until    INTEGER NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL
 );
@@ -81,6 +82,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   stripe_session_id  TEXT UNIQUE,
   stripe_payment_intent TEXT,
   hold_expires_at    INTEGER,
+  hold_key           TEXT,
   status_token_hash  TEXT,
   created_at         INTEGER NOT NULL,
   confirmed_at       INTEGER
@@ -141,8 +143,21 @@ export function openDb(cfg, { memory = false } = {}) {
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
   db.exec(SCHEMA);
+  migrate(db);
   seedUnits(db, cfg);
   return db;
+}
+
+// Adds columns introduced after a database was first created.
+function migrate(db) {
+  const add = [
+    ['users', 'lock_level', 'INTEGER NOT NULL DEFAULT 0'],
+    ['bookings', 'hold_key', 'TEXT'],
+  ];
+  for (const [table, col, ddl] of add) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+  }
 }
 
 // Keeps the units table in step with the configured inventory. Units are only ever

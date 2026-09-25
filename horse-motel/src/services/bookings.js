@@ -5,9 +5,14 @@
 //                   guest account, and emails a one-time account set-up link
 //   expireHolds     releases holds nobody paid for
 //   cancel          releases units and ends camera access
+import { ipKeyGenerator } from 'express-rate-limit';
 import { audit } from '../db.js';
 import { randomToken, sha256, safeEqual, bookingRef } from '../security/crypto.js';
 import { BookingError, priceStay, stayProblem } from './inventory.js';
+
+// Unpaid holds take dates off the calendar, so they're rationed: a few per network and
+// per email address, and a ceiling across the whole site.
+export const HOLD_LIMITS = { perNetwork: 2, perEmail: 2, total: 20 };
 
 export function bookingService({ db, cfg, inventory, payments, mailer }) {
   const byRef = db.prepare('SELECT * FROM bookings WHERE ref = ?');
@@ -23,16 +28,26 @@ export function bookingService({ db, cfg, inventory, payments, mailer }) {
 
     // Reserve first, inside one transaction; the UNIQUE(unit, night) constraint makes a
     // simultaneous second booking fail here rather than after someone has paid.
+    const holdKey = ip ? ipKeyGenerator(ip, 56) : '';
     const booking = db.transaction(() => {
+      const pending = db.prepare(`SELECT
+          SUM(hold_key = ?) AS network, SUM(email = ?) AS email, COUNT(*) AS total
+          FROM bookings WHERE status = 'pending'`).get(holdKey, contact.email);
+      if ((pending.network || 0) >= HOLD_LIMITS.perNetwork || (pending.email || 0) >= HOLD_LIMITS.perEmail) {
+        throw new BookingError('You already have a booking waiting for payment. Finish or cancel it first, or wait 30 minutes.', 429);
+      }
+      if (pending.total >= HOLD_LIMITS.total) {
+        throw new BookingError('Lots of people are booking right now. Please try again in a few minutes.', 503);
+      }
       const reason = inventory.unavailableReason(stay);
       if (reason) throw new BookingError(reason, 409);
       const ref = bookingRef();
       const info = db.prepare(`INSERT INTO bookings (ref, kind, status, email, name, phone, check_in, check_out,
-          house, stalls, rv_sites, guests, horses, notes, amount_cents, currency, hold_expires_at, status_token_hash, created_at)
-        VALUES (?, 'guest', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          house, stalls, rv_sites, guests, horses, notes, amount_cents, currency, hold_expires_at, status_token_hash, created_at, hold_key)
+        VALUES (?, 'guest', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         ref, contact.email, contact.name, contact.phone, stay.checkIn, stay.checkOut, stay.house ? 1 : 0,
         stay.stalls, stay.rvSites, stay.guests, stay.stalls, contact.notes || '', quote.total, quote.currency,
-        holdUntil + 5 * 60e3, sha256(statusToken), Date.now());
+        holdUntil + 5 * 60e3, sha256(statusToken), Date.now(), holdKey);
       try { inventory.allocate(info.lastInsertRowid, stay); }
       catch (e) {
         if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') throw new BookingError('Those dates were just taken. Please pick different dates.', 409);
@@ -64,6 +79,12 @@ export function bookingService({ db, cfg, inventory, payments, mailer }) {
       if (!b || b.kind !== 'guest') return { kind: 'unknown' };
       if (sessionId && b.stripe_session_id !== sessionId) return { kind: 'unknown' };
       if (b.status === 'confirmed' || b.status === 'needs_attention') return { kind: 'already' };
+      if (b.status === 'cancelled') {
+        // A late or replayed payment event must never revive a cancelled/refunded stay.
+        audit(db, { action: 'booking.late_payment_ignored', detail: b.ref });
+        return { kind: 'already' };
+      }
+      if (b.status !== 'pending' && b.status !== 'expired') return { kind: 'unknown' };
 
       const stay = { checkIn: b.check_in, checkOut: b.check_out, house: !!b.house, stalls: b.stalls, rvSites: b.rv_sites, guests: b.guests };
       const flag = (why) => {
@@ -76,8 +97,9 @@ export function bookingService({ db, cfg, inventory, payments, mailer }) {
         return flag(`paid ${amountPaid} ${currency}, expected ${b.amount_cents} ${b.currency}`);
       }
       if (b.status !== 'pending') {
-        // The hold lapsed before payment landed. Try to take the units again.
-        try { inventory.allocate(b.id, stay); }
+        // The hold lapsed before payment landed. Try to take the units again, all or
+        // nothing (the inner transaction is a savepoint that rolls back on failure).
+        try { db.transaction(() => inventory.allocate(b.id, stay))(); }
         catch { return flag('paid after the hold expired and the dates are no longer free — refund or rebook'); }
       }
 
@@ -162,7 +184,6 @@ export function bookingService({ db, cfg, inventory, payments, mailer }) {
             continue;
           }
           if (s?.status === 'open') { await payments.expireSession(s.id); }
-          if (s?.status === 'complete') continue; // paid by a delayed method; wait for Stripe
         } catch (e) { console.error('[holds] could not check', b.ref, e.message); continue; }
       }
       db.transaction(() => {
