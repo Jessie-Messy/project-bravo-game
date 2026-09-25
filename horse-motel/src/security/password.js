@@ -2,14 +2,15 @@
 // Parameters follow OWASP guidance: N=2^17, r=8, p=1.
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
+import os from 'node:os';
 
 const scryptRaw = promisify(crypto.scrypt);
 const N = 2 ** 17, R = 8, P = 1, KEYLEN = 64;
 const MAXMEM = 256 * 1024 * 1024;
 
-// Each hash takes ~128 MB and ~0.4 s. Run at most two at once with a short queue, so a
+// Each hash takes ~128 MB and ~0.4 s. Run a few at once (2–4, by CPU count) with a short queue, so a
 // flood of sign-in attempts gets a quick "busy" answer instead of exhausting memory/CPU.
-const MAX_ACTIVE = 2, MAX_QUEUED = 16;
+const MAX_ACTIVE = Math.max(2, Math.min(4, (os.availableParallelism?.() ?? 2) - 1)), MAX_QUEUED = 16;
 let active = 0;
 const queue = [];
 export class HashBusyError extends Error {}

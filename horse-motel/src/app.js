@@ -79,6 +79,18 @@ export function createApp({ cfg, db, payments, mailer }) {
   app.use('/api/admin', adminRoutes(ctx));
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 
+  app.get('/robots.txt', (req, res) => res.type('text').send(
+    `User-agent: *\nDisallow: /api/\nDisallow: /account\nDisallow: /admin\nDisallow: /setup\nDisallow: /booking\nDisallow: /calendar/\nSitemap: ${cfg.origin}/sitemap.xml\n`));
+  app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(
+    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${['/', '/policies']
+      .map((p) => `<url><loc>${cfg.origin}${p}</loc></url>`).join('')}</urlset>\n`));
+  // Lets guests add the site to their home screen and open their stall cameras like an app.
+  app.get('/manifest.webmanifest', (req, res) => res.type('application/manifest+json').json({
+    name: cfg.ranch.name, short_name: 'Stall cams', start_url: '/account', display: 'standalone',
+    background_color: '#fbf7f1', theme_color: '#7a3e14',
+    icons: [{ src: '/img/icon-192.png', sizes: '192x192', type: 'image/png' }, { src: '/img/icon-512.png', sizes: '512x512', type: 'image/png' }],
+  }));
+
   // Calendar feed for Airbnb to import (secret URL; no guest details inside).
   app.get('/calendar/:file', (req, res) => {
     const token = req.params.file.replace(/\.ics$/, '');

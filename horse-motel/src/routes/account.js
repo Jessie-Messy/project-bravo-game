@@ -22,16 +22,17 @@ export function accountRoutes({ db, cfg, inventory, cameras }) {
   }
 
   r.get('/', (req, res) => {
-    const rows = db.prepare(`SELECT id, ref, status, check_in, check_out, house, stalls, rv_sites, guests, amount_cents, currency
+    const rows = db.prepare(`SELECT id, ref, status, check_in, check_out, house, stalls, rv_sites, rv_sewer, guests, amount_cents, refund_cents, currency
         FROM bookings WHERE user_id = ? AND kind = 'guest' AND status IN ('confirmed','needs_attention','cancelled')
         ORDER BY check_in DESC LIMIT 50`).all(req.user.id);
     const bookings = rows.map((b) => ({
       ref: b.ref, status: b.status, checkIn: b.check_in, checkOut: b.check_out, house: !!b.house,
-      stalls: b.stalls, rvSites: b.rv_sites, guests: b.guests, amount: b.amount_cents, currency: b.currency,
+      stalls: b.stalls, rvSites: b.rv_sites, rvSewer: b.rv_sewer, guests: b.guests, amount: b.amount_cents,
+      refunded: b.refund_cents, currency: b.currency,
       units: b.status === 'confirmed' ? inventory.unitsFor(b.id).map((u) => u.label) : [],
     }));
     res.json({ user: publicUser(req.user), bookings, cameras: cameras.camerasForUser(req.user.id),
-      ranch: { name: cfg.ranch.name, checkInHour: cfg.ranch.checkInHour, checkOutHour: cfg.ranch.checkOutHour,
+      ranch: { name: cfg.ranch.name, timezone: cfg.ranch.timezone, checkInHour: cfg.ranch.checkInHour, checkOutHour: cfg.ranch.checkOutHour,
         phone: cfg.ranch.phone, email: cfg.ranch.email } });
   });
 

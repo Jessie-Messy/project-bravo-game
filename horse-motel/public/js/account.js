@@ -1,9 +1,10 @@
-import { api, getSession, setCsrf, el, icon, money, fmtDate, fmtHour, fieldError, clearErrors, showAlert, busy, announce } from './common.js';
+import { api, getSession, setCsrf, el, icon, money, fmtRange, fmtHour, fieldError, clearErrors, showAlert, busy, setStatus } from './common.js';
 import { cameraCard } from './camera-player.js';
 
 const $ = (id) => document.getElementById(id);
 let players = [];
 let me;
+let ranch = { timezone: 'America/Chicago' };
 
 function initTabs() {
   const tabs = [...document.querySelectorAll('[role="tab"]')];
@@ -29,19 +30,14 @@ function initTabs() {
   if (location.hash === '#security') select($('tab-security'), false);
 }
 
-function statusBadge(s) {
-  if (s === 'confirmed') return el('span', { class: 'badge ok' }, icon('check'), 'Confirmed');
-  if (s === 'cancelled') return el('span', { class: 'badge bad' }, 'Cancelled');
+function statusBadge(b) {
+  if (b.status === 'confirmed') return el('span', { class: 'badge ok' }, icon('check'), 'Confirmed');
+  if (b.status === 'cancelled') return el('span', { class: 'badge bad' }, b.refunded ? 'Cancelled · refunded' : 'Cancelled');
   return el('span', { class: 'badge warn' }, 'We’re reviewing this booking');
 }
 
-function render(data) {
-  me = data.user;
-  $('hello').textContent = `Hi${me.name ? ', ' + me.name.split(' ')[0] : ''}`;
-  $('acct-loading').hidden = true;
-  $('acct').hidden = false;
-
-  // Cameras
+// Cameras and stays: safe to redraw at any time (no form fields in here).
+function renderStay(data) {
   players.forEach((p) => p.stop());
   players = [];
   const cams = $('cams');
@@ -51,37 +47,47 @@ function render(data) {
       el('p', { class: 'mt-14 mb-0' }, el('a', { href: '/#book' }, 'Book a stall'))));
   } else {
     const grid = el('div', { class: 'cam-grid' });
-    for (const c of data.cameras) { const p = cameraCard(c, { tz: 'America/Chicago' }); players.push(p); grid.append(p.card); }
+    for (const c of data.cameras) {
+      const p = cameraCard(c, { tz: ranch.timezone, heading: 'h4', stay: c.stay });
+      players.push(p);
+      grid.append(p.card);
+    }
     cams.replaceChildren(grid);
   }
 
-  // Stays
   const stays = $('stays');
   if (!data.bookings.length) {
     stays.replaceChildren(el('p', { class: 'muted' }, 'No bookings on this account yet.'));
-  } else {
-    stays.replaceChildren(...data.bookings.map((b) => {
-      const parts = [];
-      if (b.house) parts.push(`Ranch house (${b.guests} guest${b.guests === 1 ? '' : 's'})`);
-      if (b.stalls) parts.push(`${b.stalls} stall${b.stalls > 1 ? 's' : ''}`);
-      if (b.rvSites) parts.push(`${b.rvSites} RV site${b.rvSites > 1 ? 's' : ''}`);
-      return el('article', { class: 'stay-card' },
-        el('h3', {}, `${fmtDate(b.checkIn, { month: 'short', day: 'numeric' })} – ${fmtDate(b.checkOut)}`),
-        el('div', { class: 'meta' }, statusBadge(b.status), el('span', {}, `Confirmation ${b.ref}`)),
-        el('p', { class: 'm-0' }, parts.join(' · ')),
-        b.units.length ? el('p', { class: 'm-0 muted' }, `Assigned: ${b.units.join(', ')}`) : null,
-        el('p', { class: 'mt-14 mb-0 small muted' }, `Check-in from ${fmtHour(data.ranch.checkInHour)} · check-out by ${fmtHour(data.ranch.checkOutHour)} · Paid ${money(b.amount, b.currency)}`));
-    }));
+    return;
   }
+  stays.replaceChildren(...data.bookings.map((b) => {
+    const parts = [];
+    if (b.house) parts.push(`Ranch house (${b.guests} guest${b.guests === 1 ? '' : 's'})`);
+    if (b.stalls) parts.push(`${b.stalls} stall${b.stalls > 1 ? 's' : ''}`);
+    if (b.rvSites) parts.push(`${b.rvSites} RV hookup${b.rvSites > 1 ? 's' : ''}`);
+    if (b.rvSewer) parts.push(`${b.rvSewer} full hookup${b.rvSewer > 1 ? 's' : ''}`);
+    const paid = b.status === 'cancelled'
+      ? (b.refunded ? `Refunded ${money(b.refunded, b.currency)}` : 'Cancelled')
+      : `Paid ${money(b.amount, b.currency)}`;
+    return el('article', { class: 'stay-card' },
+      el('h4', {}, fmtRange(b.checkIn, b.checkOut)),
+      el('div', { class: 'meta' }, statusBadge(b), el('span', {}, `Confirmation ${b.ref}`)),
+      el('p', { class: 'm-0' }, parts.join(' · ')),
+      b.units.length ? el('p', { class: 'm-0 muted' }, `Assigned: ${b.units.join(', ')}`) : null,
+      el('p', { class: 'mt-14 mb-0 small muted' }, `Check-in from ${fmtHour(data.ranch.checkInHour)} · check-out by ${fmtHour(data.ranch.checkOutHour)} · ${paid}`));
+  }));
+}
 
-  // Security
+// Account & security: filled once, never overwritten by the background refresh, so
+// nothing a person is typing is ever lost.
+function renderSecurity() {
   $('p-email').value = me.email; $('pw-username').value = me.email;
   $('p-name').value = me.name; $('p-phone').value = me.phone;
   renderMfa();
   const nag = $('mfa-nag');
   if (me.role === 'admin' && !me.totpEnabled) {
     nag.hidden = false;
-    nag.replaceChildren('Admin accounts must turn on two-step verification before the admin page will open. ',
+    nag.replaceChildren('Owner accounts must turn on two-step verification before the admin page will open. ',
       el('a', { href: '#security', onclick: (e) => { e.preventDefault(); $('tab-security').click(); } }, 'Set it up now'));
   } else nag.hidden = true;
 }
@@ -94,20 +100,23 @@ function renderMfa() {
   $('mfa-confirm-form').hidden = true;
 }
 
-async function load() {
+async function load({ initial = false } = {}) {
   try {
-    render(await api('/api/account'));
+    const data = await api('/api/account');
+    ranch = data.ranch;
+    if (initial) {
+      me = data.user;
+      $('hello').textContent = `Hi${me.name ? ', ' + me.name.split(' ')[0] : ''}`;
+      $('acct-kind').textContent = me.role === 'admin' ? 'Owner account' : 'Guest account';
+      $('acct-loading').hidden = true;
+      $('acct').hidden = false;
+      renderSecurity();
+    }
+    renderStay(data);
   } catch (e) {
     if (e.status === 401) { location.replace('/login?next=/account'); return; }
-    $('acct-loading').hidden = true;
-    showAlert($('acct-error'), e.message);
+    if (initial) { $('acct-loading').hidden = true; showAlert($('acct-error'), e.message); }
   }
-}
-
-function msg(box, text, kind = 'success') {
-  box.className = `alert ${kind}`;
-  box.textContent = text;
-  box.hidden = !text;
 }
 
 function wireForms() {
@@ -131,8 +140,9 @@ function wireForms() {
     busy(btn, true, 'Saving…');
     try {
       await api('/api/account/profile', { method: 'POST', body: { name: name.value.trim(), phone: $('p-phone').value.trim() } });
-      msg($('profile-msg'), 'Saved.');
-    } catch (ex) { msg($('profile-msg'), ex.message, 'error'); }
+      me.name = name.value.trim();
+      setStatus($('profile-msg'), 'Saved.');
+    } catch (ex) { setStatus($('profile-msg'), ex.message, 'error'); }
     busy(btn, false);
   });
 
@@ -148,11 +158,11 @@ function wireForms() {
     try {
       const out = await api('/api/account/password', { method: 'POST', body: { current: cur.value, next: nxt.value } });
       if (out.csrf) setCsrf(out.csrf);
-      form.reset();
-      msg($('pw-msg'), 'Password changed. Other devices have been signed out.');
+      cur.value = ''; nxt.value = '';
+      setStatus($('pw-msg'), 'Password changed. Other devices have been signed out.');
     } catch (ex) {
       const target = ex.body?.field === 'current' ? cur : ex.body?.field === 'next' ? nxt : null;
-      if (target) { fieldError(target, ex.message); target.focus(); } else msg($('pw-msg'), ex.message, 'error');
+      if (target) { fieldError(target, ex.message); target.focus(); } else setStatus($('pw-msg'), ex.message, 'error');
     }
     busy(btn, false);
   });
@@ -170,12 +180,14 @@ function wireForms() {
       pw.value = '';
       $('mfa-qr').src = out.qr;
       $('mfa-secret').textContent = out.secret.replace(/(.{4})/g, '$1 ').trim();
+      busy(btn, false);
       form.hidden = true;
       $('mfa-confirm-form').hidden = false;
-      $('mfa-code').focus();
-      msg($('mfa-msg'), '');
+      setStatus($('mfa-msg'), '');
+      $('mfa-steps').focus(); // read the steps and the setup key before the code box
+      return;
     } catch (ex) {
-      if (ex.body?.field === 'password') { fieldError(pw, ex.message); pw.focus(); } else msg($('mfa-msg'), ex.message, 'error');
+      if (ex.body?.field === 'password') { fieldError(pw, ex.message); pw.focus(); } else setStatus($('mfa-msg'), ex.message, 'error');
     }
     busy(btn, false);
   });
@@ -192,13 +204,16 @@ function wireForms() {
       const out = await api('/api/account/mfa/confirm', { method: 'POST', body: { code: code.value.trim() } });
       if (out.csrf) setCsrf(out.csrf);
       code.value = '';
+      busy(btn, false);
       me.totpEnabled = true;
       renderMfa();
-      msg($('mfa-msg'), 'Two-step verification is on. You’ll be asked for a code each time you sign in.');
-      $('mfa-msg').focus?.();
-      announce('Two-step verification turned on.');
       await getSession(true);
       if (me.role === 'admin') $('mfa-nag').hidden = true;
+      setStatus($('mfa-msg'), me.role === 'admin'
+        ? 'Two-step verification is on. The admin page is ready.'
+        : 'Two-step verification is on. You’ll be asked for a code each time you sign in.', 'success', { focus: true });
+      if (me.role === 'admin') $('mfa-msg').querySelector('p').append(' ', el('a', { href: '/admin' }, 'Open the admin page'));
+      return;
     } catch (ex) {
       fieldError(code, ex.message); code.focus();
     }
@@ -213,19 +228,24 @@ function wireForms() {
     try {
       await api('/api/account/mfa/disable', { method: 'POST', body: { password: $('mfa-off-pw').value, code: $('mfa-off-code').value.trim() } });
       form.reset();
+      busy(btn, false);
       me.totpEnabled = false;
       renderMfa();
-      msg($('mfa-msg'), 'Two-step verification is off.', 'info');
-    } catch (ex) { msg($('mfa-msg'), ex.message, 'error'); }
+      setStatus($('mfa-msg'), 'Two-step verification is off.', 'info', { focus: true });
+      return;
+    } catch (ex) { setStatus($('mfa-msg'), ex.message, 'error'); }
     busy(btn, false);
   });
 }
 
-document.addEventListener('visibilitychange', () => { /* image feeds pause themselves when hidden */ });
 window.addEventListener('pagehide', () => players.forEach((p) => p.stop()));
 
 initTabs();
 wireForms();
-getSession().then(({ user }) => { if (!user) location.replace('/login?next=/account'); else load(); });
-// Keep camera windows current: re-check every 5 minutes (cameras turn on/off by time).
-setInterval(() => { if (!document.hidden && !players.some((p) => p.card.querySelector('video, img'))) load(); }, 5 * 60e3);
+getSession().then(({ user }) => { if (!user) location.replace('/login?next=/account'); else load({ initial: true }); });
+// Cameras switch on and off with the clock: refresh that list every 5 minutes, but only
+// while the cameras tab is showing and nothing is playing.
+setInterval(() => {
+  if (document.hidden || $('panel-stay').hidden || players.some((p) => p.playing())) return;
+  load();
+}, 5 * 60e3);

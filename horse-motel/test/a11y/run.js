@@ -88,6 +88,25 @@ for (const scheme of ['light', 'dark']) {
   }
 }
 
+// The phone menu opens, shows its links, and closes with Escape (on every kind of page).
+{
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const page = await ctx.newPage();
+  for (const p of ['/', '/login', '/policies', '/booking?ref=x&t=y']) {
+    await page.goto(t.base + p, { waitUntil: 'networkidle' });
+    await page.locator('.menu-toggle').focus();
+    await page.keyboard.press('Enter');
+    const open = await page.locator('.menu-toggle').getAttribute('aria-expanded');
+    const visible = await page.locator('#site-nav a[href="/#book"]').isVisible();
+    if (open !== 'true' || !visible) failures.push(`menu: did not open on ${p} (aria-expanded=${open}, links visible=${visible})`);
+    await page.keyboard.press('Escape');
+    if (await page.locator('#site-nav').isVisible()) failures.push(`menu: Escape did not close it on ${p}`);
+    const scripts = await page.evaluate(() => performance.getEntriesByType('resource').filter((r) => /common\.js/.test(r.name)).length);
+    if (scripts > 1) failures.push(`common.js loaded ${scripts} times on ${p}`);
+  }
+  await ctx.close();
+}
+
 // Keyboard-only: pick dates on the calendar, open the gallery dialog, and close it.
 {
   const ctx = await browser.newContext({ viewport: { width: 1366, height: 900 } });

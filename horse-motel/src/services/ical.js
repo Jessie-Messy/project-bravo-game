@@ -9,6 +9,8 @@
 // Export: /calendar/<ICAL_EXPORT_TOKEN>.ics lists nights taken here (house bookings and
 // owner blocks, never guest names) for Airbnb's "Import calendar".
 import crypto from 'node:crypto';
+import dns from 'node:dns/promises';
+import net from 'node:net';
 import { audit } from '../db.js';
 import { addDays, isIsoDate, todayIn } from '../dates.js';
 import { BookingError } from './inventory.js';
@@ -44,7 +46,19 @@ export function parseIcs(text, tz) {
   return events.filter((e) => isIsoDate(e.start) && isIsoDate(e.end));
 }
 
+const PRIVATE_V4 = [/^10\./, /^127\./, /^169\.254\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./, /^0\./];
+const isPrivate = (ip) => (net.isIPv6(ip)
+  ? /^(::1$|fc|fd|fe80:|::ffff:(10|127|169\.254|192\.168)\.)/i.test(ip)
+  : PRIVATE_V4.some((re) => re.test(ip)));
+
 export function icalService({ db, cfg, bookings, mailer }) {
+  // Tests point the importer at a local server; everywhere else feeds must be public.
+  async function assertPublicHost(hostname, original) {
+    if (cfg.test && new URL(original).hostname === hostname) return;
+    const addrs = net.isIP(hostname) ? [hostname] : (await dns.lookup(hostname, { all: true })).map((a) => a.address);
+    if (!addrs.length || addrs.some(isPrivate) || /(^|\.)(localhost|internal)$/i.test(hostname)) throw new Error('feed address is not a public host');
+  }
+
   const state = { lastSync: null, lastError: null, imported: 0 };
 
   function unitIdsFor(spec) {
@@ -59,10 +73,21 @@ export function icalService({ db, cfg, bookings, mailer }) {
     return [...ids];
   }
 
+  // Follows up to 3 redirects by hand, checking every hop: never downgrade from https,
+  // never go to a loopback / private / link-local / metadata address.
   async function fetchFeed(url) {
-    const r = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(20000), headers: { accept: 'text/calendar' } });
+    let current = new URL(url);
+    let r;
+    for (let hop = 0; ; hop++) {
+      await assertPublicHost(current.hostname, url);
+      r = await fetch(current, { redirect: 'manual', signal: AbortSignal.timeout(20000), headers: { accept: 'text/calendar' } });
+      if (![301, 302, 303, 307, 308].includes(r.status)) break;
+      if (hop >= 3) throw new Error('feed redirected too many times');
+      const next = new URL(r.headers.get('location') || '', current);
+      if (current.protocol === 'https:' && next.protocol !== 'https:') throw new Error('feed redirected away from https');
+      current = next;
+    }
     if (!r.ok) throw new Error(`feed returned ${r.status}`);
-    if (url.startsWith('https://') && !r.url.startsWith('https://')) throw new Error('feed redirected away from https');
     const chunks = [];
     let size = 0;
     for await (const c of r.body) { size += c.length; if (size > MAX_BYTES) throw new Error('feed too large'); chunks.push(c); }

@@ -12,7 +12,7 @@
   <div class="wrap">
     <div class="page-head">
       <div>
-        <p class="eyebrow">Guest account</p>
+        <p class="eyebrow" id="acct-kind">Your account</p>
         <h1 id="hello">My stay</h1>
       </div>
       <button type="button" class="btn secondary small" id="logout">Sign out</button>
@@ -40,10 +40,10 @@
         <div class="grid-2">
           <form class="panel" id="profile-form" novalidate>
             <h3>Your details</h3>
-            <div class="field"><label for="p-email">Email</label><input type="email" id="p-email" readonly aria-describedby="p-email-hint"><p class="hint" id="p-email-hint">To change your email, contact us.</p></div>
+            <div class="field"><label for="p-email">Email</label><input type="email" id="p-email" readonly aria-describedby="p-email-hint"><p class="hint" id="p-email-hint">To change your email, contact us (details at the bottom of the page).</p></div>
             <div class="field"><label for="p-name">Name</label><input type="text" id="p-name" autocomplete="name" maxlength="80" required></div>
             <div class="field"><label for="p-phone">Mobile phone</label><input type="tel" id="p-phone" autocomplete="tel" maxlength="25"></div>
-            <div class="alert" id="profile-msg" role="status" hidden></div>
+            <div class="status-region" id="profile-msg" role="status"></div>
             <button class="btn" type="submit">Save details</button>
           </form>
 
@@ -52,7 +52,7 @@
             <input type="text" autocomplete="username" id="pw-username" class="visually-hidden" tabindex="-1" aria-hidden="true" readonly>
             <div class="field"><label for="pw-current">Current password</label><input type="password" id="pw-current" autocomplete="current-password" required maxlength="200"></div>
             <div class="field"><label for="pw-next">New password</label><input type="password" id="pw-next" autocomplete="new-password" required minlength="12" maxlength="128" aria-describedby="pw-next-hint"><p class="hint" id="pw-next-hint">At least 12 characters. Changing it signs you out on other devices.</p></div>
-            <div class="alert" id="pw-msg" role="status" hidden></div>
+            <div class="status-region" id="pw-msg" role="status"></div>
             <button class="btn" type="submit">Change password</button>
           </form>
 
@@ -66,7 +66,7 @@
                 <button class="btn" type="submit">Turn on two-step verification</button>
               </form>
               <form id="mfa-confirm-form" novalidate hidden>
-                <ol>
+                <ol id="mfa-steps" tabindex="-1" aria-label="Set up steps">
                   <li>Open your authenticator app and scan this code.<br><img id="mfa-qr" class="qr mt-14" alt="QR code to add this account to an authenticator app. If you can’t scan it, type the setup key shown below."></li>
                   <li class="mt-14">Can’t scan? Enter this setup key instead: <code class="secret" id="mfa-secret"></code></li>
                   <li class="mt-14">Enter the 6-digit code the app shows.</li>
@@ -81,7 +81,7 @@
               <div class="field"><label for="mfa-off-code">6-digit code</label><input type="text" id="mfa-off-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div>
               <button class="btn secondary" type="submit">Turn off</button>
             </form>
-            <div class="alert" id="mfa-msg" role="status" hidden></div>
+            <div class="status-region" id="mfa-msg" role="status"></div>
           </div>
 
           <div class="panel">

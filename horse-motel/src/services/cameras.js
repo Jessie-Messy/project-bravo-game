@@ -82,6 +82,7 @@ export function cameraService({ db, cfg }) {
       const w = windowFor(r, r.camera_id);
       if (now > w.until) continue; // stay is over: no longer listed
       const entry = { id: r.public_id, name: r.name, type: r.source_type === 'hls' ? 'hls' : 'image', booking: r.ref,
+        stay: { checkIn: r.check_in, checkOut: r.check_out },
         covers: unitLabels.all(r.camera_id, r.id).map((x) => x.label), liveFrom: w.from, liveUntil: w.until,
         live: now >= w.from && now <= w.until };
       // The same camera across two stays: show the one that's live, else the soonest.

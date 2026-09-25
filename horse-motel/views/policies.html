@@ -14,6 +14,7 @@
     <nav aria-label="On this page">
       <ul>
         <li><a href="#rules">House &amp; barn rules</a></li>
+        <li><a href="#cancellations">Cancellations</a></li>
         <li><a href="#liability">Equine liability</a></li>
         <li><a href="#cameras">Stall cameras</a></li>
         <li><a href="#privacy">Privacy</a></li>
@@ -23,8 +24,8 @@
 
     <h2 id="rules">House &amp; barn rules</h2>
     <ul>
-      <li>Check-in after 3:00 PM. Check-out by 11:00 AM.</li>
-      <li>Up to 6 guests in the house. No smoking anywhere indoors.</li>
+      <li>Check-in after {{checkInTime}}. Check-out by {{checkOutTime}}.</li>
+      <li>Up to {{maxGuests}} guests in the house. No smoking anywhere indoors.</li>
       <li>Before you leave: gather used towels, throw trash away, turn things off, and lock up.</li>
       <li>Pets are welcome. Service animals are always welcome and are not counted as pets.</li>
       <li>Our turkeys, ducks and chickens roam freely. They’re friendly — let us know if they bother you.</li>
@@ -33,13 +34,17 @@
       <li>Guests are expected to leave the property in good condition. If excessive cleaning or repairs are needed because of guests or animals, a cleaning and/or damage fee will be charged based on the work required.</li>
     </ul>
 
+    <h2 id="cancellations">Cancellations</h2>
+    <p>{{cancellationPolicy}}</p>
+    <p>Contact details are at the bottom of every page.</p>
+
     <h2 id="liability">Equine liability</h2>
     <p>The use of all equine facilities, including the barn, stalls, turnouts, riding arena, and other horse-related areas, is at your own risk. By bringing horses onto the property, guests acknowledge and accept all risks associated with equine activities.</p>
     <p>{{ranch}}, its owners, and its representatives are not responsible or liable for any injury, illness, loss, damage, or death involving horses, riders, handlers, spectators, or personal property resulting from equine activities or the use of the ranch’s facilities.</p>
     <p>We appreciate your cooperation in helping us maintain a safe and enjoyable environment for all guests and their horses.</p>
 
     <h2 id="cameras">Stall cameras</h2>
-    <p>Each stall has a camera so guests can check on their own horses. When you book a stall, you can watch only the camera(s) for the stall(s) assigned to you, from 3 hours before check-in until 2 hours after check-out. Other guests cannot see your stalls. Exterior security cameras also operate on the property.</p>
+    <p>Each stall has a camera so guests can check on their own horses. When you book a stall, you can watch only the camera(s) on the stall(s) assigned to you, from {{camBefore}} hours before check-in until {{camAfter}} hours after check-out. If one camera covers two neighbouring stalls, guests in either stall can see both while their stays overlap. Exterior security cameras also operate on the property.</p>
 
     <h2 id="privacy">Privacy</h2>
     <p>We collect your name, email, phone number and booking details to run your reservation and give you camera access. Payments are handled by Stripe; we never receive or store your card number. We don’t sell your information or use advertising trackers, and this site sets only one cookie — to keep you signed in.</p>

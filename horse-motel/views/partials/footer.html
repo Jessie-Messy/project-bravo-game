@@ -3,15 +3,17 @@
     <div class="footer-grid">
       <div>
         <h2>{{ranch}}</h2>
-        <p>Country lodging and a horse hotel just 8 miles off I-40 in Lonoke, Arkansas. An 8-stall barn, RV and trailer hookups, and a furnished ranch house.</p>
+        <p>Country lodging and a horse hotel just 8 miles off I-40 in Lonoke, Arkansas. An {{stallCount}}-stall barn, RV and trailer hookups, and a furnished ranch house.</p>
+        <h2 class="mt-20">Contact us</h2>
+        <ul><!--#contact--></ul>
       </div>
       <div>
         <h2>Visit</h2>
         <ul>
-          <li>Lonoke, Arkansas</li>
-          <li>34.863750° N, 91.916582° W</li>
-          <li><a href="https://www.google.com/maps/search/?api=1&amp;query=34.863750,-91.916582" rel="noopener noreferrer" target="_blank">Directions in Google Maps<span class="visually-hidden"> (opens in a new tab)</span></a></li>
-          <li><a href="https://maps.apple.com/?ll=34.863750,-91.916582&amp;q=Rockin%27%20C%20Ranch" rel="noopener noreferrer" target="_blank">Directions in Apple Maps<span class="visually-hidden"> (opens in a new tab)</span></a></li>
+          <li>{{address}}</li>
+          <li>{{coords}}</li>
+          <li><a href="https://www.google.com/maps/search/?api=1&amp;query={{lat}},{{lng}}" rel="noopener noreferrer" target="_blank">Directions in Google Maps<span class="visually-hidden"> (opens in a new tab)</span></a></li>
+          <li><a href="https://maps.apple.com/?ll={{lat}},{{lng}}&amp;q={{ranch}}" rel="noopener noreferrer" target="_blank">Directions in Apple Maps<span class="visually-hidden"> (opens in a new tab)</span></a></li>
         </ul>
       </div>
       <div>

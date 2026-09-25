@@ -1,7 +1,7 @@
 // Plays one stall camera. HLS video uses the browser's native player where it exists
 // (Safari, iOS) and hls.js elsewhere; still-image cameras refresh every 2 seconds.
 // Every request goes through /api/cameras/…, which re-checks the guest's access.
-import { el, icon, fmtInstant } from './common.js';
+import { el, icon, fmtInstant, fmtRange } from './common.js';
 
 let hlsLoader;
 function loadHls() {
@@ -10,21 +10,23 @@ function loadHls() {
     const s = document.createElement('script');
     s.src = '/vendor/hls.light.min.js';
     s.onload = () => resolve(window.Hls);
-    s.onerror = () => reject(new Error('player failed to load'));
+    s.onerror = () => { hlsLoader = null; reject(new Error('player failed to load')); };
     document.head.append(s);
   });
   return hlsLoader;
 }
 
-export function cameraCard(cam, { tz } = {}) {
+export function cameraCard(cam, { tz = 'America/Chicago', heading = 'h4', stay = null } = {}) {
   const view = el('div', { class: 'view' });
-  const title = el('h3', {}, cam.name);
-  const detail = el('p', {}, cam.covers?.length ? `Shows ${cam.covers.join(' & ')}` : '');
+  const title = el(heading, {}, cam.name);
+  const detail = el('p', {}, [cam.covers?.length ? `Shows ${cam.covers.join(' & ')}` : '', stay ? ` · Your stay ${fmtRange(stay.checkIn, stay.checkOut)}` : ''].join('').replace(/^ · /, ''));
   const status = el('p', { role: 'status', class: 'small' });
   const actions = el('div', { class: 'cam-actions' });
   const card = el('article', { class: 'cam', 'aria-label': cam.name }, view,
     el('div', { class: 'body' }, el('div', {}, title, detail, status), actions));
   let stop = () => {};
+  // Only touch the live region when the message actually changes.
+  const setStatus = (text) => { if (status.textContent !== text) status.textContent = text; };
 
   function placeholder(...content) { view.replaceChildren(el('div', { class: 'placeholder' }, ...content)); }
 
@@ -34,15 +36,34 @@ export function cameraCard(cam, { tz } = {}) {
   }
 
   const watch = el('button', { type: 'button', class: 'btn small' }, icon('camera'), 'Watch live');
-  const full = el('button', { type: 'button', class: 'btn secondary small', hidden: true }, icon('expand'), 'Full screen');
+  const full = el('button', { type: 'button', class: 'btn secondary small', hidden: true }, icon('expand'), el('span', {}, 'Full screen'));
   const pause = el('button', { type: 'button', class: 'btn secondary small', hidden: true }, 'Stop');
   actions.append(watch, full, pause);
   placeholder(el('p', { class: 'm-0' }, 'Press “Watch live” to start the feed.'),
     el('p', { class: 'm-0 small' }, `Available until ${fmtInstant(cam.liveUntil, tz)}`));
 
+  function ended(message) {
+    stop();
+    pause.hidden = true; full.hidden = true; watch.hidden = true;
+    placeholder(icon('lock'), el('p', { class: 'm-0' }, message));
+    setStatus(message);
+  }
+
+  // Full screen: the real thing where supported, otherwise the card fills the viewport.
+  function toggleFull() {
+    const target = view.querySelector('video') || view;
+    if (!card.classList.contains('expanded') && document.fullscreenEnabled && target.requestFullscreen) { target.requestFullscreen(); return; }
+    if (target.webkitEnterFullscreen && target.tagName === 'VIDEO') { target.webkitEnterFullscreen(); return; }
+    const on = card.classList.toggle('expanded');
+    full.querySelector('span').textContent = on ? 'Exit full screen' : 'Full screen';
+    full.focus();
+  }
+  card.addEventListener('keydown', (e) => { if (e.key === 'Escape' && card.classList.contains('expanded')) toggleFull(); });
+
   async function start() {
     watch.hidden = true; pause.hidden = false; full.hidden = false;
-    status.textContent = 'Connecting…';
+    pause.focus(); // the button that had focus is gone; land on its opposite
+    setStatus('Connecting…');
     const base = `/api/cameras/${encodeURIComponent(cam.id)}`;
     if (cam.type === 'hls') {
       const video = el('video', { muted: true, playsinline: true, controls: true, 'aria-label': `Live video: ${cam.name}` });
@@ -50,59 +71,78 @@ export function cameraCard(cam, { tz } = {}) {
       view.replaceChildren(video, el('span', { class: 'live-pill', 'aria-hidden': 'true' }, 'LIVE'));
       const src = `${base}/hls/index.m3u8`;
       let hls;
-      const onError = (msg) => { status.textContent = msg; };
-      video.addEventListener('playing', () => { status.textContent = 'Live'; });
+      let networkRetries = 0, mediaRecoveries = 0, retryTimer;
+      video.addEventListener('playing', () => { networkRetries = 0; setStatus('Live'); });
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = src;
-        video.addEventListener('error', () => onError('The camera stream stopped. Press Stop, then Watch live to retry.'));
+        video.addEventListener('error', () => setStatus('The camera stream stopped. Press Stop, then Watch live to try again.'));
       } else {
         try {
           const Hls = await loadHls();
-          if (!Hls.isSupported()) { onError('This browser can’t play live video. Try Chrome, Edge, Firefox or Safari.'); return; }
+          if (!Hls.isSupported()) { setStatus('This browser can’t play live video. Try Chrome, Edge, Firefox or Safari.'); return; }
           hls = new Hls({ lowLatencyMode: false, liveSyncDurationCount: 3, xhrSetup: (xhr) => { xhr.withCredentials = true; } });
           hls.on(Hls.Events.ERROR, (_, data) => {
             if (!data.fatal) return;
-            if (data.response?.code === 403) { onError('Your access to this camera has ended.'); hls.destroy(); return; }
-            onError('Reconnecting…');
-            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) setTimeout(() => hls.startLoad(), 3000);
-            else hls.recoverMediaError();
+            if (data.response?.code === 403) { ended('Your access to this camera has ended.'); return; }
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetries < 8) {
+              // Back off: 2s, 4s, 8s … up to 30s, then give up with a clear message.
+              const wait = Math.min(30000, 2000 * 2 ** networkRetries++);
+              setStatus('Reconnecting…');
+              retryTimer = setTimeout(() => hls.startLoad(), wait);
+            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 2) {
+              mediaRecoveries++;
+              hls.recoverMediaError();
+            } else {
+              hls.destroy();
+              setStatus(data.type === Hls.ErrorTypes.MEDIA_ERROR
+                ? 'This camera’s video format can’t be played in the browser.'
+                : 'The camera stream isn’t available right now. Press Stop, then Watch live to try again.');
+            }
           });
           hls.loadSource(src);
           hls.attachMedia(video);
-        } catch { onError('The video player didn’t load. Refresh the page to try again.'); return; }
+        } catch { setStatus('The video player didn’t load. Refresh the page to try again.'); return; }
       }
-      video.play().catch(() => { status.textContent = 'Press play to start.'; });
-      stop = () => { hls?.destroy(); video.removeAttribute('src'); video.load(); };
-      full.onclick = () => (video.requestFullscreen?.() || video.webkitEnterFullscreen?.());
+      video.play().catch(() => { setStatus('Press play to start.'); });
+      stop = () => { clearTimeout(retryTimer); hls?.destroy(); video.removeAttribute('src'); video.load(); };
     } else {
       const img = el('img', { alt: `Live picture from ${cam.name}, refreshed every 2 seconds` });
       view.replaceChildren(img, el('span', { class: 'live-pill', 'aria-hidden': 'true' }, 'LIVE'));
       let timer, failures = 0, alive = true;
-      const tick = () => {
+      const tick = async () => {
         if (!alive) return;
         if (document.hidden) { timer = setTimeout(tick, 2000); return; }
-        const next = new Image();
-        next.onload = () => { img.src = next.src; failures = 0; status.textContent = 'Live'; timer = setTimeout(tick, 2000); };
-        next.onerror = () => {
+        try {
+          const r = await fetch(`${base}/snapshot?t=${Date.now()}`, { credentials: 'same-origin', cache: 'no-store' });
+          if (r.status === 401 || r.status === 403) { ended('Your access to this camera has ended.'); return; }
+          if (!r.ok) throw new Error(String(r.status));
+          const url = URL.createObjectURL(await r.blob());
+          const old = img.src;
+          img.src = url;
+          if (old.startsWith('blob:')) URL.revokeObjectURL(old);
+          failures = 0;
+          setStatus('Live');
+          timer = setTimeout(tick, 2000);
+        } catch {
           failures++;
-          status.textContent = failures > 2 ? 'The camera isn’t responding. We’ll keep trying.' : 'Reconnecting…';
-          timer = setTimeout(tick, Math.min(15000, 2000 * failures));
-        };
-        next.src = `${base}/snapshot?t=${Date.now()}`;
+          setStatus(failures > 2 ? 'The camera isn’t responding. We’ll keep trying.' : 'Reconnecting…');
+          timer = setTimeout(tick, Math.min(30000, 2000 * failures));
+        }
       };
       tick();
-      stop = () => { alive = false; clearTimeout(timer); };
-      full.onclick = () => view.requestFullscreen?.();
+      stop = () => { alive = false; clearTimeout(timer); if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src); };
     }
   }
 
   watch.addEventListener('click', start);
+  full.addEventListener('click', toggleFull);
   pause.addEventListener('click', () => {
     stop();
+    if (card.classList.contains('expanded')) toggleFull();
     pause.hidden = true; full.hidden = true; watch.hidden = false;
-    status.textContent = 'Stopped.';
+    setStatus('Stopped.');
     placeholder(el('p', { class: 'm-0' }, 'Feed stopped.'));
     watch.focus();
   });
-  return { card, stop: () => stop() };
+  return { card, stop: () => stop(), playing: () => !pause.hidden };
 }

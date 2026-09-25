@@ -168,8 +168,10 @@ function validate(cfg) {
   }
   if (cfg.dataKey && Buffer.from(cfg.dataKey, 'base64').length !== 32) problems.push('DATA_KEY must be 32 random bytes, base64 (openssl rand -base64 32)');
   // Test payments confirm bookings for free, so they only ever run on a private dev machine.
+  // Behind a reverse proxy (TRUST_PROXY > 0) the site is reachable by others, so no.
   if (cfg.payments.mode === 'mock' && !cfg.test &&
-      (cfg.production || cfg.origin.startsWith('https://') || !LOOPBACK.has(cfg.host))) {
+      (cfg.production || cfg.origin.startsWith('https://') || !LOOPBACK.has(cfg.host) || cfg.trustProxy > 0 ||
+       !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(cfg.origin))) {
     problems.push('Test payments (PAYMENTS_MODE=mock) only run on localhost over http. Set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET.');
   }
   if (cfg.production) {

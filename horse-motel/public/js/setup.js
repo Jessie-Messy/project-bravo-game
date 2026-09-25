@@ -31,9 +31,11 @@ function fail(msg) {
     form.hidden = false;
     document.getElementById('acct-email').value = info.email;
     if (info.purpose !== 'setup') document.getElementById('setup-title').textContent = 'Choose a new password';
-    document.getElementById('setup-intro').textContent = info.purpose === 'setup'
-      ? 'Welcome! Choose a password to finish setting up your guest account. You’ll use it to see your stay and watch your stall cameras.'
-      : 'Choose a new password for your account. You’ll be signed out everywhere else.';
+    document.getElementById('setup-intro').textContent = info.purpose !== 'setup'
+      ? 'Choose a new password for your account. You’ll be signed out everywhere else.'
+      : info.role === 'admin'
+        ? 'Welcome! Choose a password for your owner account. Next you’ll turn on two-step verification, which the admin page requires.'
+        : 'Welcome! Choose a password to finish setting up your guest account. You’ll use it to see your stay and watch your stall cameras.';
     pw.focus();
   } catch (e) { fail(e.message); }
 })();

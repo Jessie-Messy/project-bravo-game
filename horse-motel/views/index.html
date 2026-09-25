@@ -4,10 +4,14 @@
 <!--#head-->
 <title>{{ranch}} — Horse Hotel &amp; Country Lodging in Lonoke, Arkansas</title>
 <meta name="description" content="Overnight horse stalls, RV and trailer hookups, and a furnished 3-bedroom ranch house 8 miles off I-40 in Lonoke, Arkansas. Book online and watch your horse on a live stall camera.">
+<link rel="canonical" href="{{origin}}/">
 <meta property="og:title" content="{{ranch}} — Horse Hotel &amp; Country Lodging">
-<meta property="og:description" content="8-stall barn, RV and trailer hookups, and a ranch house just off I-40. Live stall cameras for every horse guest.">
-<meta property="og:image" content="/img/og.jpg">
+<meta property="og:description" content="{{stallCount}}-stall barn, RV and trailer hookups, and a ranch house just off I-40. Live stall cameras for every horse guest.">
+<meta property="og:image" content="{{origin}}/img/og.jpg">
+<meta property="og:url" content="{{origin}}/">
 <meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<!--#structured-data-->
 <script type="module" src="/js/home.js?v={{v}}"></script>
 </head>
 <body>
@@ -20,17 +24,17 @@
       <img src="/img/sunset-drive-1600.webp" alt="" fetchpriority="high" width="1600" height="1200">
     </picture>
     <div class="wrap">
-      <p class="eyebrow">Lonoke, Arkansas · 8 miles off I-40</p>
+      <p class="eyebrow">{{address}} · 8 miles off I-40</p>
       <h1 id="hero-title">A safe night’s rest for you and your horses.</h1>
-      <p class="lede">An 8-stall barn with turnouts, six RV and trailer hookups, and a furnished three-bedroom ranch house. Every stall has a camera, so you can check on your horse from bed.</p>
+      <p class="lede">A {{stallCount}}-stall barn with turnouts, {{rvCount}} RV and trailer hookups, and a furnished three-bedroom ranch house. Every stall has a camera, so you can check on your horse from bed.</p>
       <div class="hero-actions">
         <a class="btn" href="#book">Check availability</a>
         <a class="btn ghost-light" href="#cameras">How stall cams work</a>
       </div>
       <ul class="hero-badges">
-        <li><span aria-hidden="true">★</span> 5.0 guest rating</li>
+        <!--#rating-->
         <li>Pet-friendly</li>
-        <li>Check-in from 3 PM</li>
+        <li>Check-in from {{checkInTime}}</li>
       </ul>
     </div>
   </section>
@@ -45,7 +49,7 @@
       <ul class="features clean">
         <li class="feature">
           <div class="icon" aria-hidden="true"><svg><use href="/img/icons.svg#barn"></use></svg></div>
-          <h3>8-stall barn &amp; turnouts</h3>
+          <h3>{{stallCount}}-stall barn &amp; turnouts</h3>
           <p>New pine stalls with steel grille fronts and a fan over every stall. A riding arena is being built next door.</p>
         </li>
         <li class="feature">
@@ -56,12 +60,12 @@
         <li class="feature">
           <div class="icon" aria-hidden="true"><svg><use href="/img/icons.svg#rv"></use></svg></div>
           <h3>RV &amp; trailer hookups</h3>
-          <p>Six sites with power and water, two with sewer, on a big gravel lot with room to swing a long rig.</p>
+          <p>{{rvCount}} sites with power and water — {{sewerCount}} of them full hookups with sewer — on a big gravel lot with room to swing a long rig.</p>
         </li>
         <li class="feature">
           <div class="icon" aria-hidden="true"><svg><use href="/img/icons.svg#home"></use></svg></div>
           <h3>3-bed, 2-bath ranch house</h3>
-          <p>Single-level, sleeps six. Full kitchen, washer and dryer, Wi-Fi, and room-darkening shades.</p>
+          <p>Single-level, sleeps {{maxGuests}}. Full kitchen, washer and dryer, Wi-Fi, and room-darkening shades.</p>
         </li>
         <li class="feature">
           <div class="icon" aria-hidden="true"><svg><use href="/img/icons.svg#paw"></use></svg></div>
@@ -81,14 +85,14 @@
     <div class="wrap split">
       <div>
         <p class="eyebrow">Stall cams</p>
-        <h2 id="cams-title">Check on your horse any time — from anywhere on the ranch</h2>
+        <h2 id="cams-title">Check on your horse any time, from anywhere</h2>
         <p class="lede">Every stall has its own camera. When you book, your stalls are assigned automatically and their cameras show up in your guest account the moment payment clears.</p>
         <ol class="steps">
           <li><div><strong>Book and pay online</strong>Choose your dates and how many stalls you need.</div></li>
           <li><div><strong>Get your welcome email</strong>It has your stall numbers and a one-time link to create your password.</div></li>
-          <li><div><strong>Watch live on phone or computer</strong>Your cameras switch on 3 hours before check-in and stay on until 2 hours after check-out.</div></li>
+          <li><div><strong>Watch live on phone or computer</strong>Your cameras switch on {{camBefore}} hours before check-in and stay on until {{camAfter}} hours after check-out.</div></li>
         </ol>
-        <p class="trust"><svg aria-hidden="true"><use href="/img/icons.svg#lock"></use></svg>Private by design: you can only ever see the stalls you’ve rented, and only during your stay.</p>
+        <p class="trust"><svg aria-hidden="true"><use href="/img/icons.svg#lock"></use></svg>Private by design: you can only watch the cameras on the stalls you’ve rented, and only during your stay.</p>
       </div>
       <div class="device-mock" aria-hidden="true">
         <div class="screen">
@@ -123,12 +127,13 @@
     <div class="lightbox-inner">
       <div class="lightbox-top">
         <h2 id="lightbox-title" class="visually-hidden">Photo viewer</h2>
-        <span id="lightbox-count" aria-live="polite"></span>
+        <span id="lightbox-count" aria-hidden="true"></span>
+        <span id="lightbox-live" class="visually-hidden" aria-live="polite"></span>
         <button type="button" class="icon-btn" data-close><svg aria-hidden="true"><use href="/img/icons.svg#x"></use></svg><span class="visually-hidden">Close photo viewer</span></button>
       </div>
       <figure>
         <img id="lightbox-img" alt="">
-        <figcaption id="lightbox-caption"></figcaption>
+        <figcaption id="lightbox-caption" aria-hidden="true"></figcaption>
       </figure>
       <div class="lightbox-nav">
         <button type="button" class="icon-btn" data-prev><svg aria-hidden="true"><use href="/img/icons.svg#chev-l"></use></svg>Previous</button>
@@ -142,25 +147,27 @@
       <div class="section-head">
         <p class="eyebrow">Book your stay</p>
         <h2 id="book-title">Pick your dates</h2>
-        <p class="lede">Choose a check-in and check-out date on the calendar, or type them in. The small number under each date is how many of our 8 stalls are still free that night.</p>
+        <p class="lede">Choose what you need, then pick check-in and check-out on the calendar — or type the dates in. Stalls from {{fromPrice}} a night.</p>
       </div>
-      <noscript><p class="alert warn">Online booking needs JavaScript. Please turn it on, or contact us to book.</p></noscript>
+      <noscript><p class="alert warn">Online booking needs JavaScript. Please turn it on, or contact us to book (details at the bottom of the page).</p></noscript>
+      <div id="pending-banner" class="alert info pending-banner" hidden></div>
       <form class="booking" id="booking-form" novalidate>
         <div class="panel">
           <div class="cal-head">
             <h3 id="cal-title">Availability</h3>
             <div class="cal-nav">
-              <button type="button" id="cal-prev"><svg aria-hidden="true"><use href="/img/icons.svg#chev-l"></use></svg><span class="visually-hidden">Previous month</span></button>
-              <button type="button" id="cal-next"><svg aria-hidden="true"><use href="/img/icons.svg#chev-r"></use></svg><span class="visually-hidden">Next month</span></button>
+              <button type="button" id="cal-prev" aria-describedby="cal-title"><svg aria-hidden="true"><use href="/img/icons.svg#chev-l"></use></svg><span class="visually-hidden">Previous month</span></button>
+              <button type="button" id="cal-next" aria-describedby="cal-title"><svg aria-hidden="true"><use href="/img/icons.svg#chev-r"></use></svg><span class="visually-hidden">Next month</span></button>
             </div>
           </div>
-          <p class="hint" id="cal-help">Use the arrow keys to move between days, then Enter to choose check-in, and again to choose check-out. Page Up and Page Down change month.</p>
+          <p class="hint keys" id="cal-help">Keyboard: arrow keys move between days, Enter chooses check-in and then check-out, Page Up and Page Down change month.</p>
           <div class="cal-months" id="calendar" aria-busy="true"></div>
+          <p class="cal-msg ok" id="cal-msg" role="status">Choose your check-in date.</p>
           <ul class="legend">
             <li><span class="swatch sel" aria-hidden="true"></span>Check-in / check-out</li>
             <li><span class="swatch range" aria-hidden="true"></span>Your stay</li>
-            <li><span class="swatch full" aria-hidden="true"></span>Not available for your selection</li>
-            <li><span class="free-demo" aria-hidden="true">8</span>Stalls free that night</li>
+            <li><span class="swatch full" aria-hidden="true"></span>Not available for what you’ve chosen</li>
+            <li><span class="free-demo" aria-hidden="true">8</span><span id="legend-count">Stalls still free that night</span></li>
           </ul>
           <div class="date-inputs mt-20">
             <div class="field">
@@ -179,35 +186,40 @@
         <div class="panel booking-summary">
           <h3 class="step-title"><span class="num" aria-hidden="true">1</span>What do you need?</h3>
           <div class="stepper">
-            <div class="what"><strong id="stalls-label">Horse stalls</strong><span id="stalls-price">One horse per stall</span></div>
-            <div class="ctrl">
-              <button type="button" data-step="stalls" data-dir="-1" aria-label="Fewer stalls">−</button>
-              <output id="stalls" aria-labelledby="stalls-label" aria-live="polite">1</output>
-              <button type="button" data-step="stalls" data-dir="1" aria-label="More stalls">+</button>
+            <div class="what"><strong id="stalls-label">Horse stalls</strong><span id="stalls-price">One horse per stall</span><span class="left" id="stalls-left"></span></div>
+            <div class="ctrl" role="group" aria-labelledby="stalls-label">
+              <button type="button" data-step="stalls" data-dir="-1" aria-label="Fewer stalls" aria-describedby="stalls">−</button>
+              <output id="stalls" aria-labelledby="stalls-label stalls">1</output>
+              <button type="button" data-step="stalls" data-dir="1" aria-label="More stalls" aria-describedby="stalls">+</button>
             </div>
           </div>
           <div class="stepper">
-            <div class="what"><strong id="rv-label">RV / trailer hookups</strong><span id="rv-price">Power &amp; water</span></div>
-            <div class="ctrl">
-              <button type="button" data-step="rvSites" data-dir="-1" aria-label="Fewer hookups">−</button>
-              <output id="rvSites" aria-labelledby="rv-label" aria-live="polite">0</output>
-              <button type="button" data-step="rvSites" data-dir="1" aria-label="More hookups">+</button>
+            <div class="what"><strong id="rv-label">RV hookups: power &amp; water</strong><span id="rv-price"></span><span class="left" id="rvSites-left"></span></div>
+            <div class="ctrl" role="group" aria-labelledby="rv-label">
+              <button type="button" data-step="rvSites" data-dir="-1" aria-label="Fewer power and water hookups" aria-describedby="rvSites">−</button>
+              <output id="rvSites" aria-labelledby="rv-label rvSites">0</output>
+              <button type="button" data-step="rvSites" data-dir="1" aria-label="More power and water hookups" aria-describedby="rvSites">+</button>
+            </div>
+          </div>
+          <div class="stepper" id="sewer-row">
+            <div class="what"><strong id="rvs-label">Full RV hookups, with sewer</strong><span id="rvs-price"></span><span class="left" id="rvSewer-left"></span></div>
+            <div class="ctrl" role="group" aria-labelledby="rvs-label">
+              <button type="button" data-step="rvSewer" data-dir="-1" aria-label="Fewer full hookups" aria-describedby="rvSewer">−</button>
+              <output id="rvSewer" aria-labelledby="rvs-label rvSewer">0</output>
+              <button type="button" data-step="rvSewer" data-dir="1" aria-label="More full hookups" aria-describedby="rvSewer">+</button>
             </div>
           </div>
           <div class="switch-row">
-            <div class="what"><label for="house"><strong>Stay in the ranch house</strong></label><br><span class="muted small" id="house-price">3 bedrooms, sleeps 6</span></div>
+            <div class="what"><label for="house"><strong>Stay in the ranch house</strong></label><br><span class="muted small" id="house-price">3 bedrooms, sleeps {{maxGuests}}</span></div>
             <span class="switch"><input type="checkbox" id="house" role="switch" aria-describedby="house-price"><span class="track" aria-hidden="true"></span></span>
           </div>
           <div class="field mt-14" id="guests-field" hidden>
             <label for="guests">People staying in the house</label>
-            <select id="guests" aria-describedby="guests-error">
-              <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option>
-              <option value="4">4</option><option value="5">5</option><option value="6">6</option>
-            </select>
+            <select id="guests" aria-describedby="guests-error"></select>
             <p class="field-error" id="guests-error"></p>
           </div>
 
-          <div class="quote" id="quote" aria-live="polite" aria-atomic="true">
+          <div class="quote" id="quote">
             <p class="muted m-0">Choose your dates to see the price.</p>
           </div>
 
@@ -220,12 +232,13 @@
           <div class="field">
             <label for="email">Email</label>
             <input type="email" id="email" name="email" autocomplete="email" required maxlength="254" aria-describedby="email-hint email-error" spellcheck="false">
-            <p class="hint" id="email-hint">Your confirmation and camera access link go here.</p>
+            <p class="hint" id="email-hint">Your confirmation and the link to your stall cameras go here — please double-check it.</p>
             <p class="field-error" id="email-error"></p>
           </div>
           <div class="field">
             <label for="phone">Mobile phone</label>
-            <input type="tel" id="phone" name="phone" autocomplete="tel" required maxlength="25" aria-describedby="phone-error">
+            <input type="tel" id="phone" name="phone" autocomplete="tel" required maxlength="25" aria-describedby="phone-hint phone-error">
+            <p class="hint" id="phone-hint">Digits, spaces and + ( ) - only. We’ll only call about your stay.</p>
             <p class="field-error" id="phone-error"></p>
           </div>
           <div class="field">
@@ -241,13 +254,14 @@
           </div>
           <div class="check">
             <input type="checkbox" id="agree-rules" aria-describedby="agree-rules-error">
-            <label for="agree-rules">I accept the <a href="/policies" target="_blank" rel="noopener">ranch rules and equine liability terms<span class="visually-hidden"> (opens in a new tab)</span></a>.</label>
+            <label for="agree-rules">I accept the <a href="/policies" target="_blank" rel="noopener">ranch rules, cancellation policy and equine liability terms<span class="visually-hidden"> (opens in a new tab)</span></a>.</label>
             <span></span><p class="field-error" id="agree-rules-error"></p>
           </div>
 
           <div class="alert error" id="booking-error" role="alert" tabindex="-1" hidden></div>
+          <p class="confirm-email" id="confirm-email" hidden></p>
           <button type="submit" class="btn block" id="book-btn">Continue to secure payment</button>
-          <p class="trust"><svg aria-hidden="true"><use href="/img/icons.svg#lock"></use></svg><span>You’ll pay on Stripe’s secure checkout page. Your dates are held for 30 minutes while you pay.</span></p>
+          <p class="trust"><svg aria-hidden="true"><use href="/img/icons.svg#lock"></use></svg><span>You’ll pay on Stripe’s secure checkout page. Your dates are held for 30 minutes while you pay — if you come back without paying, you can pick up where you left off.</span></p>
           <p class="alert info small" id="test-mode" hidden>Test mode: no real payment will be taken.</p>
         </div>
       </form>
@@ -264,8 +278,8 @@
         <div class="info">
           <h3><svg aria-hidden="true"><use href="/img/icons.svg#clock"></use></svg>Arrival &amp; departure</h3>
           <ul>
-            <li>Check-in after <strong>3:00 PM</strong></li>
-            <li>Check-out by <strong>11:00 AM</strong></li>
+            <li>Check-in after <strong>{{checkInTime}}</strong></li>
+            <li>Check-out by <strong>{{checkOutTime}}</strong></li>
             <li>Late arrival off the interstate? Tell us in your booking notes.</li>
           </ul>
         </div>
@@ -279,7 +293,7 @@
         <div class="info">
           <h3><svg aria-hidden="true"><use href="/img/icons.svg#home"></use></svg>House rules</h3>
           <ul>
-            <li>Up to 6 guests in the house. No smoking.</li>
+            <li>Up to {{maxGuests}} guests in the house. No smoking.</li>
             <li>Pets welcome. Service animals are always welcome.</li>
             <li>The back porch is closed for renovations for now.</li>
           </ul>
@@ -289,7 +303,7 @@
           <ul>
             <li>Use of the barn, stalls, turnouts and arena is at your own risk.</li>
             <li>Smoke alarm installed; exterior security cameras on the property.</li>
-            <li><a href="/policies">Read the full ranch rules</a></li>
+            <li><a href="/policies">Read the full ranch rules and cancellation policy</a></li>
           </ul>
         </div>
       </div>
@@ -309,7 +323,7 @@
         </details>
         <details>
           <summary>How do the stall cameras work?</summary>
-          <div><p>After you pay, you’ll get an email with a one-time link to create your password. Sign in on any phone, tablet or computer and your stall cameras appear under “My stay”. They switch on 3 hours before check-in and turn off 2 hours after check-out. Nobody else can see your stalls, and you can’t see anyone else’s.</p></div>
+          <div><p>After you pay, you’ll get an email with a one-time link to create your password. Sign in on any phone, tablet or computer and your stall cameras appear under “My stay”. They switch on {{camBefore}} hours before check-in and turn off {{camAfter}} hours after check-out. You can only watch the cameras on the stalls you’ve rented. Tip: add the site to your phone’s home screen to open your cameras like an app.</p></div>
         </details>
         <details>
           <summary>What if I already have an account?</summary>
@@ -320,6 +334,14 @@
           <div><p>Google tends to get lost out here in the country. Use our exact coordinates: <strong>34.863750° N, 91.916582° W</strong> — the directions links at the bottom of this page use them.</p></div>
         </details>
         <details>
+          <summary>What if I need to cancel?</summary>
+          <div><p>{{cancellationPolicy}}</p></div>
+        </details>
+        <details>
+          <summary>Can I book for longer than {{maxNights}} nights, or by phone?</summary>
+          <div><p>Yes — contact us using the details at the bottom of this page and we’ll set it up. Phone bookings get the same stall camera access.</p></div>
+        </details>
+        <details>
           <summary>Is my payment secure?</summary>
           <div><p>Yes. You pay on Stripe’s checkout page, the same one used by millions of businesses. Your card number never reaches our website.</p></div>
         </details>
@@ -327,6 +349,11 @@
     </div>
   </section>
 </main>
+
+<div class="mobile-cta" id="mobile-cta" hidden>
+  <p><strong>Stalls from {{fromPrice}}/night</strong>Check-in from {{checkInTime}}</p>
+  <a class="btn small" href="#book">Check availability</a>
+</div>
 
 <!--#footer-->
 </body>

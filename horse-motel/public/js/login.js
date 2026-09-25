@@ -1,4 +1,4 @@
-import { api, getSession, fieldError, clearErrors, showAlert, busy } from './common.js';
+import { api, getSession, fieldError, clearErrors, showAlert, busy, focusHeading } from './common.js';
 
 const next = (() => {
   const n = new URLSearchParams(location.search).get('next') || '';
@@ -33,7 +33,8 @@ form.addEventListener('submit', async (e) => {
       challenge = out.challenge;
       form.hidden = true;
       mfa.hidden = false;
-      document.getElementById('code').focus();
+      // Read the new step's heading and instructions first, then the user tabs to the code.
+      focusHeading(document.getElementById('mfa-title'), 'Enter your code — Rockin\' C Ranch');
       return;
     }
     await getSession(true);
@@ -69,6 +70,7 @@ function restart() {
   challenge = null;
   mfa.hidden = true;
   form.hidden = false;
+  document.title = 'Sign in — Rockin\' C Ranch';
   password.value = '';
   email.focus();
 }

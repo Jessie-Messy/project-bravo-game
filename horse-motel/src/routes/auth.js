@@ -29,13 +29,17 @@ export function authRoutes({ db, cfg, mailer }) {
 
   // Sign-in attempts are counted per account BEFORE the slow password check, in one
   // synchronous step, so parallel guesses can't slip past the limit. Password and 2-step
-  // failures share one budget; every lock doubles the next (15 min, 30 min, 1 h … 24 h), and
-  // the account owner is emailed when their account locks.
+  // failures share one budget of 5; the account owner is emailed when their account locks.
   const bumpFailures = db.prepare(`UPDATE users SET failed_logins = failed_logins + 1
       WHERE id = ? AND locked_until <= ? RETURNING failed_logins, lock_level`);
 
   function lockNow(user, reason, ip) {
-    const minutes = Math.min(cfg.auth.lockMinutes * 2 ** user.lock_level, cfg.auth.maxLockHours * 60);
+    // Wrong passwords: a short, fixed pause, so someone who only knows an email address
+    // can't lock its owner out for long. Wrong 2-step codes after a correct password mean
+    // the password is known: those locks double each time, up to a day.
+    const minutes = reason === '2-step'
+      ? Math.min(cfg.auth.lockMinutes * 2 ** user.lock_level, cfg.auth.maxLockHours * 60)
+      : cfg.auth.lockMinutes;
     db.prepare('UPDATE users SET failed_logins = 0, lock_level = lock_level + 1, locked_until = ? WHERE id = ?')
       .run(Date.now() + minutes * 60e3, user.id);
     db.prepare('DELETE FROM mfa_challenges WHERE user_id = ?').run(user.id);

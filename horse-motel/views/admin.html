@@ -19,63 +19,120 @@
     <div id="adm" hidden>
       <div class="tabs" role="tablist" aria-label="Admin sections">
         <button role="tab" id="t-bookings" aria-controls="p-bookings" aria-selected="true">Bookings</button>
+        <button role="tab" id="t-occupancy" aria-controls="p-occupancy" aria-selected="false" tabindex="-1">Who’s where</button>
+        <button role="tab" id="t-phone" aria-controls="p-phone" aria-selected="false" tabindex="-1">Phone booking</button>
         <button role="tab" id="t-block" aria-controls="p-block" aria-selected="false" tabindex="-1">Block dates</button>
         <button role="tab" id="t-cameras" aria-controls="p-cameras" aria-selected="false" tabindex="-1">Cameras</button>
-        <button role="tab" id="t-activity" aria-controls="p-activity" aria-selected="false" tabindex="-1">Activity</button>
+        <button role="tab" id="t-settings" aria-controls="p-settings" aria-selected="false" tabindex="-1">Sync &amp; security</button>
       </div>
 
       <section role="tabpanel" id="p-bookings" aria-labelledby="t-bookings" tabindex="0">
         <h2 class="visually-hidden">Bookings</h2>
-        <div class="alert" id="bk-msg" role="status" hidden></div>
-        <div class="table-wrap">
-          <table class="data">
-            <caption>Upcoming and current bookings</caption>
+        <form class="filters-row" id="bk-filter" role="search" aria-label="Find bookings">
+          <div class="field">
+            <label for="bk-view">Show</label>
+            <select id="bk-view">
+              <option value="upcoming">Upcoming &amp; current</option>
+              <option value="attention">Needs attention</option>
+              <option value="cancelled">Cancelled</option>
+              <option value="past">Past stays</option>
+              <option value="all">Everything</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="bk-q">Search name, email, phone or reference</label>
+            <input type="search" id="bk-q" maxlength="80">
+          </div>
+          <button class="btn secondary" type="submit">Show bookings</button>
+        </form>
+        <div class="status-region" id="bk-msg" role="status"></div>
+        <div class="table-wrap" role="region" aria-labelledby="bk-caption" tabindex="0">
+          <table class="data stack">
+            <caption id="bk-caption">Upcoming and current bookings</caption>
             <thead><tr><th scope="col">Dates</th><th scope="col">Guest</th><th scope="col">What</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
             <tbody id="bk-rows"></tbody>
           </table>
         </div>
       </section>
 
+      <section role="tabpanel" id="p-occupancy" aria-labelledby="t-occupancy" tabindex="0" hidden>
+        <h2 class="visually-hidden">Who’s where</h2>
+        <form class="filters-row" id="occ-form">
+          <div class="field"><label for="occ-from">Starting</label><input type="date" id="occ-from"></div>
+          <div class="field">
+            <label for="occ-days">Nights</label>
+            <select id="occ-days"><option>7</option><option selected>14</option><option>21</option><option>31</option></select>
+          </div>
+          <button class="btn secondary" type="submit">Show</button>
+        </form>
+        <div class="occ-wrap" role="region" aria-labelledby="occ-caption" tabindex="0">
+          <table class="occ">
+            <caption id="occ-caption" class="visually-hidden">Stalls, RV sites and the house by night</caption>
+            <thead id="occ-head"></thead>
+            <tbody id="occ-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="p-phone" aria-labelledby="t-phone" tabindex="0" hidden>
+        <h2 class="visually-hidden">Phone booking</h2>
+        <form class="panel" id="phone-form" novalidate>
+          <h3>Add a booking taken by phone or in person</h3>
+          <p class="muted">It’s confirmed straight away. The guest gets the same welcome email as an online booking, with their stall camera access.</p>
+          <div class="date-inputs">
+            <div class="field"><label for="ph-in">Check-in</label><input type="date" id="ph-in" required></div>
+            <div class="field"><label for="ph-out">Check-out</label><input type="date" id="ph-out" required></div>
+          </div>
+          <div class="grid-2">
+            <div class="field"><label for="ph-stalls">Stalls</label><input type="number" id="ph-stalls" min="0" value="0" inputmode="numeric"></div>
+            <div class="field"><label for="ph-rv">RV hookups (power &amp; water)</label><input type="number" id="ph-rv" min="0" value="0" inputmode="numeric"></div>
+            <div class="field"><label for="ph-sewer">Full RV hookups (with sewer)</label><input type="number" id="ph-sewer" min="0" value="0" inputmode="numeric"></div>
+            <div class="field"><label for="ph-guests">House guests (0 = no house)</label><input type="number" id="ph-guests" min="0" value="0" inputmode="numeric"></div>
+          </div>
+          <div class="grid-2">
+            <div class="field"><label for="ph-name">Guest name</label><input type="text" id="ph-name" autocomplete="off" maxlength="80" required></div>
+            <div class="field"><label for="ph-email">Guest email</label><input type="email" id="ph-email" autocomplete="off" maxlength="254" required spellcheck="false"></div>
+            <div class="field"><label for="ph-phone">Guest phone</label><input type="tel" id="ph-phone" autocomplete="off" maxlength="25"></div>
+            <div class="field"><label for="ph-amount">Amount collected, in dollars <span class="muted">(optional)</span></label><input type="text" id="ph-amount" inputmode="decimal" aria-describedby="ph-amount-hint"><p class="hint" id="ph-amount-hint">Leave blank to record the website price.</p></div>
+          </div>
+          <div class="field"><label for="ph-notes">Notes <span class="muted">(optional)</span></label><input type="text" id="ph-notes" maxlength="500"></div>
+          <div class="status-region" id="ph-msg" role="status"></div>
+          <button class="btn" type="submit">Add booking and email the guest</button>
+        </form>
+      </section>
+
       <section role="tabpanel" id="p-block" aria-labelledby="t-block" tabindex="0" hidden>
         <h2 class="visually-hidden">Block dates</h2>
-        <div class="grid-2">
-          <form class="panel" id="block-form" novalidate>
-            <h3>Block out dates</h3>
-            <p class="muted">Take stalls, hookups or the house off the calendar for maintenance, private use, or bookings taken by phone. Blocks appear in the bookings list, where you can remove them.</p>
-            <div class="date-inputs">
-              <div class="field"><label for="b-in">First night</label><input type="date" id="b-in" required></div>
-              <div class="field"><label for="b-out">Available again on</label><input type="date" id="b-out" required></div>
-            </div>
-            <div class="grid-2">
-              <div class="field"><label for="b-stalls">Stalls</label><input type="number" id="b-stalls" min="0" value="0" inputmode="numeric"></div>
-              <div class="field"><label for="b-rv">RV sites</label><input type="number" id="b-rv" min="0" value="0" inputmode="numeric"></div>
-            </div>
-            <div class="check"><input type="checkbox" id="b-house"><label for="b-house">Block the house</label></div>
-            <div class="field"><label for="b-note">Note (only you see this)</label><input type="text" id="b-note" maxlength="200"></div>
-            <div class="alert" id="block-msg" role="status" hidden></div>
-            <button class="btn" type="submit">Block these dates</button>
-          </form>
-          <form class="panel" id="mfa-reset-form" novalidate>
-            <h3>Guest lost their phone?</h3>
-            <p class="muted">Turn off two-step verification for a guest so they can sign in with just their password, then set it up again.</p>
-            <div class="field"><label for="r-email">Guest email</label><input type="email" id="r-email" required spellcheck="false"></div>
-            <div class="alert" id="reset-msg" role="status" hidden></div>
-            <button class="btn secondary" type="submit">Reset guest’s two-step verification</button>
-          </form>
-        </div>
+        <form class="panel" id="block-form" novalidate>
+          <h3>Take stalls, sites or the house off the calendar</h3>
+          <p class="muted">For repairs, private use, or bookings taken somewhere else. Blocks show in the bookings list, where you can remove them.</p>
+          <div class="date-inputs">
+            <div class="field"><label for="b-in">First night</label><input type="date" id="b-in" required></div>
+            <div class="field"><label for="b-out">Available again on</label><input type="date" id="b-out" required></div>
+          </div>
+          <fieldset>
+            <legend>What to block</legend>
+            <div class="units-picker" id="b-units"></div>
+            <p class="field-error" id="b-units-error"></p>
+          </fieldset>
+          <div class="field"><label for="b-note">Note (only you see this)</label><input type="text" id="b-note" maxlength="200"></div>
+          <div class="status-region" id="block-msg" role="status"></div>
+          <button class="btn" type="submit">Block these dates</button>
+        </form>
       </section>
 
       <section role="tabpanel" id="p-cameras" aria-labelledby="t-cameras" tabindex="0" hidden>
         <h2 class="visually-hidden">Cameras</h2>
         <div class="grid-2">
           <div>
-            <div class="table-wrap">
-              <table class="data">
-                <caption>Cameras</caption>
+            <div class="table-wrap" role="region" aria-labelledby="cam-caption" tabindex="0">
+              <table class="data stack">
+                <caption id="cam-caption">Cameras</caption>
                 <thead><tr><th scope="col">Camera</th><th scope="col">Shows</th><th scope="col">Actions</th></tr></thead>
                 <tbody id="cam-rows"></tbody>
               </table>
             </div>
+            <div class="status-region" id="cam-list-msg" role="status"></div>
             <div class="mt-20" id="cam-preview"></div>
           </div>
           <form class="panel" id="cam-form" novalidate>
@@ -94,15 +151,16 @@
             <div class="field">
               <label for="c-url">Camera address</label>
               <input type="url" id="c-url" maxlength="500" spellcheck="false" autocomplete="off" aria-describedby="c-url-hint">
-              <p class="hint" id="c-url-hint">Stored on the server only; guests never see it. Leave blank when editing to keep the current address.</p>
+              <p class="hint" id="c-url-hint">Stored encrypted on the server; guests never see it. Leave blank when editing to keep the current address.</p>
             </div>
             <fieldset>
               <legend>Stalls and sites this camera shows</legend>
-              <p class="hint">Guests who rent any ticked stall can watch this camera. One camera per stall keeps each guest’s view private.</p>
-              <div class="checks" id="c-units"></div>
+              <p class="hint" id="c-units-hint">Guests who rent any ticked stall can watch this camera. One camera per stall keeps each guest’s view private.</p>
+              <div class="units-picker" id="c-units"></div>
+              <p class="alert warn small" id="c-multi" hidden>This camera shows more than one stall, so guests in different stalls may see each other’s horses.</p>
             </fieldset>
             <div class="check"><input type="checkbox" id="c-active" checked><label for="c-active">Active</label></div>
-            <div class="alert" id="cam-msg" role="status" hidden></div>
+            <div class="status-region" id="cam-msg" role="status"></div>
             <div class="row-actions">
               <button class="btn" type="submit">Save camera</button>
               <button class="btn secondary" type="button" id="c-cancel" hidden>Cancel editing</button>
@@ -111,11 +169,27 @@
         </div>
       </section>
 
-      <section role="tabpanel" id="p-activity" aria-labelledby="t-activity" tabindex="0" hidden>
-        <h2 class="visually-hidden">Activity</h2>
-        <div class="table-wrap">
-          <table class="data">
-            <caption>Latest 200 security and booking events</caption>
+      <section role="tabpanel" id="p-settings" aria-labelledby="t-settings" tabindex="0" hidden>
+        <h2 class="visually-hidden">Sync and security</h2>
+        <div class="grid-2">
+          <div class="panel">
+            <h3>Airbnb calendar sync</h3>
+            <div id="sync-info"><p class="muted">Loading…</p></div>
+            <div class="status-region" id="sync-msg" role="status"></div>
+            <button class="btn secondary" type="button" id="sync-now">Sync now</button>
+          </div>
+          <form class="panel" id="mfa-reset-form" novalidate>
+            <h3>Guest lost their phone?</h3>
+            <p class="muted">Turn off two-step verification for a guest so they can sign in with just their password, then set it up again.</p>
+            <div class="field"><label for="r-email">Guest email</label><input type="email" id="r-email" required spellcheck="false"></div>
+            <div class="status-region" id="reset-msg" role="status"></div>
+            <button class="btn secondary" type="submit">Reset guest’s two-step verification</button>
+          </form>
+        </div>
+        <h3 class="mt-28">Activity</h3>
+        <div class="table-wrap" role="region" aria-labelledby="log-caption" tabindex="0">
+          <table class="data stack">
+            <caption id="log-caption">Latest 200 security and booking events</caption>
             <thead><tr><th scope="col">When</th><th scope="col">Event</th><th scope="col">Account</th><th scope="col">Detail</th><th scope="col">IP</th></tr></thead>
             <tbody id="log-rows"></tbody>
           </table>
@@ -123,6 +197,33 @@
       </section>
     </div>
   </div>
+
+  <dialog id="cancel-dialog" aria-labelledby="cancel-title" class="panel">
+    <form method="dialog" id="cancel-form">
+      <h2 id="cancel-title">Cancel booking</h2>
+      <p id="cancel-summary"></p>
+      <div class="check"><input type="checkbox" id="cancel-refund"><label for="cancel-refund" id="cancel-refund-label">Refund the full payment to their card</label></div>
+      <div class="check"><input type="checkbox" id="cancel-notify" checked><label for="cancel-notify">Email the guest to let them know</label></div>
+      <p class="hint">Their camera access ends immediately.</p>
+      <div class="row-actions">
+        <button class="btn danger" value="confirm" type="submit">Cancel booking</button>
+        <button class="btn secondary" value="keep" type="submit">Keep booking</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="email-dialog" aria-labelledby="email-title" class="panel">
+    <form method="dialog" id="email-form" novalidate>
+      <h2 id="email-title">Change the guest’s email</h2>
+      <p id="email-summary"></p>
+      <div class="field"><label for="new-email">Correct email address</label><input type="email" id="new-email" spellcheck="false" autocomplete="off"></div>
+      <p class="hint">The stay and its camera access move to this address, and a new confirmation (with a set-up link if needed) is sent there.</p>
+      <div class="row-actions">
+        <button class="btn" value="confirm" type="submit">Change and re-send</button>
+        <button class="btn secondary" value="keep" type="submit">Cancel</button>
+      </div>
+    </form>
+  </dialog>
 </main>
 <!--#footer-->
 </body>
