@@ -41,36 +41,64 @@ known-good combination.
 
 ## Installing: about an hour once the cameras are mounted
 
-### At the ranch (no computer skills needed)
-1. **Cameras and NVR.** Plug each camera into its NVR port and connect the NVR to a screen. Finish the Reolink setup wizard: set a strong password, and in *Settings → Network → Advanced → Port Settings* make sure **RTSP is on**.
-2. **Tunnel router.** Plug the GL.iNet router's WAN port into your internet router, and connect the NVR to the GL.iNet's LAN port.
-3. **Tailscale.** In the GL.iNet admin page, go to *Applications → Tailscale*. Sign in with a free Tailscale account and turn on **"Allow Remote Access LAN"**.
-4. **Approve the route.** In the Tailscale admin console, approve the router's subnet route. Note the NVR's IP address (shown on the GL.iNet's client list, e.g. `192.168.8.20`).
+There are two halves. **You** do the ranch half, which is all plugging in and tapping
+through apps. The **web-server half** is a few commands for whoever set up your website.
+Hand them this page.
 
-### On the web server (one time)
-1. **Join Tailscale:** `curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up --accept-routes`.
-   - The server can now reach the NVR privately. In the Tailscale admin console, add an ACL rule so only the server can reach the ranch network.
-2. **Install MediaMTX:**
-   - Download the `linux_amd64` release from https://github.com/bluenviron/mediamtx/releases.
-   - Copy `cameras/mediamtx.yml` to `/etc/mediamtx.yml`.
-   - Replace `NVR_IP`, `NVR_USER` and `NVR_PASSWORD` in that file. Use a separate NVR user with view-only rights.
-   - Install `cameras/mediamtx.service` (instructions are at the top of that file).
-   - MediaMTX listens on `127.0.0.1` only.
-3. **Point the site at MediaMTX.** In `.env`, set `CAMERA_ALLOWED_HOSTS=127.0.0.1`, then run:
+### Part 1: at the ranch (the owner)
+1. **Cameras and recorder.**
+   - Plug each camera into its NVR port and connect the NVR to a screen.
+   - Finish the Reolink setup wizard with a strong admin password.
+   - Turn **RTSP on**: *Settings → Network → Advanced → Port Settings*.
+   - Create a second, **view-only** user for the website. Use a password made of **letters and numbers only**; symbols work, but are easier to get wrong.
+2. **Tunnel router.** Plug the GL.iNet router's WAN port into your internet router, and connect the NVR to one of the GL.iNet's LAN ports.
+3. **Give the recorder a fixed address.**
+   - In the GL.iNet admin page, go to *Clients*, find the NVR, and choose **Reserve IP**. Otherwise a router restart can change its address and every stream stops.
+   - Write that address down (e.g. `192.168.8.20`).
+4. **Tailscale.**
+   - In the GL.iNet admin page, go to *Applications → Tailscale*.
+   - Sign in with a free Tailscale account and turn on **"Allow Remote Access LAN"**.
+   - In the Tailscale admin console (login.tailscale.com), approve the router's **subnet route**.
+5. Tip: put the NVR and GL.iNet router on a small **UPS** (battery backup) so a power blip doesn't take the cameras offline.
+
+Send your website person: the recorder's address, the view-only user name and its password
+(sent separately, e.g. in a text), and access to your Tailscale account.
+
+### Part 2: on the web server (the website person, ~15 minutes)
+1. **Join Tailscale:**
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up --accept-routes --advertise-tags=tag:web
+   ```
+   Then lock it down so **only** the web server can reach the ranch network, and only the recorder's video port. In the Tailscale admin console, *Access controls*, use a policy like this. Replace the subnet with the ranch one, e.g. `192.168.8.0/24`:
+   ```json
+   {
+     "tagOwners": { "tag:web": ["autogroup:admin"] },
+     "acls": [ { "action": "accept", "src": ["tag:web"], "dst": ["192.168.8.0/24:554"] } ]
+   }
+   ```
+2. **Install MediaMTX with the guided script.** From the website folder:
+   ```bash
+   sudo bash cameras/install.sh
+   ```
+   It downloads MediaMTX (x86-64 or ARM), asks for the recorder's address, user and password, and writes `/etc/mediamtx.yml`. That file is readable only by the site's user, and symbols in the password are encoded for you. It then starts the service and checks stall 1.
+
+   Prefer to do it by hand? Download `mediamtx_<version>_linux_amd64.tar.gz` (or `_arm64`) from https://github.com/bluenviron/mediamtx/releases. Unpack it with `tar -xzf`, then use `cameras/mediamtx.yml` and `cameras/mediamtx.service`; instructions are at the top of each.
+3. **Add the cameras to the site.** In `.env`, set `CAMERA_ALLOWED_HOSTS=127.0.0.1` and restart the site. Then run:
    ```bash
    npm run cameras:setup
    ```
    This adds "Stall 1 camera" … "Stall 8 camera", each mapped to its stall. The camera addresses are stored encrypted.
-4. **Check each camera.** Go to **Admin → Cameras → Test**. Each one should play within a few seconds.
+4. **Check each camera** in **Admin → Cameras → Test**. Each one should play within a few seconds.
 
-That's it. When a guest books stall 3, they can watch "Stall 3 camera", and only that camera, from
-3 hours before check-in until 2 hours after check-out.
+That's it. When a guest books stall 3, they can watch "Stall 3 camera", and only that camera,
+from a few hours before check-in until a few hours after check-out. The defaults are 3 and 2
+hours; they're set by `CAMERA_HOURS_BEFORE_CHECKIN` / `CAMERA_HOURS_AFTER_CHECKOUT`.
 
 ## If a camera won't play
 
 | What you see | Fix |
 |---|---|
-| "The camera isn't responding" | Is the NVR on? Is Tailscale connected on both ends (`tailscale status` on the server)? |
+| "The camera isn't responding" | Is the NVR on, at the same reserved address? Is Tailscale connected on both ends (`tailscale status` on the server)? `journalctl -u mediamtx -n 50` shows the reason. |
 | "This camera's video format can't be played" | The camera is sending H.265. In the Reolink app set that channel's encoding to H.264, or keep the `_sub` stream in `mediamtx.yml`. |
 | Picture is choppy | Your upload is too slow. Stay on the `_sub` stream, or lower the sub-stream frame rate to 10–15 fps in the NVR settings. |
 | Test works but a guest sees nothing | Check that the camera is ticked against the right stall in Admin → Cameras, and that their stay is in its viewing window. |

@@ -180,6 +180,18 @@ describe('owner features', () => {
     assert.equal(t.mailer.outbox.filter((m) => /overlaps/.test(m.subject)).length, before);
   });
 
+  test('two of our back-to-back bookings merged into one Airbnb event are an echo, not a clash', async () => {
+    const a1 = futureStay(t.cfg, { inDays: 200, nights: 2, house: true, guests: 2, stalls: 0 });
+    const a2 = { ...a1, checkIn: a1.checkOut, checkOut: futureStay(t.cfg, { inDays: 204 }).checkIn };
+    await bookAndPay(t, client(t.base), a1, 'merge1@example.com');
+    await bookAndPay(t, client(t.base), a2, 'merge2@example.com');
+    const d = (x) => x.replaceAll('-', '');
+    feedBody = `BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:merged@airbnb.com\r\nDTSTART;VALUE=DATE:${d(a1.checkIn)}\r\nDTEND;VALUE=DATE:${d(a2.checkOut)}\r\nSUMMARY:Airbnb (Not available)\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
+    const before = t.mailer.outbox.filter((m) => /overlaps/.test(m.subject)).length;
+    await admin.post('/api/admin/calendar-sync');
+    assert.equal(t.mailer.outbox.filter((m) => /overlaps/.test(m.subject)).length, before);
+  });
+
   test('the export feed lists house nights without guest names, behind a secret URL', async () => {
     assert.equal((await fetch(`${t.base}/calendar/wrong-token.ics`)).status, 404);
     const r = await fetch(`${t.base}/calendar/${'x'.repeat(32)}.ics`);

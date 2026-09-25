@@ -340,11 +340,23 @@ async function initBooking() {
   window.matchMedia('(max-width: 700px)').addEventListener('change', () => render());
 
   // Typed dates stay in sync with the calendar.
+  // A typed date that can't be used is put back to the last good one, and the message
+  // says so, so the field never shows a date different from what would be booked.
+  const keep = (d) => (d ? ` Your check-in is still ${fmtDate(d)}.` : '');
   inIn.addEventListener('change', async () => {
     fieldError(inIn, '');
     const v = inIn.value;
     if (!v) { state.checkIn = null; return render(); }
-    if (v < site.today) { fieldError(inIn, 'Check-in can’t be in the past.'); return; }
+    if (v < site.today || v > maxDate) {
+      fieldError(inIn, (v < site.today ? 'Check-in can’t be in the past.' : 'That’s too far ahead to book online yet.') + keep(state.checkIn));
+      inIn.value = state.checkIn || '';
+      return;
+    }
+    if (!nightOk(v)) {
+      fieldError(inIn, `${fmtDate(v)} isn’t available for what you’ve chosen.${keep(state.checkIn)}`);
+      inIn.value = state.checkIn || '';
+      return;
+    }
     state.checkIn = v;
     if (state.checkOut && state.checkOut <= v) state.checkOut = null;
     view = monthStart(v); focusDate = v;
@@ -359,7 +371,11 @@ async function initBooking() {
       const problem = v <= state.checkIn ? 'Check-out must be after check-in.'
         : nightsBetween(state.checkIn, v) > inv.maxNights ? `Online stays can be up to ${inv.maxNights} nights. For longer, contact us.`
           : bad ? `The night of ${fmtDate(bad)} is already taken. Choose an earlier check-out, or different dates.` : null;
-      if (problem) { fieldError(inOut, problem); return; }
+      if (problem) {
+        fieldError(inOut, `${problem}${state.checkOut ? ` Your check-out is still ${fmtDate(state.checkOut)}.` : ''}`);
+        inOut.value = state.checkOut || '';
+        return;
+      }
     }
     state.checkOut = inOut.value || null;
     saveDraft();
@@ -429,6 +445,8 @@ async function initBooking() {
         const q = await api('/api/quote', { method: 'POST', body: stayPayload() });
         if (seq !== quoteSeq) return;
         if (q.free) { free = q.free; syncSteppers(); }
+        // Problems with the whole stay show next to the calendar too, not only in the price.
+        if (!q.ok) say(q.reason, 'error');
         if (!q.quote) { quoteBox.replaceChildren(el('p', { class: 'm-0' }, q.reason)); announce(q.reason); return; }
         const rows = q.quote.lines.map((l) => el('tr', {}, el('td', {}, l.label), el('td', {}, money(l.total, q.quote.currency))));
         quoteBox.replaceChildren(

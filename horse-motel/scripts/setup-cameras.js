@@ -15,8 +15,8 @@ const cfg = buildConfig();
 const base = arg('base', 'http://127.0.0.1:8888').replace(/\/$/, '');
 const count = Number(arg('count', cfg.inventory.stalls));
 const host = new URL(base).hostname;
-if (cfg.cameraAccess.allowedHosts.length && !cfg.cameraAccess.allowedHosts.includes(host)) {
-  console.error(`Add ${host} to CAMERA_ALLOWED_HOSTS in .env first.`);
+if (!cfg.cameraAccess.allowedHosts.includes(host)) {
+  console.error(`Add ${host} to CAMERA_ALLOWED_HOSTS in .env first (e.g. CAMERA_ALLOWED_HOSTS=${host}).`);
   process.exit(1);
 }
 initSecretBox(cfg);

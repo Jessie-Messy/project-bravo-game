@@ -98,7 +98,7 @@ Every setting is documented in [`.env.example`](.env.example). The ones that mat
 | `RANCH_CONTACT_PHONE` / `RANCH_CONTACT_EMAIL` | Shown on every page and in emails. At least one is required. |
 | `CANCELLATION_POLICY` | Your cancellation policy text (policies page and FAQ). |
 | `ICAL_IMPORT_URLS`, `ICAL_EXPORT_TOKEN` | Airbnb calendar sync (see below). |
-| `CAMERA_ALLOWED_HOSTS` | The address(es) of your camera box (see below). Required. |
+| `CAMERA_ALLOWED_HOSTS` | Where camera video may come from: `127.0.0.1` with the recommended MediaMTX setup (see below). Required. |
 
 The server **refuses to start** in production if HTTPS, Stripe, email, `DATA_KEY` or the camera allow-list are missing, or if any setting is out of range, so a half-configured site can never take bookings. Test payments only ever run on `localhost`.
 
@@ -132,6 +132,18 @@ Cameras that can only produce still pictures work too: in **Admin → Cameras**,
 **One camera per stall is best.** If a camera shows two stalls, a guest who rents either stall can see both horses while their stay overlaps with the other guest's. When the same stall has back-to-back guests, the leaving guest's view ends at check-out time and the next guest's starts after it, so they never overlap.
 
 ---
+
+## Before you go live: owner checklist
+
+- [ ] Real prices (and any tax line) in `.env`.
+- [ ] Your cancellation policy in `CANCELLATION_POLICY`; the default text is a placeholder.
+- [ ] Confirm the rating shown on the home page (`RATING`, `REVIEW_COUNT`, `REVIEW_URL`) is current, or set `RATING=` to hide it.
+- [ ] Contact phone/email, `ADMIN_ALERT_EMAIL`, Stripe keys, SMTP, `DATA_KEY` (the server won't start without these).
+- [ ] Airbnb calendar links both ways (strongly recommended: stops the house being double-booked).
+- [ ] Cameras added and each one checked with **Admin → Cameras → Test**.
+- [ ] Book one real stay with a real card, check the emails and the camera, then cancel it with a refund.
+
+The server prints a warning at start-up while the cancellation policy or rating are still the defaults.
 
 ## Taking a phone booking, cancelling, refunding
 

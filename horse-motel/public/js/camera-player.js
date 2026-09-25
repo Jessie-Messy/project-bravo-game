@@ -56,12 +56,19 @@ export function cameraCard(cam, { tz = 'America/Chicago', heading = 'h4', stay =
   // While the card fills the screen, everything else is inert: keyboard and screen reader
   // users stay inside it until they leave full screen.
   let inerted = [];
+  let untabbed = [];
   function isolate(on) {
     if (on) {
       for (let node = card; node && node !== document.body; node = node.parentElement) {
         for (const sib of node.parentElement.children) if (sib !== node && !sib.inert) { sib.inert = true; inerted.push(sib); }
+        // A focusable container around the card (e.g. a tab panel) leaves the tab order too.
+        const parent = node.parentElement;
+        if (parent !== document.body && parent.getAttribute('tabindex') === '0') { parent.setAttribute('tabindex', '-1'); untabbed.push(parent); }
       }
-    } else { inerted.forEach((n) => { n.inert = false; }); inerted = []; }
+    } else {
+      inerted.forEach((n) => { n.inert = false; }); inerted = [];
+      untabbed.forEach((n) => n.setAttribute('tabindex', '0')); untabbed = [];
+    }
   }
 
   // Full screen: the real thing where supported, otherwise the card fills the viewport.
@@ -130,7 +137,13 @@ export function cameraCard(cam, { tz = 'America/Chicago', heading = 'h4', stay =
         } catch { setStatus('The video player didn’t load. Refresh the page to try again.'); return; }
       }
       video.play().catch(() => { setStatus('Press play to start.'); });
-      stop = () => { clearTimeout(retryTimer); hls?.destroy(); video.removeAttribute('src'); video.load(); };
+      // A native player may just stall when access ends; check once a minute while playing.
+      const accessCheck = setInterval(async () => {
+        if (document.hidden) return;
+        const r = await fetch(src, { credentials: 'same-origin', cache: 'no-store' }).catch(() => null);
+        if (r && (r.status === 401 || r.status === 403)) ended('Your access to this camera has ended.');
+      }, 60e3);
+      stop = () => { clearInterval(accessCheck); clearTimeout(retryTimer); hls?.destroy(); video.removeAttribute('src'); video.load(); };
     } else {
       const img = el('img', { alt: `Live picture from ${cam.name}, refreshed every 2 seconds` });
       view.replaceChildren(img, el('span', { class: 'live-pill', 'aria-hidden': 'true' }, 'LIVE'));

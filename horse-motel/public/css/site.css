@@ -307,8 +307,9 @@ dialog.lightbox::backdrop { background: rgb(10 7 4 / .97); }
 .booking { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr); gap: clamp(20px, 3vw, 36px); align-items: start; }
 @media (max-width: 980px) { .booking { grid-template-columns: 1fr; } }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: clamp(18px, 3vw, 28px); box-shadow: var(--shadow); }
-.booking > .panel:first-child { position: sticky; top: 88px; }
-@media (max-width: 980px) { .booking > .panel:first-child { position: static; } }
+/* The calendar stays in view while the form scrolls, but only on screens tall enough to
+   show all of it (dates included); otherwise it would hide its own date fields. */
+@media (min-width: 981px) and (min-height: 860px) { .booking > .panel:first-child { position: sticky; top: 88px; } }
 
 .cal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .cal-head h3 { margin: 0; }
@@ -492,11 +493,12 @@ code.secret { font-size: 1.05rem; letter-spacing: .12em; word-break: break-all; 
 .cal-msg.ok { color: var(--ink-2); font-weight: 500; }
 .cal-head h3 { font-size: 1.15rem; }
 .hint.keys { display: block; }
-@media (hover: none) and (pointer: coarse) { .hint.keys { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } }
+@media (pointer: coarse) { .hint.keys { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } }
 .stepper .what .left { display: block; color: var(--sage); font-weight: 600; font-size: .85rem; }
 .confirm-email { margin: 0 0 14px; font-size: .95rem; color: var(--ink-2); overflow-wrap: anywhere; }
 .pending-banner { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; }
 .pending-banner .row-actions { flex: 1 1 auto; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 600px) { .pending-banner .row-actions { justify-content: flex-start; } .pending-banner .row-actions .btn { flex: 1 1 auto; } }
 
 /* Sticky "check availability" bar on phones, hidden once the booking form is on screen. */
 .mobile-cta {
@@ -521,8 +523,8 @@ code.secret { font-size: 1.05rem; letter-spacing: .12em; word-break: break-all; 
 .cam .body h3, .cam .body h4 { margin: 0; font-size: 1.08rem; font-family: var(--font); }
 .stay-card h4 { font-size: 1.15rem; margin: 0 0 4px; font-family: var(--font); }
 
-/* Admin: tables become stacked cards on phones. */
-@media (max-width: 700px) {
+/* Admin: tables become stacked cards on phones and small tablets. */
+@media (max-width: 900px) {
   table.data.stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   table.data.stack, table.data.stack tbody, table.data.stack tr, table.data.stack td { display: block; width: 100%; }
   table.data.stack tr { border-bottom: 1px solid var(--line); padding: 10px 0; }
@@ -562,7 +564,7 @@ dialog.panel::backdrop { background: rgb(20 12 6 / .55); }
 dialog.panel h2 { font-size: 1.4rem; }
 
 table.data.stack caption { caption-side: top; }
-@media (max-width: 700px) { table.data.stack caption { display: block; width: auto; padding: 14px 16px 6px; } }
+@media (max-width: 900px) { table.data.stack caption { display: block; width: auto; padding: 14px 16px 6px; } }
 .cal-range { margin: 0; color: var(--muted); font-weight: 600; font-size: .95rem; }
 @media (max-width: 700px) { .cal-range { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } }
 .cam.expanded .body { position: relative; }

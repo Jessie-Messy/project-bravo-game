@@ -1,4 +1,4 @@
-import { api, getSession, setCsrf, el, icon, money, fmtRange, fmtHour, fieldError, clearErrors, showAlert, busy, setStatus } from './common.js';
+import { api, getSession, setCsrf, el, icon, money, fmtRange, fmtHour, fieldError, clearErrors, showAlert, busy, setStatus, announce } from './common.js';
 import { cameraCard } from './camera-player.js';
 
 const $ = (id) => document.getElementById(id);
@@ -39,7 +39,16 @@ function statusBadge(b) {
 // Cameras and stays. Redrawn only when something actually changed (a camera switched on
 // or off, a booking changed), and focus is put back where it was.
 let lastSignature = '';
+let wasLive = null;
 function renderStay(data) {
+  // Tell people waiting on this page when a camera switches on (or off).
+  const nowLive = new Map(data.cameras.map((c) => [c.id, c.live]));
+  if (wasLive) {
+    for (const c of data.cameras) {
+      if (c.live && wasLive.get(c.id) === false) announce(`${c.name} is live now.`);
+    }
+  }
+  wasLive = nowLive;
   const signature = JSON.stringify([data.cameras.map((c) => [c.id, c.live, c.liveFrom, c.liveUntil]), data.bookings.map((b) => [b.ref, b.status, b.refunded])]);
   if (signature === lastSignature) return;
   lastSignature = signature;

@@ -26,7 +26,7 @@ hlsAddress: 127.0.0.1:8888      # never exposed to the internet; only the site r
 hlsVariant: fmp4                # standard HLS; plays in Safari and via hls.js everywhere
 hlsSegmentCount: 7
 hlsSegmentDuration: 2s
-hlsAllowOrigin: ''
+hlsAllowOrigins: []
 
 pathDefaults:
   sourceOnDemand: yes             # only pull from the ranch while a guest is watching
@@ -38,11 +38,21 @@ paths:
   # "_sub" is the NVR's low-bandwidth stream (about 0.5 Mbps). It's the right choice on a
   # rural upload connection. For sharper video with plenty of upload speed use "_main",
   # but only if the camera sends H.264 (browsers can't play H.265).
-  stall1: { source: rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_01_sub }
-  stall2: { source: rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_02_sub }
-  stall3: { source: rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_03_sub }
-  stall4: { source: rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_04_sub }
-  stall5: { source: rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_05_sub }
-  stall6: { source: rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_06_sub }
-  stall7: { source: rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_07_sub }
-  stall8: { source: rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_08_sub }
+  # If your password has symbols in it, they must be URL-encoded here (install.sh does
+  # this for you).
+  stall1:
+    source: "rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_01_sub"
+  stall2:
+    source: "rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_02_sub"
+  stall3:
+    source: "rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_03_sub"
+  stall4:
+    source: "rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_04_sub"
+  stall5:
+    source: "rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_05_sub"
+  stall6:
+    source: "rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_06_sub"
+  stall7:
+    source: "rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_07_sub"
+  stall8:
+    source: "rtsp://NVR_USER:NVR_PASSWORD@NVR_IP:554/h264Preview_08_sub"

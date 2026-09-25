@@ -175,6 +175,24 @@ for (const scheme of ['light', 'dark']) {
   const op = await page.locator('[data-step="rvSites"][data-dir="-1"]').evaluate((b) => getComputedStyle(b).opacity);
   if (Number(op) > 0.6) failures.push(`stepper: an unavailable "−" button looks enabled (opacity ${op})`);
 
+  // Laptop at 125% zoom: the (sticky) calendar must not hide its own date fields.
+  await page.setViewportSize({ width: 1024, height: 640 });
+  await page.goto(t.base + '/#book', { waitUntil: 'networkidle' });
+  await page.locator('#check-out').focus();
+  await page.waitForTimeout(900); // let the smooth scroll finish
+  const inView = await page.locator('#check-out').evaluate((n) => { const r = n.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; });
+  if (!inView) failures.push('sticky: the check-out field is off screen when focused at 1024×640');
+  // A typed date that can't be used is put back, so the field matches what would be booked.
+  const good = futureStay(t.cfg, { inDays: 20, nights: 2 });
+  await page.fill('#check-in', good.checkIn); await page.dispatchEvent('#check-in', 'change');
+  await page.fill('#check-out', good.checkOut); await page.dispatchEvent('#check-out', 'change');
+  await page.waitForTimeout(300);
+  const tooLong = futureStay(t.cfg, { inDays: 60 }).checkIn;
+  await page.fill('#check-out', tooLong); // fill() fires the change event itself
+  await page.waitForTimeout(300);
+  if ((await page.inputValue('#check-out')) !== good.checkOut) failures.push('dates: a rejected typed check-out stayed in the field');
+  if ((await page.getAttribute('#check-out', 'aria-invalid')) !== 'true') failures.push('dates: a rejected typed check-out was not marked invalid');
+
   // Zoom / reflow: 320 CSS px wide must not scroll horizontally.
   for (const p of ['/', '/login', '/policies']) {
     await page.setViewportSize({ width: 320, height: 640 });

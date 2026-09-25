@@ -186,10 +186,14 @@ export function icalService({ db, cfg, bookings, mailer }) {
     return state;
   }
 
+  // Our own bookings come back from Airbnb (it imports our feed), sometimes merged into one
+  // event. An event is an echo when every one of its nights is already booked here.
   function isOwnEcho(start, end, units) {
-    return !!db.prepare(`SELECT 1 FROM bookings b JOIN allocations a ON a.booking_id = b.id
-        WHERE b.status = 'confirmed' AND b.source != 'ical' AND b.check_in = ? AND b.check_out = ?
-          AND a.unit_id IN (${units.map(() => '?').join(',')}) LIMIT 1`).get(start, end, ...units);
+    const covered = new Set(db.prepare(`SELECT DISTINCT a.night FROM allocations a JOIN bookings b ON b.id = a.booking_id
+        WHERE b.status = 'confirmed' AND b.source != 'ical' AND a.night >= ? AND a.night < ?
+          AND a.unit_id IN (${units.map(() => '?').join(',')})`).all(start, end, ...units).map((r) => r.night));
+    for (let d = start; d < end; d = addDays(d, 1)) if (!covered.has(d)) return false;
+    return true;
   }
 
   function blockFreeNights(start, end, units, note, uid) {
