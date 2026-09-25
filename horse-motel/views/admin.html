@@ -110,10 +110,10 @@
             <div class="field"><label for="b-in">First night</label><input type="date" id="b-in" required></div>
             <div class="field"><label for="b-out">Available again on</label><input type="date" id="b-out" required></div>
           </div>
-          <fieldset>
+          <fieldset aria-describedby="b-units-error">
             <legend>What to block</legend>
             <div class="units-picker" id="b-units"></div>
-            <p class="field-error" id="b-units-error"></p>
+            <p class="field-error" id="b-units-error" role="alert"></p>
           </fieldset>
           <div class="field"><label for="b-note">Note (only you see this)</label><input type="text" id="b-note" maxlength="200"></div>
           <div class="status-region" id="block-msg" role="status"></div>
@@ -146,7 +146,7 @@
                 <option value="snapshot">Still picture (JPEG snapshot URL)</option>
                 <option value="demo">Demo (no camera — for testing)</option>
               </select>
-              <p class="hint" id="c-type-hint">Most NVRs and cameras can publish HLS through MediaMTX or go2rtc. See the README.</p>
+              <p class="hint" id="c-type-hint">For live video, run MediaMTX next to the site (see cameras/README.md); its addresses look like http://127.0.0.1:8888/stall1/index.m3u8.</p>
             </div>
             <div class="field">
               <label for="c-url">Camera address</label>
@@ -198,7 +198,7 @@
     </div>
   </div>
 
-  <dialog id="cancel-dialog" aria-labelledby="cancel-title" class="panel">
+  <dialog id="cancel-dialog" aria-labelledby="cancel-title" aria-describedby="cancel-summary" class="panel">
     <form method="dialog" id="cancel-form">
       <h2 id="cancel-title">Cancel booking</h2>
       <p id="cancel-summary"></p>
@@ -212,11 +212,11 @@
     </form>
   </dialog>
 
-  <dialog id="email-dialog" aria-labelledby="email-title" class="panel">
+  <dialog id="email-dialog" aria-labelledby="email-title" aria-describedby="email-summary" class="panel">
     <form method="dialog" id="email-form" novalidate>
       <h2 id="email-title">Change the guest’s email</h2>
       <p id="email-summary"></p>
-      <div class="field"><label for="new-email">Correct email address</label><input type="email" id="new-email" spellcheck="false" autocomplete="off"></div>
+      <div class="field"><label for="new-email">Correct email address</label><input type="email" id="new-email" spellcheck="false" autocomplete="off"><p class="field-error" id="new-email-error"></p></div>
       <p class="hint">The stay and its camera access move to this address, and a new confirmation (with a set-up link if needed) is sent there.</p>
       <div class="row-actions">
         <button class="btn" value="confirm" type="submit">Change and re-send</button>

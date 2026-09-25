@@ -1,4 +1,4 @@
-import { api, el, money, fmtDate, fmtRange, fieldError, clearErrors, busy, setStatus } from './common.js';
+import { api, el, money, fmtDate, fmtRange, fieldError, clearErrors, busy, setStatus, announce } from './common.js';
 import { cameraCard } from './camera-player.js';
 
 const $ = (id) => document.getElementById(id);
@@ -39,7 +39,7 @@ function whatText(b) {
     b.rv_sites ? `${b.rv_sites} RV` : null, b.rv_sewer ? `${b.rv_sewer} full hookup` : null].filter(Boolean).join(', ');
 }
 
-async function loadBookings({ focusMsg = false } = {}) {
+async function loadBookings({ focusMsg = false, announceCount = false } = {}) {
   const view = $('bk-view').value;
   const q = $('bk-q').value.trim();
   const { bookings } = await api(`/api/admin/bookings?view=${encodeURIComponent(view)}&q=${encodeURIComponent(q)}`);
@@ -53,6 +53,9 @@ async function loadBookings({ focusMsg = false } = {}) {
         el('button', { type: 'button', class: 'btn secondary small', onclick: () => simple(b, 'resend') }, 'Re-send email', hidden(` for ${b.ref}`)),
         el('button', { type: 'button', class: 'btn secondary small', onclick: () => changeEmail(b) }, 'Change email', hidden(` for ${b.ref}`)));
     }
+    if (b.status === 'pending') {
+      actions.append(el('button', { type: 'button', class: 'btn secondary small', onclick: () => releaseHold(b) }, 'Release hold', hidden(` ${b.ref}`)));
+    }
     if (b.status === 'needs_attention') {
       actions.append(el('button', { type: 'button', class: 'btn secondary small', onclick: () => resolve(b) }, 'Refund & resolve', hidden(` ${b.ref}`)));
     }
@@ -65,7 +68,7 @@ async function loadBookings({ focusMsg = false } = {}) {
       el('a', { href: `mailto:${b.email}` }, b.email), el('br'),
       b.phone ? el('a', { href: `tel:${b.phone.replace(/[^\d+]/g, '')}` }, b.phone) : null];
     return el('tr', {},
-      el('td', { 'data-label': 'Dates' }, fmtRange(b.check_in, b.check_out), el('br'), el('span', { class: 'small muted' }, `${b.ref}${b.source === 'admin' ? ' · phone booking' : ''}`)),
+      el('td', { 'data-label': 'Dates' }, fmtRange(b.check_in, b.check_out), el('br'), el('span', { class: 'small muted' }, `${b.ref}${b.kind === 'guest' && b.source === 'admin' ? ' · phone booking' : ''}`)),
       el('td', { 'data-label': 'Guest' }, guestCell),
       el('td', { 'data-label': 'What' }, whatText(b), b.units.length ? [el('br'), el('span', { class: 'small muted' }, b.units.join(', '))] : null,
         b.kind === 'guest' && b.notes ? [el('br'), el('span', { class: 'small' }, `“${b.notes}”`)] : null),
@@ -74,6 +77,7 @@ async function loadBookings({ focusMsg = false } = {}) {
       el('td', { 'data-label': 'Actions' }, actions));
   });
   $('bk-rows').replaceChildren(...(rows.length ? rows : [el('tr', {}, el('td', { colspan: '5' }, 'No bookings to show.'))]));
+  if (announceCount) announce(`${bookings.length} booking${bookings.length === 1 ? '' : 's'} shown.`);
   if (focusMsg) $('bk-msg').querySelector('p')?.focus();
 }
 
@@ -106,6 +110,11 @@ async function cancelBooking(b) {
   await afterAction(() => api(`/api/admin/bookings/${b.id}/cancel`, { method: 'POST', body: { refund: $('cancel-refund').checked, notify: $('cancel-notify').checked } }));
 }
 
+async function releaseHold(b) {
+  if (!confirm(`Release ${b.ref}? ${b.name}'s unfinished checkout ends and the dates become free.`)) return;
+  await afterAction(() => api(`/api/admin/bookings/${b.id}/release`, { method: 'POST' }));
+}
+
 async function resolve(b) {
   if (!confirm(`Refund ${b.name} and release ${b.ref}? Use this when a payment arrived for dates that were no longer free.`)) return;
   await afterAction(() => api(`/api/admin/bookings/${b.id}/resolve`, { method: 'POST', body: { refund: true } }));
@@ -114,11 +123,9 @@ async function resolve(b) {
 async function changeEmail(b) {
   $('email-summary').textContent = `${b.ref}: ${b.name} is currently ${b.email}.`;
   $('new-email').value = b.email;
-  $('new-email').removeAttribute('aria-invalid');
+  fieldError($('new-email'), '');
   if (await ask($('email-dialog')) !== 'confirm') return;
-  const email = $('new-email').value.trim();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setStatus($('bk-msg'), 'That email address doesn’t look right. Nothing was changed.', 'error', { focus: true }); return; }
-  await afterAction(() => api(`/api/admin/bookings/${b.id}/email`, { method: 'POST', body: { email } }));
+  await afterAction(() => api(`/api/admin/bookings/${b.id}/email`, { method: 'POST', body: { email: $('new-email').value.trim() } }));
 }
 
 // Runs an action, reloads the list, and puts focus on the result (the row the user was
@@ -134,9 +141,11 @@ async function afterAction(fn) {
 }
 
 // ── Occupancy ─────────────────────────────────────────────
+let announceOcc = false;
 async function loadOccupancy() {
   if (!$('occ-from').value) $('occ-from').value = todayIso();
   const data = await api(`/api/admin/occupancy?from=${$('occ-from').value}&days=${$('occ-days').value}`);
+  if (announceOcc) { announce(`Showing ${data.days} nights from ${fmtDate(data.from)}.`); announceOcc = false; }
   const nights = Array.from({ length: data.days }, (_, i) => { const d = new Date(data.from + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + i); return d.toISOString().slice(0, 10); });
   $('occ-head').replaceChildren(el('tr', {}, el('th', { scope: 'col' }, 'Unit'),
     nights.map((n) => el('th', { scope: 'col', abbr: fmtDate(n) }, fmtDate(n, { weekday: 'short', month: 'numeric', day: 'numeric' })))));
@@ -217,7 +226,7 @@ async function loadSync() {
   box.replaceChildren(
     el('p', {}, s.enabled ? `Importing ${s.feeds} calendar${s.feeds > 1 ? 's' : ''} every few minutes. ${s.lastSync ? `Last synced ${new Date(s.lastSync).toLocaleString('en-US', { timeZone: tz() })}.` : 'Not synced yet.'}`
       : 'Not set up. Add your Airbnb calendar’s export link to ICAL_IMPORT_URLS (Airbnb → Calendar → Availability → Connect calendars → Export).'),
-    s.lastError ? el('p', { class: 'field-error' }, s.lastError) : null,
+    ...(s.lastError ? [el('p', { class: 'field-error' }, s.lastError)] : []),
     s.exportUrl ? el('div', { class: 'field' }, el('label', { for: 'export-url' }, 'Give Airbnb this link (Import calendar)'),
       el('input', { type: 'text', id: 'export-url', readonly: true, value: s.exportUrl, onfocus: (e) => e.target.select() }))
       : el('p', { class: 'muted' }, 'To let Airbnb see bookings made here, set ICAL_EXPORT_TOKEN to a long random value.'));
@@ -235,9 +244,20 @@ async function loadLog() {
 // ── Forms ─────────────────────────────────────────────────
 function wire() {
   $('logout').addEventListener('click', async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => {}); location.assign('/'); });
-  $('bk-filter').addEventListener('submit', (e) => { e.preventDefault(); loadBookings().catch((ex) => setStatus($('bk-msg'), ex.message, 'error')); });
-  $('bk-view').addEventListener('change', () => loadBookings().catch(() => {}));
-  $('occ-form').addEventListener('submit', (e) => { e.preventDefault(); loadOccupancy().catch(() => {}); });
+  $('bk-filter').addEventListener('submit', (e) => { e.preventDefault(); loadBookings({ announceCount: true }).catch((ex) => setStatus($('bk-msg'), ex.message, 'error')); });
+  $('bk-view').addEventListener('change', () => loadBookings({ announceCount: true }).catch(() => {}));
+  $('occ-form').addEventListener('submit', (e) => { e.preventDefault(); announceOcc = true; loadOccupancy().catch(() => {}); });
+
+  // Change-email dialog: check the address before closing, and keep what was typed.
+  $('email-form').addEventListener('submit', (e) => {
+    if (e.submitter?.value !== 'confirm') return;
+    const input = $('new-email');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.value.trim())) {
+      e.preventDefault();
+      fieldError(input, 'Enter an email address like name@example.com.');
+      input.focus();
+    }
+  });
 
   $('phone-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -277,7 +297,14 @@ function wire() {
     if (!$('b-in').value) { fieldError($('b-in'), 'Choose the first night.'); $('b-in').focus(); return; }
     if (!$('b-out').value || $('b-out').value <= $('b-in').value) { fieldError($('b-out'), 'Choose a later date.'); $('b-out').focus(); return; }
     const unitIds = pickedUnits($('b-units'));
-    if (!unitIds.length) { $('b-units-error').textContent = 'Tick at least one thing to block.'; $('b-units').querySelector('input')?.focus(); return; }
+    if (!unitIds.length) {
+      $('b-units-error').textContent = 'Tick at least one thing to block.';
+      const first = $('b-units').querySelector('input');
+      first?.setAttribute('aria-invalid', 'true');
+      first?.focus();
+      return;
+    }
+    $('b-units').querySelector('[aria-invalid]')?.removeAttribute('aria-invalid');
     const btn = form.querySelector('button[type="submit"]');
     busy(btn, true, 'Blocking…');
     try {

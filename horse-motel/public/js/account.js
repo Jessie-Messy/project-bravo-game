@@ -36,8 +36,16 @@ function statusBadge(b) {
   return el('span', { class: 'badge warn' }, 'We’re reviewing this booking');
 }
 
-// Cameras and stays: safe to redraw at any time (no form fields in here).
+// Cameras and stays. Redrawn only when something actually changed (a camera switched on
+// or off, a booking changed), and focus is put back where it was.
+let lastSignature = '';
 function renderStay(data) {
+  const signature = JSON.stringify([data.cameras.map((c) => [c.id, c.live, c.liveFrom, c.liveUntil]), data.bookings.map((b) => [b.ref, b.status, b.refunded])]);
+  if (signature === lastSignature) return;
+  lastSignature = signature;
+  const active = document.activeElement;
+  const focusKey = active && $('panel-stay').contains(active)
+    ? { cam: active.closest('.cam')?.getAttribute('aria-label'), text: active.textContent.trim() } : null;
   players.forEach((p) => p.stop());
   players = [];
   const cams = $('cams');
@@ -54,6 +62,7 @@ function renderStay(data) {
     }
     cams.replaceChildren(grid);
   }
+  restoreFocus(focusKey);
 
   const stays = $('stays');
   if (!data.bookings.length) {
@@ -74,8 +83,17 @@ function renderStay(data) {
       el('div', { class: 'meta' }, statusBadge(b), el('span', {}, `Confirmation ${b.ref}`)),
       el('p', { class: 'm-0' }, parts.join(' · ')),
       b.units.length ? el('p', { class: 'm-0 muted' }, `Assigned: ${b.units.join(', ')}`) : null,
-      el('p', { class: 'mt-14 mb-0 small muted' }, `Check-in from ${fmtHour(data.ranch.checkInHour)} · check-out by ${fmtHour(data.ranch.checkOutHour)} · ${paid}`));
+      el('p', { class: 'mt-14 mb-0 small muted' }, b.status === 'cancelled' ? paid
+        : `Check-in from ${fmtHour(data.ranch.checkInHour)} · check-out by ${fmtHour(data.ranch.checkOutHour)} · ${paid}`));
   }));
+  restoreFocus(focusKey);
+}
+
+function restoreFocus(key) {
+  if (!key) return;
+  const card = key.cam && [...document.querySelectorAll('#panel-stay .cam')].find((c) => c.getAttribute('aria-label') === key.cam);
+  const target = card && ([...card.querySelectorAll('button:not([hidden])')].find((b) => b.textContent.trim() === key.text) || card.querySelector('button:not([hidden])'));
+  (target || $('panel-stay')).focus();
 }
 
 // Account & security: filled once, never overwritten by the background refresh, so

@@ -121,18 +121,15 @@ Guests pay on Stripe's own page, so card numbers never touch this server. A book
 
 ### 5. Cameras
 
-Guests never connect to a camera directly. The site relays video from your camera system and checks, on **every** request, that the guest has a confirmed booking for that stall and that their stay is on right now. Camera addresses and passwords stay on the server.
+**Full guide with a shopping list, mounting tips and step-by-step install: [`cameras/README.md`](cameras/README.md).**
 
-**Recommended set-up:**
+In short: PoE dome cameras (one per stall) plug into a PoE NVR at the ranch. A small Tailscale router lets the web server reach the NVR privately; nothing is port-forwarded. On the web server, [MediaMTX](https://github.com/bluenviron/mediamtx) (config in `cameras/mediamtx.yml`) turns each camera into an HLS stream on `127.0.0.1`, only while someone is watching. Then `npm run cameras:setup` adds one camera per stall.
 
-1. On a small always-on computer at the ranch (a Raspberry Pi or mini-PC on the same network as the cameras / NVR), run [MediaMTX](https://github.com/bluenviron/mediamtx) or [go2rtc](https://github.com/AlexxIT/go2rtc). Point it at each camera's RTSP stream; it republishes each as HLS, e.g. `http://<box>:8888/stall1/index.m3u8`.
-2. Connect that box and the web server privately with [Tailscale](https://tailscale.com) or WireGuard. **Do not port-forward cameras or the NVR to the internet.**
-3. Put the box's private address in `CAMERA_ALLOWED_HOSTS`.
-4. In **Admin → Cameras**, add each camera: name, "Live video (HLS)", its `.m3u8` address, and tick the stall(s) it shows. Use **Test** to check it plays.
+Guests never connect to a camera directly. The site relays video from MediaMTX and checks, on **every** request, that the guest has a confirmed booking for that stall and that their stay is on right now. Camera addresses and passwords stay on the server, encrypted.
+
+Cameras that can only produce still pictures work too: in **Admin → Cameras**, choose "Still picture" and give the snapshot URL. Guests' pages refresh it every 2 seconds.
 
 **One camera per stall is best.** If a camera shows two stalls, a guest who rents either stall can see both horses while their stay overlaps with the other guest's. When the same stall has back-to-back guests, the leaving guest's view ends at check-out time and the next guest's starts after it, so they never overlap.
-
-Cameras that can only produce still pictures work too: choose "Still picture" and give the snapshot URL (`http://user:pass@host/snapshot.jpg` style credentials are supported and never shown to anyone). Guests' pages refresh the picture every 2 seconds.
 
 ---
 

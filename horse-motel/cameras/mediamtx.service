@@ -1,0 +1,20 @@
+# systemd unit for MediaMTX on the web server.
+#   sudo install -m 0755 mediamtx /usr/local/bin/mediamtx
+#   sudo install -m 0600 -o ranch mediamtx.yml /etc/mediamtx.yml
+#   sudo cp mediamtx.service /etc/systemd/system/ && sudo systemctl enable --now mediamtx
+[Unit]
+Description=MediaMTX (stall camera streams)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/mediamtx /etc/mediamtx.yml
+Restart=always
+User=ranch
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

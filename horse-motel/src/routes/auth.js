@@ -30,46 +30,53 @@ export function authRoutes({ db, cfg, mailer }) {
   // Sign-in attempts are counted per account BEFORE the slow password check, in one
   // synchronous step, so parallel guesses can't slip past the limit. Password and 2-step
   // failures share one budget of 5; the account owner is emailed when their account locks.
-  const bumpFailures = db.prepare(`UPDATE users SET failed_logins = failed_logins + 1
-      WHERE id = ? AND locked_until <= ? RETURNING failed_logins, lock_level`);
+  // Two separate budgets:
+  //  - wrong passwords (anyone who knows an email can cause these): a short, fixed pause
+  //    that never escalates, so nobody can lock an owner out for long;
+  //  - wrong 2-step codes after a correct password (the password is known): each lock
+  //    doubles, up to a day. A correct password never resets this budget.
+  const counter = { password: 'failed_logins', '2-step': 'mfa_failures' };
+  const bump = {
+    password: db.prepare(`UPDATE users SET failed_logins = failed_logins + 1 WHERE id = ? AND locked_until <= ?
+        RETURNING failed_logins AS n, lock_level`),
+    '2-step': db.prepare(`UPDATE users SET mfa_failures = mfa_failures + 1 WHERE id = ? AND locked_until <= ?
+        RETURNING mfa_failures AS n, lock_level`),
+  };
 
   function lockNow(user, reason, ip) {
-    // Wrong passwords: a short, fixed pause, so someone who only knows an email address
-    // can't lock its owner out for long. Wrong 2-step codes after a correct password mean
-    // the password is known: those locks double each time, up to a day.
-    const minutes = reason === '2-step'
-      ? Math.min(cfg.auth.lockMinutes * 2 ** user.lock_level, cfg.auth.maxLockHours * 60)
-      : cfg.auth.lockMinutes;
-    db.prepare('UPDATE users SET failed_logins = 0, lock_level = lock_level + 1, locked_until = ? WHERE id = ?')
-      .run(Date.now() + minutes * 60e3, user.id);
+    const escalate = reason === '2-step';
+    const minutes = escalate ? Math.min(cfg.auth.lockMinutes * 2 ** user.lock_level, cfg.auth.maxLockHours * 60) : cfg.auth.lockMinutes;
+    db.prepare(`UPDATE users SET ${counter[reason]} = 0, lock_level = lock_level + ?, locked_until = ? WHERE id = ?`)
+      .run(escalate ? 1 : 0, Date.now() + minutes * 60e3, user.id);
     db.prepare('DELETE FROM mfa_challenges WHERE user_id = ?').run(user.id);
     audit(db, { userId: user.id, action: 'auth.locked', detail: `${reason}, ${minutes} min`, ip });
     mailer.send({
       to: user.email,
       subject: `Sign-in paused on your ${cfg.ranch.name} account`,
-      text: reason === '2-step'
+      text: escalate
         ? `Someone entered your password correctly but then got the 2-step verification code wrong several times, so sign-in is paused for ${minutes} minutes.\n\nIf this wasn’t you, your password is known to someone else: change it as soon as you can (use “Forgot password” on the sign-in page).`
         : `There were several failed attempts to sign in to your account, so sign-in is paused for ${minutes} minutes.\n\nIf this wasn’t you, you don’t need to do anything — but make sure your password isn’t used on any other website.`,
     }).catch(() => {});
   }
 
-  // Reserves one attempt. Returns false when the account is (or just became) locked.
+  // Reserves one attempt before the (slow) check. Returns false when the account is, or
+  // just became, locked.
   function takeAttempt(user, reason, ip) {
-    const row = bumpFailures.get(user.id, Date.now());
+    const row = bump[reason].get(user.id, Date.now());
     if (!row) return false;
-    if (row.failed_logins > cfg.auth.maxFailedLogins) {
+    if (row.n > cfg.auth.maxFailedLogins) {
       lockNow({ ...user, lock_level: row.lock_level }, reason, ip);
       return false;
     }
     return true;
   }
-  // After a failure: the 5th one locks straight away, attributed to what failed.
+  // After a failure: the 5th one locks straight away.
   function afterFailure(user, reason, ip) {
-    const row = db.prepare('SELECT failed_logins, lock_level, locked_until FROM users WHERE id = ?').get(user.id);
-    if (row.locked_until <= Date.now() && row.failed_logins >= cfg.auth.maxFailedLogins) lockNow({ ...user, lock_level: row.lock_level }, reason, ip);
+    const row = db.prepare(`SELECT ${counter[reason]} AS n, lock_level, locked_until FROM users WHERE id = ?`).get(user.id);
+    if (row.locked_until <= Date.now() && row.n >= cfg.auth.maxFailedLogins) lockNow({ ...user, lock_level: row.lock_level }, reason, ip);
   }
   const isLocked = (id) => db.prepare('SELECT locked_until FROM users WHERE id = ?').get(id).locked_until > Date.now();
-  const clearFailures = (id) => db.prepare('UPDATE users SET failed_logins = 0, lock_level = 0, locked_until = 0 WHERE id = ?').run(id);
+  const clearFailures = (id) => db.prepare('UPDATE users SET failed_logins = 0, mfa_failures = 0, lock_level = 0, locked_until = 0 WHERE id = ?').run(id);
 
   r.post('/login', limiter, async (req, res) => {
     const body = z.object({ email, password: z.string().min(1, 'Enter your password.').max(200) }).strict().parse(req.body);
@@ -84,9 +91,8 @@ export function authRoutes({ db, cfg, mailer }) {
     }
 
     if (user.totp_enabled) {
-      // The password was right, so give back the attempt it reserved; the 2-step code
-      // still has to be earned against the same budget.
-      db.prepare('UPDATE users SET failed_logins = MAX(failed_logins - 1, 0) WHERE id = ?').run(user.id);
+      // The password was right: its budget resets. The 2-step budget does not.
+      db.prepare('UPDATE users SET failed_logins = 0 WHERE id = ?').run(user.id);
       db.prepare('DELETE FROM mfa_challenges WHERE user_id = ?').run(user.id);
       const challenge = randomToken();
       db.prepare('INSERT INTO mfa_challenges (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
@@ -183,7 +189,7 @@ export function authRoutes({ db, cfg, mailer }) {
     const consumed = db.transaction(() => {
       const upd = db.prepare('UPDATE auth_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL').run(Date.now(), row.token_hash);
       if (upd.changes !== 1) return false; // lost a race with another tab
-      db.prepare('UPDATE users SET password_hash = ?, failed_logins = 0, lock_level = 0, locked_until = 0 WHERE id = ?').run(hash, row.user_id);
+      db.prepare('UPDATE users SET password_hash = ?, failed_logins = 0, mfa_failures = 0, lock_level = 0, locked_until = 0 WHERE id = ?').run(hash, row.user_id);
       db.prepare('DELETE FROM mfa_challenges WHERE user_id = ?').run(row.user_id);
       db.prepare('DELETE FROM auth_tokens WHERE user_id = ? AND used_at IS NULL').run(row.user_id);
       destroyAllSessions(db, row.user_id);

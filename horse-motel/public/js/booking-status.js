@@ -19,6 +19,13 @@ function show(key, kind, title, ...body) {
   focusHeading(h, `${title} — Rockin' C Ranch`);
 }
 
+// "r••••@example.com" is shown; screen readers hear "the address starting with r at example.com".
+function maskedEmail(masked) {
+  const [local, domain] = masked.split('@');
+  return el('span', {}, el('span', { 'aria-hidden': 'true' }, masked),
+    el('span', { class: 'visually-hidden' }, `the address starting with “${local.slice(0, 1)}” at ${domain}`));
+}
+
 function summary(s) {
   const parts = [s.house ? `Ranch house (${s.guests} guest${s.guests === 1 ? '' : 's'})` : null,
     s.stalls ? `${s.stalls} stall${s.stalls > 1 ? 's' : ''}` : null,
@@ -40,9 +47,10 @@ async function check() {
     show('confirmed', 'ok', 'You’re booked!', summary(s),
       el('p', {}, 'Confirmation number ', el('strong', {}, s.ref)),
       s.units.length ? el('p', {}, `Reserved for you: ${s.units.join(', ')}.`) : null,
-      el('p', {}, `We’ve emailed your confirmation to ${s.email}. If you’re new here, it has a link to create your password — then you can watch your stall cameras from your account.`),
-      el('p', { class: 'small muted' }, 'Email not there after a few minutes? Check your spam folder, or contact us (details at the bottom of the page) if the address above looks wrong.'),
-      el('p', {}, el('a', { class: 'btn secondary', href: '/login' }, 'I already have an account — sign in')));
+      el('p', {}, 'We’ve emailed your confirmation to ', maskedEmail(s.email),
+        '. If you’re new here, it has a link to create your password — then you can watch your stall cameras from your account.'),
+      el('p', { class: 'small muted' }, 'Email not there after a few minutes? Check your spam folder. If you think you mistyped your email, contact us (details at the bottom of the page) and we’ll fix it.'),
+      el('p', {}, 'Already have an account? ', el('a', { href: '/login' }, 'Sign in')));
     return;
   }
   if (s.status === 'pending' && cancelled) {

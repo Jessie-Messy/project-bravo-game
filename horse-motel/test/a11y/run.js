@@ -155,6 +155,26 @@ for (const scheme of ['light', 'dark']) {
   await page.waitForSelector('text=You’re booked!', { timeout: 10000 }).catch(() => failures.push('booking flow: confirmation page never showed "You’re booked!"'));
   if (shots) await page.screenshot({ path: path.join(shots, 'booking-confirmed-desktop.png') });
 
+  // Back from checkout: the unfinished-booking banner must fit a 320px screen.
+  await page.goto(t.base + '/#book', { waitUntil: 'networkidle' });
+  const d2 = futureStay(t.cfg, { inDays: 45 });
+  await page.fill('#check-in', d2.checkIn); await page.dispatchEvent('#check-in', 'change');
+  await page.fill('#check-out', d2.checkOut); await page.dispatchEvent('#check-out', 'change');
+  await page.fill('#name', 'Sam Back'); await page.fill('#email', 'sam@example.com'); await page.fill('#phone', '501 555 0123');
+  await page.check('#agree-coggins'); await page.check('#agree-rules');
+  await page.click('#book-btn');
+  await page.waitForURL(/dev-checkout/);
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(t.base + '/#book', { waitUntil: 'networkidle' });
+  await page.waitForSelector('#pending-banner:not([hidden])', { timeout: 5000 }).catch(() => failures.push('banner: unfinished booking banner did not appear'));
+  const bannerOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  if (bannerOverflow > 1) failures.push(`reflow: booking page with the pending banner scrolls sideways by ${bannerOverflow}px at 320px`);
+  if ((await page.inputValue('#name')) !== 'Sam Back') failures.push('draft: form details were not restored after going back');
+  if (shots) await page.screenshot({ path: path.join(shots, 'pending-banner-320.png'), fullPage: false });
+  // Disabled-looking controls: "−" at zero must look disabled.
+  const op = await page.locator('[data-step="rvSites"][data-dir="-1"]').evaluate((b) => getComputedStyle(b).opacity);
+  if (Number(op) > 0.6) failures.push(`stepper: an unavailable "−" button looks enabled (opacity ${op})`);
+
   // Zoom / reflow: 320 CSS px wide must not scroll horizontally.
   for (const p of ['/', '/login', '/policies']) {
     await page.setViewportSize({ width: 320, height: 640 });

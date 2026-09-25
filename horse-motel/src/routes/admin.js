@@ -9,7 +9,7 @@ import { BookingError, stayRequestSchema } from '../services/inventory.js';
 
 const isoDate = z.string().refine(isIsoDate, 'Use a real date.');
 
-export function adminRoutes({ db, cfg, inventory, bookings, cameras, ical }) {
+export function adminRoutes({ db, cfg, inventory, bookings, cameras, ical, payments }) {
   const r = express.Router();
   r.use(requireAdmin);
 
@@ -41,8 +41,9 @@ export function adminRoutes({ db, cfg, inventory, bookings, cameras, ical }) {
         FROM bookings WHERE ${where}${search} ORDER BY ${order} LIMIT 300`).all({ today, q: `%${q}%` });
     const since = Date.now() - 2 * 86400e3;
     res.json({ view, bookings: rows.map((b) => ({ ...b, stripe_payment_intent: undefined,
-      paidOnline: !!b.stripe_payment_intent && b.stripe_payment_intent !== 'mock',
-      isNew: b.kind === 'guest' && (b.confirmed_at || 0) > since,
+      // Test mode's pretend payments can be "refunded" too, so the screen can be tried out.
+      paidOnline: !!b.stripe_payment_intent && (b.stripe_payment_intent !== 'mock' || payments.mode === 'mock'),
+      isNew: b.kind === 'guest' && b.status === 'confirmed' && (b.confirmed_at || 0) > since,
       units: inventory.unitsFor(b.id).map((u) => u.label) })) });
   });
 
@@ -75,6 +76,15 @@ export function adminRoutes({ db, cfg, inventory, bookings, cameras, ical }) {
     await bookings.sendConfirmation({ booking, user, setupToken }, { alertOwner: false });
     audit(db, { userId: req.user.id, action: 'admin.resend', detail: booking.ref, ip: req.ip });
     res.json({ ok: true, note: `Confirmation re-sent to ${booking.email}.` });
+  });
+
+  // Frees the dates of a checkout nobody finished (e.g. a guest who asked by phone).
+  r.post('/bookings/:id/release', async (req, res) => {
+    const b = db.prepare("SELECT ref FROM bookings WHERE id = ? AND status = 'pending'").get(idParam(req));
+    if (!b) throw new BookingError('That booking isn’t waiting for payment.', 404);
+    const released = await bookings.releaseHold(b.ref);
+    audit(db, { userId: req.user.id, action: 'admin.release_hold', detail: b.ref, ip: req.ip });
+    res.json({ ok: true, note: released ? `Released ${b.ref}; its dates are free again.` : `${b.ref} was just paid, so it has been confirmed instead.` });
   });
 
   // Fix a mistyped email: moves the stay (and its cameras) to the right account.

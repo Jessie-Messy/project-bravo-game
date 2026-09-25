@@ -158,11 +158,26 @@ describe('owner features', () => {
     const s = futureStay(t.cfg, { inDays: 150, nights: 2, house: true, guests: 2, stalls: 0 });
     await bookAndPay(t, client(t.base), s, 'webhouse@example.com');
     const d = (x) => x.replaceAll('-', '');
-    feedBody = `BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:clash@airbnb.com\r\nDTSTART;VALUE=DATE:${d(s.checkIn)}\r\nDTEND;VALUE=DATE:${d(s.checkOut)}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
+    // Starts the night before our booking and runs through it: a real clash, not an echo.
+    const dayBefore = futureStay(t.cfg, { inDays: 149 }).checkIn;
+    feedBody = `BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:clash@airbnb.com\r\nDTSTART;VALUE=DATE:${d(dayBefore)}\r\nDTEND;VALUE=DATE:${d(s.checkOut)}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
     const before = t.mailer.outbox.filter((m) => /overlaps/.test(m.subject)).length;
     await admin.post('/api/admin/calendar-sync');
     await admin.post('/api/admin/calendar-sync');
     assert.equal(t.mailer.outbox.filter((m) => /overlaps/.test(m.subject)).length, before + 1);
+    // The night that was free is still blocked for Airbnb's guest.
+    const a = (await client(t.base).get(`/api/availability?from=${dayBefore}&days=1`)).data.days[dayBefore];
+    assert.equal(a.house, 0);
+  });
+
+  test('our own booking echoed back by Airbnb is ignored, not reported', async () => {
+    const s = futureStay(t.cfg, { inDays: 160, nights: 2, house: true, guests: 2, stalls: 0 });
+    await bookAndPay(t, client(t.base), s, 'echo@example.com');
+    const d = (x) => x.replaceAll('-', '');
+    feedBody = `BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:echo@airbnb.com\r\nDTSTART;VALUE=DATE:${d(s.checkIn)}\r\nDTEND;VALUE=DATE:${d(s.checkOut)}\r\nSUMMARY:Airbnb (Not available)\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
+    const before = t.mailer.outbox.filter((m) => /overlaps/.test(m.subject)).length;
+    await admin.post('/api/admin/calendar-sync');
+    assert.equal(t.mailer.outbox.filter((m) => /overlaps/.test(m.subject)).length, before);
   });
 
   test('the export feed lists house nights without guest names, behind a secret URL', async () => {
@@ -184,5 +199,38 @@ describe('owner features', () => {
     const r = await admin.post('/api/admin/bookings', { stay: { ...futureStay(t.cfg), stalls: 99 }, contact: { name: 'A B', email: 'a@example.com', phone: '' } });
     assert.equal(r.status, 400);
     assert.match(r.data.error, /We have 8 stalls/);
+  });
+});
+
+describe('whole-stay availability', () => {
+  let t;
+  before(async () => { t = await startServer(); });
+  after(() => t.close());
+
+  test('a stall free on each night but not the same stall throughout is not offered', async () => {
+    const stay = futureStay(t.cfg, { inDays: 30, nights: 2, stalls: 1 });
+    const [n1, n2] = [stay.checkIn, futureStay(t.cfg, { inDays: 31 }).checkIn];
+    // Night 1: stalls 1–7 taken; night 2: stall 8 taken → one stall free each night, different ones.
+    const u = (n) => t.db.prepare("SELECT id FROM units WHERE kind = 'stall' AND number = ?").get(n).id;
+    const blk = t.db.prepare("INSERT INTO bookings (ref, kind, status, check_in, check_out, created_at) VALUES (?, 'block', 'confirmed', ?, ?, ?)");
+    const b1 = blk.run('BL-A', n1, n2, Date.now()).lastInsertRowid;
+    const b2 = blk.run('BL-B', n2, stay.checkOut, Date.now()).lastInsertRowid;
+    for (let i = 1; i <= 7; i++) t.db.prepare('INSERT INTO allocations VALUES (?, ?, ?)').run(b1, u(i), n1);
+    t.db.prepare('INSERT INTO allocations VALUES (?, ?, ?)').run(b2, u(8), n2);
+    const q = await client(t.base).post('/api/quote', stay);
+    assert.equal(q.data.ok, false);
+    assert.match(q.data.reason, /No single stall is free for all 2 nights/);
+    assert.equal(q.data.free.stalls, 0);
+  });
+});
+
+describe('calendar import safety', () => {
+  test('refuses feeds on private addresses, including disguised IPv6 forms', async () => {
+    const t = await startServer();
+    try {
+      t.cfg.ical.importUrls = ['https://10.0.0.1/feed.ics', 'https://[::ffff:100.64.0.10]/feed.ics'];
+      const out = await t.ctx.ical.syncImports();
+      assert.match(out.lastError, /not a public host.*not a public host/);
+    } finally { await t.close(); }
   });
 });

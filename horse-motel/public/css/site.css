@@ -191,7 +191,7 @@ ul.clean { list-style: none; padding: 0; margin: 0; }
 .field > label, .label { font-weight: 600; font-size: .98rem; }
 .hint { color: var(--muted); font-size: .9rem; margin: 0; }
 input[type="text"], input[type="email"], input[type="password"], input[type="tel"], input[type="date"],
-input[type="number"], input[type="url"], select, textarea {
+input[type="number"], input[type="url"], input[type="search"], select, textarea {
   width: 100%; min-height: 48px; padding: 10px 14px; border-radius: var(--radius-sm);
   border: 1.5px solid var(--line-strong); background: var(--card); color: var(--ink);
   font: 400 1rem/1.4 var(--font);
@@ -289,7 +289,7 @@ legend { font-weight: 650; padding: 0; margin-bottom: 10px; }
 .gallery .tag { position: absolute; left: 10px; bottom: 10px; background: rgb(20 12 6 / .72); color: #fff; font: 600 .78rem/1 var(--font); padding: 6px 10px; border-radius: 999px; }
 
 dialog.lightbox { padding: 0; border: 0; background: transparent; max-width: 100vw; max-height: 100vh; width: 100vw; height: 100dvh; margin: 0; color: #fff; overflow: auto; }
-dialog.lightbox::backdrop { background: rgb(10 7 4 / .92); }
+dialog.lightbox::backdrop { background: rgb(10 7 4 / .97); }
 .lightbox-inner { min-height: 100%; display: grid; grid-template-rows: auto 1fr auto; padding: 12px; gap: 8px; }
 .lightbox-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .lightbox figure { margin: 0; display: grid; place-items: center; min-height: 0; }
@@ -307,15 +307,15 @@ dialog.lightbox::backdrop { background: rgb(10 7 4 / .92); }
 .booking { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr); gap: clamp(20px, 3vw, 36px); align-items: start; }
 @media (max-width: 980px) { .booking { grid-template-columns: 1fr; } }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: clamp(18px, 3vw, 28px); box-shadow: var(--shadow); }
-.booking-summary { position: sticky; top: 88px; }
-@media (max-width: 980px) { .booking-summary { position: static; } }
+.booking > .panel:first-child { position: sticky; top: 88px; }
+@media (max-width: 980px) { .booking > .panel:first-child { position: static; } }
 
 .cal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .cal-head h3 { margin: 0; }
 .cal-nav { display: flex; gap: 8px; }
 .cal-nav button { width: 44px; height: 44px; border-radius: 50%; border: 1.5px solid var(--line-strong); background: var(--card); color: var(--ink); cursor: pointer; display: grid; place-items: center; }
-.cal-nav button:hover:not(:disabled) { background: var(--paper-2); }
-.cal-nav button:disabled { opacity: .4; cursor: not-allowed; }
+.cal-nav button:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--paper-2); }
+.cal-nav button:disabled, .cal-nav button[aria-disabled="true"] { opacity: .4; cursor: not-allowed; }
 .cal-nav svg { width: 20px; height: 20px; }
 .cal-months { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
 @media (max-width: 700px) { .cal-months { grid-template-columns: 1fr; } .cal-months .month:nth-child(2) { display: none; } }
@@ -357,8 +357,8 @@ table.cal td[role="gridcell"] { position: relative; }
 .stepper .what span { color: var(--muted); font-size: .9rem; }
 .stepper .ctrl { display: flex; align-items: center; gap: 8px; flex: none; }
 .stepper .ctrl button { width: 44px; height: 44px; border-radius: 50%; border: 1.5px solid var(--line-strong); background: var(--card); color: var(--ink); font: 600 1.3rem/1 var(--font); cursor: pointer; }
-.stepper .ctrl button:hover:not(:disabled) { background: var(--paper-2); }
-.stepper .ctrl button:disabled { opacity: .35; cursor: not-allowed; }
+.stepper .ctrl button:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--paper-2); }
+.stepper .ctrl button:disabled, .stepper .ctrl button[aria-disabled="true"] { opacity: .35; cursor: not-allowed; }
 .stepper .ctrl output { min-width: 2ch; text-align: center; font: 650 1.1rem var(--font); }
 .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }
 .switch { position: relative; width: 56px; height: 32px; flex: none; }
@@ -446,7 +446,7 @@ table.data th, table.data td { text-align: left; padding: 12px 16px; border-bott
 table.data th { font-size: .82rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 table.data tr:last-child td { border-bottom: 0; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
 @media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
 .qr { background: #fff; padding: 10px; border-radius: 12px; width: 240px; }
 code.secret { font-size: 1.05rem; letter-spacing: .12em; word-break: break-all; background: var(--paper-2); padding: 4px 8px; border-radius: 6px; }
@@ -496,19 +496,22 @@ code.secret { font-size: 1.05rem; letter-spacing: .12em; word-break: break-all; 
 .stepper .what .left { display: block; color: var(--sage); font-weight: 600; font-size: .85rem; }
 .confirm-email { margin: 0 0 14px; font-size: .95rem; color: var(--ink-2); overflow-wrap: anywhere; }
 .pending-banner { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; }
-.pending-banner .row-actions { flex: none; }
+.pending-banner .row-actions { flex: 1 1 auto; flex-wrap: wrap; justify-content: flex-end; }
 
 /* Sticky "check availability" bar on phones, hidden once the booking form is on screen. */
 .mobile-cta {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: none; align-items: center; justify-content: space-between; gap: 12px;
   padding: 10px var(--gutter) calc(10px + env(safe-area-inset-bottom)); background: var(--card); border-top: 1px solid var(--line); box-shadow: 0 -6px 20px rgb(0 0 0 / .08);
 }
-.mobile-cta p { margin: 0; font-size: .92rem; }
-.mobile-cta strong { display: block; font-size: 1.02rem; }
-@media (max-width: 860px) {
+.mobile-cta p { margin: 0; font-size: .92rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-cta strong { font-size: 1rem; }
+.mobile-cta .btn { flex: none; }
+/* Only on phones with room to spare: at high zoom (short viewports) the bar would hide
+   what has focus, so it stays away. Padding follows the bar's measured height. */
+@media (max-width: 860px) and (min-height: 560px) {
   .mobile-cta:not([hidden]) { display: flex; }
-  html.has-cta { scroll-padding-bottom: 84px; }
-  html.has-cta body { padding-bottom: 76px; }
+  html.has-cta { scroll-padding-bottom: calc(var(--cta-h, 64px) + 16px); }
+  html.has-cta body { padding-bottom: var(--cta-h, 64px); }
 }
 
 /* Camera: CSS full-screen fallback (iPhone Safari can't full-screen an element). */
@@ -557,3 +560,11 @@ table.occ td.pending { background: var(--warn-tint); }
 dialog.panel { max-width: min(520px, calc(100vw - 32px)); width: 100%; border: 1px solid var(--line); color: var(--ink); background: var(--card); box-shadow: var(--shadow-lg); }
 dialog.panel::backdrop { background: rgb(20 12 6 / .55); }
 dialog.panel h2 { font-size: 1.4rem; }
+
+table.data.stack caption { caption-side: top; }
+@media (max-width: 700px) { table.data.stack caption { display: block; width: auto; padding: 14px 16px 6px; } }
+.cal-range { margin: 0; color: var(--muted); font-weight: 600; font-size: .95rem; }
+@media (max-width: 700px) { .cal-range { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } }
+.cam.expanded .body { position: relative; }
+.cam:fullscreen { display: grid; grid-template-rows: 1fr auto; background: #000; }
+.cam:fullscreen .view { aspect-ratio: auto; height: 100%; }

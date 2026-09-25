@@ -45,6 +45,7 @@ export function cameraService({ db, cfg }) {
       JOIN bookings b ON b.id = a.booking_id
       JOIN camera_units cu ON cu.unit_id = a.unit_id
       WHERE cu.camera_id = ? AND a.night = ? AND b.id != ? AND b.kind = 'guest'
+        AND (b.user_id IS NULL OR b.user_id != ?)
         AND b.status IN ('confirmed','needs_attention') LIMIT 1`);
 
   function windowFor(b, cameraId = null) {
@@ -53,11 +54,13 @@ export function cameraService({ db, cfg }) {
     let until = zonedInstant(tz, b.check_out, cfg.ranch.checkOutHour) + cfg.cameraAccess.hoursAfterCheckOut * 3600e3;
     if (cameraId !== null && b.id !== undefined) {
       // Back-to-back guests on the same stall: the leaving guest's view ends at check-out
-      // time, and the arriving guest's view starts no earlier than that.
-      if (neighbourOnNight.get(cameraId, addDays(b.check_in, -1), b.id)) {
+      // time, and the arriving guest's view starts no earlier than that. (A guest's own
+      // back-to-back stays don't count.)
+      const uid = b.user_id ?? -1;
+      if (neighbourOnNight.get(cameraId, addDays(b.check_in, -1), b.id, uid)) {
         from = Math.max(from, zonedInstant(tz, b.check_in, cfg.ranch.checkOutHour));
       }
-      if (neighbourOnNight.get(cameraId, b.check_out, b.id)) {
+      if (neighbourOnNight.get(cameraId, b.check_out, b.id, uid)) {
         until = Math.min(until, zonedInstant(tz, b.check_out, cfg.ranch.checkOutHour));
       }
     }
@@ -67,7 +70,7 @@ export function cameraService({ db, cfg }) {
   // Every camera a guest has (or will have) access to through a confirmed booking.
   function camerasForUser(userId, now = Date.now()) {
     const rows = db.prepare(`SELECT DISTINCT c.id AS camera_id, c.public_id, c.name, c.source_type,
-          b.id, b.ref, b.check_in, b.check_out
+          b.id, b.ref, b.check_in, b.check_out, b.user_id
         FROM bookings b
         JOIN allocations a ON a.booking_id = b.id
         JOIN camera_units cu ON cu.unit_id = a.unit_id

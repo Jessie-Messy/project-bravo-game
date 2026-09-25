@@ -52,6 +52,7 @@ function initGallery() {
     opener = btn;
     show(visible.indexOf(btn.closest('li')));
     dialog.showModal();
+    ctaUpdate?.({ lightbox: true });
     dialog.querySelector('[data-next]').focus();
   });
   dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
@@ -62,7 +63,7 @@ function initGallery() {
     if (e.key === 'ArrowRight') { e.preventDefault(); show(current + 1); }
   });
   dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
-  dialog.addEventListener('close', () => { live.textContent = ''; opener?.focus(); });
+  dialog.addEventListener('close', () => { live.textContent = ''; ctaUpdate?.({ lightbox: false }); opener?.focus(); });
 
   // Swipe between photos on touch screens (buttons do the same for everyone else).
   let startX = null;
@@ -76,17 +77,24 @@ function initGallery() {
 }
 
 // ════════════════════════ Sticky "check availability" bar (phones) ════════════════════════
+let ctaUpdate = null;
 function initMobileCta() {
   const bar = document.getElementById('mobile-cta');
   const book = document.getElementById('book');
   const hero = document.querySelector('.hero');
   if (!bar || !book || !('IntersectionObserver' in window)) return;
-  const seen = { book: false, hero: true };
-  const update = () => {
-    const show = !seen.book && !seen.hero;
+  const seen = { book: false, hero: true, lightbox: false };
+  const update = (patch = {}) => {
+    Object.assign(seen, patch);
+    const show = !seen.book && !seen.hero && !seen.lightbox;
     bar.hidden = !show;
     document.documentElement.classList.toggle('has-cta', show);
   };
+  ctaUpdate = update;
+  // Keep the page's bottom padding equal to the bar's real height (it grows with zoom).
+  if ('ResizeObserver' in window) {
+    new ResizeObserver(() => document.documentElement.style.setProperty('--cta-h', `${bar.offsetHeight || 64}px`)).observe(bar);
+  }
   new IntersectionObserver((entries) => {
     for (const e of entries) seen[e.target === book ? 'book' : 'hero'] = e.isIntersecting;
     update();
@@ -132,7 +140,7 @@ async function initBooking() {
   $('stalls-price').textContent = `${money(site.pricing.stallNight)} per stall, per night`;
   $('rv-price').textContent = `${money(site.pricing.rvNight)} per site, per night`;
   $('rvs-price').textContent = `${money(site.pricing.rvSewerNight)} per site, per night`;
-  $('house-price').textContent = `${money(site.pricing.houseNight)} per night · 3 bedrooms, sleeps ${inv.maxGuests}`;
+  $('house-price').textContent = `${money(site.pricing.houseNight)} per night · 3 bedrooms, sleeps\u00a0${inv.maxGuests}`;
   $('sewer-row').hidden = !inv.rvSewer;
   if (site.testPayments) $('test-mode').hidden = false;
 
@@ -241,7 +249,7 @@ async function initBooking() {
     calendar.replaceChildren(...months.map((m) => m.node));
     calendar.setAttribute('aria-busy', 'false');
     const title = n === 1 ? months[0].title : `${months[0].title.split(' ')[0]} – ${months[1].title}`;
-    if ($('cal-title').textContent !== title) $('cal-title').textContent = title;
+    if ($('cal-title').textContent !== title) $('cal-title').textContent = title; // announced on month change
     setDisabled($('cal-prev'), view <= monthStart(site.today));
     setDisabled($('cal-next'), addMonths(view, n - 1) >= monthStart(maxDate));
     const count = counted();
@@ -345,9 +353,13 @@ async function initBooking() {
   });
   inOut.addEventListener('change', async () => {
     fieldError(inOut, '');
-    if (inOut.value && state.checkIn && inOut.value <= state.checkIn) {
-      fieldError(inOut, 'Check-out must be after check-in.');
-      return;
+    const v = inOut.value;
+    if (v && state.checkIn) {
+      const bad = v > state.checkIn ? firstBadNight(state.checkIn, v) : null;
+      const problem = v <= state.checkIn ? 'Check-out must be after check-in.'
+        : nightsBetween(state.checkIn, v) > inv.maxNights ? `Online stays can be up to ${inv.maxNights} nights. For longer, contact us.`
+          : bad ? `The night of ${fmtDate(bad)} is already taken. Choose an earlier check-out, or different dates.` : null;
+      if (problem) { fieldError(inOut, problem); return; }
     }
     state.checkOut = inOut.value || null;
     saveDraft();
@@ -365,11 +377,12 @@ async function initBooking() {
   function syncSteppers() {
     for (const key of ['stalls', 'rvSites', 'rvSewer']) {
       const max = Math.max(0, limitFor(key));
-      $(key).textContent = state[key];
+      if ($(key).textContent !== String(state[key])) $(key).textContent = state[key];
       setDisabled(form.querySelector(`[data-step="${key}"][data-dir="-1"]`), state[key] <= 0);
       setDisabled(form.querySelector(`[data-step="${key}"][data-dir="1"]`), state[key] >= max);
       const left = $(`${key}-left`);
-      left.textContent = free && state.checkIn && state.checkOut ? `${max === 0 && state[key] === 0 ? 'None' : max} left for your dates` : '';
+      const leftText = free && state.checkIn && state.checkOut ? `${max === 0 && state[key] === 0 ? 'None' : max} left for your dates` : '';
+      if (left.textContent !== leftText) left.textContent = leftText;
     }
     $('coggins-row').hidden = state.stalls === 0;
   }
@@ -469,7 +482,11 @@ async function initBooking() {
       store.del('rc-hold');
       return;
     }
-    const resume = el('a', { class: 'btn small', href: hold.url }, 'Continue to payment');
+    // Re-check the saved address before using it: only our own pages or Stripe's.
+    let safeUrl = null;
+    try { const u = new URL(hold.url, location.origin); if (u.origin === location.origin || u.origin === 'https://checkout.stripe.com') safeUrl = u.href; } catch { /* bad value */ }
+    if (!safeUrl) { store.del('rc-hold'); return; }
+    const resume = el('a', { class: 'btn small', href: safeUrl }, 'Continue to payment');
     const release = el('button', { type: 'button', class: 'btn secondary small' }, 'Release these dates');
     release.addEventListener('click', async () => {
       busy(release, true, 'Releasing…');
@@ -544,7 +561,13 @@ async function initBooking() {
   syncSteppers();
   await checkPendingHold();
   await render();
-  if (state.checkIn && state.checkOut) updateQuote();
+  if (state.checkIn && state.checkOut) {
+    const n = nightsBetween(state.checkIn, state.checkOut);
+    say(`${fmtDate(state.checkIn)} to ${fmtDate(state.checkOut)}: ${n} night${n > 1 ? 's' : ''}.`);
+    updateQuote();
+  } else if (state.checkIn) {
+    say(`Check-in ${fmtDate(state.checkIn)}. Now choose your check-out date.`);
+  }
 }
 
 initGallery();

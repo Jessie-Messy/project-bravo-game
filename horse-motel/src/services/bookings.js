@@ -13,7 +13,7 @@ import { BookingError, priceStay, stayProblem } from './inventory.js';
 
 // Unpaid holds take dates off the calendar, so they're rationed: a few per network and
 // per email address, and a ceiling across the whole site.
-export const HOLD_LIMITS = { perNetwork: 2, perEmail: 2, total: 20 };
+export const HOLD_LIMITS = { perNetwork: 3, perEmail: 2, total: 20 };
 
 export const hour = (h) => `${((h + 11) % 12) + 1}:00 ${h >= 12 ? 'PM' : 'AM'}`;
 export const maskEmail = (e) => {
@@ -54,7 +54,7 @@ export function bookingService({ db, cfg, inventory, payments, mailer, cameras }
       const pending = db.prepare(`SELECT SUM(hold_key = ?) AS network, SUM(email = ?) AS email, COUNT(*) AS total
           FROM bookings WHERE status = 'pending'`).get(holdKey, contact.email);
       if ((pending.network || 0) >= HOLD_LIMITS.perNetwork || (pending.email || 0) >= HOLD_LIMITS.perEmail) {
-        throw new BookingError('There’s already a booking from your connection waiting for payment. Finish or cancel it first, or wait 30 minutes.', 429);
+        throw new BookingError('A few bookings from your internet connection (or this email address) are already waiting for payment. Finish one of them, or try again in about 30 minutes — or contact us and we’ll book you in.', 429);
       }
       if (pending.total >= HOLD_LIMITS.total) {
         throw new BookingError('Lots of people are booking right now. Please try again in a few minutes.', 503);
@@ -192,7 +192,7 @@ export function bookingService({ db, cfg, inventory, payments, mailer, cameras }
       `You’re booked at ${cfg.ranch.name}. Your confirmation number is ${booking.ref}.`,
       `Check-in: ${longDate(booking.check_in)}, from ${hour(cfg.ranch.checkInHour)} (${tz})\nCheck-out: ${longDate(booking.check_out)}, by ${hour(cfg.ranch.checkOutHour)}`,
       `What’s reserved for you:\n${what}`,
-      booking.amount_cents ? `Total paid: ${money(booking.amount_cents, booking.currency)}` : '',
+      booking.amount_cents ? `${booking.source === 'admin' ? 'Total' : 'Total paid'}: ${money(booking.amount_cents, booking.currency)}` : '',
       u.stalls.length ? `Stall cameras: once you’re signed in you can watch ${u.stalls.length > 1 ? 'your stalls' : 'your stall'} live from ${cfg.cameraAccess.hoursBeforeCheckIn} hours before check-in until ${cfg.cameraAccess.hoursAfterCheckOut} hours after check-out.` : '',
       u.stalls.length ? 'Please bring a copy of a current negative Coggins test for each horse.' : '',
       `Finding us: ${cfg.ranch.address}. Google sometimes gets lost out here, so use our exact location: https://www.google.com/maps/search/?api=1&query=${cfg.ranch.lat},${cfg.ranch.lng}`,
@@ -220,7 +220,7 @@ export function bookingService({ db, cfg, inventory, payments, mailer, cameras }
     }
     if (alertOwner && cfg.mail.adminAlertTo) {
       mailer.send({ to: cfg.mail.adminAlertTo, subject: `New booking ${booking.ref}: ${booking.check_in} to ${booking.check_out}`,
-        text: `${booking.name} <${booking.email}> ${booking.phone}\n${longDate(booking.check_in)} to ${longDate(booking.check_out)}\n${what}\nPaid: ${money(booking.amount_cents, booking.currency)}\nNotes: ${booking.notes || '-'}`,
+        text: `${booking.name} <${booking.email}> ${booking.phone}\n${longDate(booking.check_in)} to ${longDate(booking.check_out)}\n${what}\nPaid online: ${money(booking.amount_cents, booking.currency)}\nNotes: ${booking.notes || '-'}`,
         action: { label: 'Open the admin page', url: `${cfg.origin}/admin` } }).catch(() => {});
     }
   }
@@ -257,11 +257,22 @@ export function bookingService({ db, cfg, inventory, payments, mailer, cameras }
     db.prepare('DELETE FROM audit_log WHERE at < ?').run(now - 400 * 86400e3);
   }
 
+  // Releases an unpaid hold, but never one whose payment is going through right now
+  // (paid in another tab, webhook not here yet): that one is confirmed instead.
   async function releaseHold(ref) {
     const row = byRef.get(ref);
-    if (!row || row.status !== 'pending') return;
-    if (payments.mode === 'stripe' && row.stripe_session_id) await payments.expireSession(row.stripe_session_id);
+    if (!row || row.status !== 'pending') return false;
+    if (payments.mode === 'stripe' && row.stripe_session_id) {
+      const s = await payments.retrieveSession(row.stripe_session_id).catch(() => null);
+      if (s?.payment_status === 'paid') {
+        await confirmPaid(ref, { sessionId: s.id, amountPaid: s.amount_total, currency: s.currency, paymentIntent: s.payment_intent });
+        return false;
+      }
+      if (s?.status === 'complete') return false;
+      await payments.expireSession(row.stripe_session_id);
+    }
     expireNow(ref);
+    return true;
   }
 
   function expireNow(ref) {

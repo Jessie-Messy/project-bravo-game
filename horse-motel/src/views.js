@@ -56,7 +56,7 @@ export function createRenderer(cfg) {
     const r = cfg.ranch, inv = cfg.inventory, p = cfg.pricing, cam = cfg.cameraAccess;
     return {
       ranch: r.name, origin: cfg.origin, checkInTime: hour(r.checkInHour), checkOutTime: hour(r.checkOutHour),
-      stallCount: inv.stalls, rvCount: inv.rvSites, sewerCount: inv.rvSewerSites, maxGuests: inv.maxGuests,
+      stallCount: inv.stalls, rvCount: inv.rvSites, aStall: /^(8|11|18|8\d)$/.test(String(inv.stalls)) ? 'An' : 'A', sewerCount: inv.rvSewerSites, maxGuests: inv.maxGuests,
       maxNights: inv.maxNights, camBefore: cam.hoursBeforeCheckIn, camAfter: cam.hoursAfterCheckOut,
       fromPrice: money(Math.min(...[p.stallNight, p.rvNight, p.houseNight].filter((x) => x > 0))),
       address: r.address, lat: r.lat, lng: r.lng, cancellationPolicy: r.cancellationPolicy,
@@ -113,7 +113,8 @@ export function createRenderer(cfg) {
       .replace('<!--#contact-->', () => contactHtml())
       .replace('<!--#rating-->', () => ratingHtml())
       .replace('<!--#structured-data-->', () => structuredData());
-    for (const [k, v] of Object.entries(vars())) html = html.replaceAll(`{{${k}}}`, esc(v));
+    // A function replacer, so "$&" or "$'" in a setting is never read as a pattern.
+    for (const [k, v] of Object.entries(vars())) html = html.replaceAll(`{{${k}}}`, () => esc(v));
     html = html.replaceAll('{{v}}', assetVersion());
     cache.set(route, html);
     return html;

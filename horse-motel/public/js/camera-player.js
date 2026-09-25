@@ -44,20 +44,41 @@ export function cameraCard(cam, { tz = 'America/Chicago', heading = 'h4', stay =
 
   function ended(message) {
     stop();
+    if (card.classList.contains('expanded')) toggleFull();
+    const hadFocus = card.contains(document.activeElement);
     pause.hidden = true; full.hidden = true; watch.hidden = true;
-    placeholder(icon('lock'), el('p', { class: 'm-0' }, message));
+    const msg = el('p', { class: 'm-0', tabindex: '-1' }, message);
+    placeholder(icon('lock'), msg);
     setStatus(message);
+    if (hadFocus) msg.focus(); // the button that had focus is gone
+  }
+
+  // While the card fills the screen, everything else is inert: keyboard and screen reader
+  // users stay inside it until they leave full screen.
+  let inerted = [];
+  function isolate(on) {
+    if (on) {
+      for (let node = card; node && node !== document.body; node = node.parentElement) {
+        for (const sib of node.parentElement.children) if (sib !== node && !sib.inert) { sib.inert = true; inerted.push(sib); }
+      }
+    } else { inerted.forEach((n) => { n.inert = false; }); inerted = []; }
   }
 
   // Full screen: the real thing where supported, otherwise the card fills the viewport.
   function toggleFull() {
-    const target = view.querySelector('video') || view;
-    if (!card.classList.contains('expanded') && document.fullscreenEnabled && target.requestFullscreen) { target.requestFullscreen(); return; }
-    if (target.webkitEnterFullscreen && target.tagName === 'VIDEO') { target.webkitEnterFullscreen(); return; }
+    // The whole card goes full screen, so its buttons come with it.
+    if (!card.classList.contains('expanded') && document.fullscreenEnabled && card.requestFullscreen) {
+      if (document.fullscreenElement === card) document.exitFullscreen(); else card.requestFullscreen();
+      return;
+    }
     const on = card.classList.toggle('expanded');
+    isolate(on);
     full.querySelector('span').textContent = on ? 'Exit full screen' : 'Full screen';
     full.focus();
   }
+  document.addEventListener('fullscreenchange', () => {
+    full.querySelector('span').textContent = document.fullscreenElement === card ? 'Exit full screen' : 'Full screen';
+  });
   card.addEventListener('keydown', (e) => { if (e.key === 'Escape' && card.classList.contains('expanded')) toggleFull(); });
 
   async function start() {
@@ -75,7 +96,12 @@ export function cameraCard(cam, { tz = 'America/Chicago', heading = 'h4', stay =
       video.addEventListener('playing', () => { networkRetries = 0; setStatus('Live'); });
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = src;
-        video.addEventListener('error', () => setStatus('The camera stream stopped. Press Stop, then Watch live to try again.'));
+        // Safari's own player doesn't say why it failed: ask the server.
+        video.addEventListener('error', async () => {
+          const r = await fetch(src, { credentials: 'same-origin', cache: 'no-store' }).catch(() => null);
+          if (r && (r.status === 401 || r.status === 403)) ended('Your access to this camera has ended.');
+          else setStatus('The camera stream stopped. Press Stop, then Watch live to try again.');
+        });
       } else {
         try {
           const Hls = await loadHls();
@@ -139,6 +165,7 @@ export function cameraCard(cam, { tz = 'America/Chicago', heading = 'h4', stay =
   pause.addEventListener('click', () => {
     stop();
     if (card.classList.contains('expanded')) toggleFull();
+    if (document.fullscreenElement === card) document.exitFullscreen();
     pause.hidden = true; full.hidden = true; watch.hidden = false;
     setStatus('Stopped.');
     placeholder(el('p', { class: 'm-0' }, 'Feed stopped.'));

@@ -93,13 +93,19 @@ export function inventoryService(db, cfg) {
     return { totals: { house: t.house, stalls: t.stall, rvSites: t.rv, rvSewer: t.rvSewer }, days };
   }
 
-  // The fewest free units of each kind across a stay (for capping the steppers).
-  function minFree(checkIn, checkOut) {
-    const { days, totals: t } = availability(checkIn, checkOut);
-    const out = { ...t };
-    for (const d of Object.values(days)) for (const k of Object.keys(out)) out[k] = Math.min(out[k], d[k]);
-    return out;
+  // Units free on EVERY night of a stay. A guest keeps one stall for the whole visit, so a
+  // stall that's free on Monday and a different one free on Tuesday don't make a booking.
+  const freeAllStay = db.prepare(`SELECT
+      SUM(kind = 'house') AS house, SUM(kind = 'stall') AS stalls, SUM(kind = 'rv') AS rvSites,
+      SUM(kind = 'rv' AND sewer = 1) AS rvSewer
+    FROM units WHERE active = 1 AND id NOT IN (SELECT unit_id FROM allocations WHERE night >= ? AND night < ?)`);
+  function wholeStayFree(checkIn, checkOut) {
+    const r = freeAllStay.get(checkIn, checkOut);
+    return { house: r.house || 0, stalls: r.stalls || 0, rvSites: r.rvSites || 0, rvSewer: r.rvSewer || 0 };
   }
+
+  // What can still be booked for these dates (caps the steppers).
+  const minFree = (checkIn, checkOut) => wholeStayFree(checkIn, checkOut);
 
   function unavailableReason(s) {
     const { days } = availability(s.checkIn, s.checkOut);
@@ -111,6 +117,14 @@ export function inventoryService(db, cfg) {
       if (free.rvSewer < (s.rvSewer || 0)) return `${none(free.rvSewer, 'full-hookup RV site', 'full-hookup RV sites')} free the night of ${when}.`;
       if (free.rvSites < (s.rvSites || 0) + (s.rvSewer || 0)) return `${none(free.rvSites, 'RV site', 'RV sites')} free the night of ${when}.`;
     }
+    // Every night has room, but is the same stall/site free all the way through?
+    const w = wholeStayFree(s.checkIn, s.checkOut);
+    const nights = Object.keys(days).length;
+    const across = (n, one, many) => `${n === 0 ? `No single ${one} is` : n === 1 ? `Only 1 ${one} is` : `Only ${n} ${many} are`} free for all ${nights} nights`;
+    const tail = ' (the one that’s free changes partway through). Try different dates, or contact us and we’ll sort it out.';
+    if (w.stalls < s.stalls) return across(w.stalls, 'stall', 'stalls') + tail;
+    if (w.rvSewer < (s.rvSewer || 0)) return across(w.rvSewer, 'full-hookup RV site', 'full-hookup RV sites') + tail;
+    if (w.rvSites < (s.rvSites || 0) + (s.rvSewer || 0)) return across(w.rvSites, 'RV site', 'RV sites') + tail;
     return null;
   }
 
@@ -145,7 +159,10 @@ export function inventoryService(db, cfg) {
     const insert = db.prepare('INSERT INTO allocations (booking_id, unit_id, night) VALUES (?, ?, ?)');
     for (const id of unitIds) {
       const clash = taken.get(id, checkIn, checkOut);
-      if (clash) throw new BookingError(`${clash.label} is already booked the night of ${clash.night}.`, 409);
+      if (clash) {
+        const when = new Date(clash.night + 'T12:00:00Z').toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' });
+        throw new BookingError(`${clash.label} is already booked the night of ${when}.`, 409);
+      }
       for (const n of nights) insert.run(bookingId, id, n);
     }
   }
@@ -155,7 +172,7 @@ export function inventoryService(db, cfg) {
   const unitsFor = (bookingId) => db.prepare(`SELECT DISTINCT u.id, u.kind, u.number, u.label, u.sewer FROM allocations a
       JOIN units u ON u.id = a.unit_id WHERE a.booking_id = ? ORDER BY u.kind, u.number`).all(bookingId);
 
-  return { availability, minFree, unavailableReason, allocate, allocateUnits, release, unitsFor, totals };
+  return { availability, minFree, wholeStayFree, unavailableReason, allocate, allocateUnits, release, unitsFor, totals };
 }
 
 export { addDays };

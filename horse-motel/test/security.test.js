@@ -87,11 +87,11 @@ describe('security regressions', () => {
 
   test('#4 one network cannot hold the whole calendar', async () => {
     const results = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 5; i++) {
       results.push(await client(t.base).post('/api/bookings', { stay: futureStay(t.cfg, { inDays: 100 + i * 30, stalls: 8 }),
         contact: contact(`hog${i}@example.com`), agree: { rules: true, coggins: true } }));
     }
-    assert.deepEqual(results.map((r) => r.status), [201, 201, 429, 429]);
+    assert.deepEqual(results.map((r) => r.status), [201, 201, 201, 429, 429]);
     await t.ctx.bookings.expireHolds(Date.now() + 3600e3);
   });
 
@@ -198,7 +198,7 @@ describe('security regressions', () => {
   });
 
   test('hold limits are the documented ones', () => {
-    assert.deepEqual(HOLD_LIMITS, { perNetwork: 2, perEmail: 2, total: 20 });
+    assert.deepEqual(HOLD_LIMITS, { perNetwork: 3, perEmail: 2, total: 20 });
   });
 });
 

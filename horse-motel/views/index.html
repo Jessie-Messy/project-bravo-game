@@ -26,7 +26,7 @@
     <div class="wrap">
       <p class="eyebrow">{{address}} · 8 miles off I-40</p>
       <h1 id="hero-title">A safe night’s rest for you and your horses.</h1>
-      <p class="lede">A {{stallCount}}-stall barn with turnouts, {{rvCount}} RV and trailer hookups, and a furnished three-bedroom ranch house. Every stall has a camera, so you can check on your horse from bed.</p>
+      <p class="lede">{{aStall}} {{stallCount}}-stall barn with turnouts, {{rvCount}} RV and trailer hookups, and a furnished three-bedroom ranch house. Every stall has a camera, so you can check on your horse from bed.</p>
       <div class="hero-actions">
         <a class="btn" href="#book">Check availability</a>
         <a class="btn ghost-light" href="#cameras">How stall cams work</a>
@@ -154,7 +154,10 @@
       <form class="booking" id="booking-form" novalidate>
         <div class="panel">
           <div class="cal-head">
-            <h3 id="cal-title">Availability</h3>
+            <div>
+              <h3>Availability</h3>
+              <p class="cal-range" id="cal-title"></p>
+            </div>
             <div class="cal-nav">
               <button type="button" id="cal-prev" aria-describedby="cal-title"><svg aria-hidden="true"><use href="/img/icons.svg#chev-l"></use></svg><span class="visually-hidden">Previous month</span></button>
               <button type="button" id="cal-next" aria-describedby="cal-title"><svg aria-hidden="true"><use href="/img/icons.svg#chev-r"></use></svg><span class="visually-hidden">Next month</span></button>
@@ -188,29 +191,29 @@
           <div class="stepper">
             <div class="what"><strong id="stalls-label">Horse stalls</strong><span id="stalls-price">One horse per stall</span><span class="left" id="stalls-left"></span></div>
             <div class="ctrl" role="group" aria-labelledby="stalls-label">
-              <button type="button" data-step="stalls" data-dir="-1" aria-label="Fewer stalls" aria-describedby="stalls">−</button>
-              <output id="stalls" aria-labelledby="stalls-label stalls">1</output>
-              <button type="button" data-step="stalls" data-dir="1" aria-label="More stalls" aria-describedby="stalls">+</button>
+              <button type="button" data-step="stalls" data-dir="-1" aria-label="Fewer stalls" aria-describedby="stalls stalls-left">−</button>
+              <output id="stalls" aria-live="off" aria-labelledby="stalls-label stalls">1</output>
+              <button type="button" data-step="stalls" data-dir="1" aria-label="More stalls" aria-describedby="stalls stalls-left">+</button>
             </div>
           </div>
           <div class="stepper">
             <div class="what"><strong id="rv-label">RV hookups: power &amp; water</strong><span id="rv-price"></span><span class="left" id="rvSites-left"></span></div>
             <div class="ctrl" role="group" aria-labelledby="rv-label">
-              <button type="button" data-step="rvSites" data-dir="-1" aria-label="Fewer power and water hookups" aria-describedby="rvSites">−</button>
-              <output id="rvSites" aria-labelledby="rv-label rvSites">0</output>
-              <button type="button" data-step="rvSites" data-dir="1" aria-label="More power and water hookups" aria-describedby="rvSites">+</button>
+              <button type="button" data-step="rvSites" data-dir="-1" aria-label="Fewer power and water hookups" aria-describedby="rvSites rvSites-left">−</button>
+              <output id="rvSites" aria-live="off" aria-labelledby="rv-label rvSites">0</output>
+              <button type="button" data-step="rvSites" data-dir="1" aria-label="More power and water hookups" aria-describedby="rvSites rvSites-left">+</button>
             </div>
           </div>
           <div class="stepper" id="sewer-row">
             <div class="what"><strong id="rvs-label">Full RV hookups, with sewer</strong><span id="rvs-price"></span><span class="left" id="rvSewer-left"></span></div>
             <div class="ctrl" role="group" aria-labelledby="rvs-label">
-              <button type="button" data-step="rvSewer" data-dir="-1" aria-label="Fewer full hookups" aria-describedby="rvSewer">−</button>
-              <output id="rvSewer" aria-labelledby="rvs-label rvSewer">0</output>
-              <button type="button" data-step="rvSewer" data-dir="1" aria-label="More full hookups" aria-describedby="rvSewer">+</button>
+              <button type="button" data-step="rvSewer" data-dir="-1" aria-label="Fewer full hookups" aria-describedby="rvSewer rvSewer-left">−</button>
+              <output id="rvSewer" aria-live="off" aria-labelledby="rvs-label rvSewer">0</output>
+              <button type="button" data-step="rvSewer" data-dir="1" aria-label="More full hookups" aria-describedby="rvSewer rvSewer-left">+</button>
             </div>
           </div>
           <div class="switch-row">
-            <div class="what"><label for="house"><strong>Stay in the ranch house</strong></label><br><span class="muted small" id="house-price">3 bedrooms, sleeps {{maxGuests}}</span></div>
+            <div class="what"><label for="house"><strong>Stay in the ranch house</strong></label><br><span class="muted small" id="house-price">3 bedrooms, sleeps&nbsp;{{maxGuests}}</span></div>
             <span class="switch"><input type="checkbox" id="house" role="switch" aria-describedby="house-price"><span class="track" aria-hidden="true"></span></span>
           </div>
           <div class="field mt-14" id="guests-field" hidden>
@@ -350,10 +353,10 @@
   </section>
 </main>
 
-<div class="mobile-cta" id="mobile-cta" hidden>
-  <p><strong>Stalls from {{fromPrice}}/night</strong>Check-in from {{checkInTime}}</p>
+<aside class="mobile-cta" id="mobile-cta" aria-label="Quick booking" hidden>
+  <p><strong>Stalls from {{fromPrice}}/night</strong></p>
   <a class="btn small" href="#book">Check availability</a>
-</div>
+</aside>
 
 <!--#footer-->
 </body>
