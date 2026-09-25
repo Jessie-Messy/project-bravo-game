@@ -27,8 +27,8 @@ if (process.argv.includes('--reset-mfa')) {
   console.log('Two-step verification cleared; it must be set up again on next sign-in.');
 }
 const token = randomToken();
-db.prepare("INSERT INTO auth_tokens (token_hash, user_id, purpose, expires_at) VALUES (?, ?, 'reset', ?)")
-  .run(sha256(token), user.id, Date.now() + 60 * 60e3);
+db.prepare("INSERT INTO auth_tokens (token_hash, user_id, purpose, expires_at) VALUES (?, ?, ?, ?)")
+  .run(sha256(token), user.id, user.password_hash ? 'reset' : 'setup', Date.now() + 60 * 60e3);
 audit(db, { userId: user.id, action: 'admin.created_via_cli' });
 console.log(`\nAdmin: ${email}\nOpen this link within 1 hour to set the password:\n\n  ${cfg.origin}/setup#token=${token}\n`);
 console.log('Then sign in, go to Account → Two-step verification, and turn it on. The admin page requires it.');

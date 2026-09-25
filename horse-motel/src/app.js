@@ -10,6 +10,8 @@ import { HashBusyError } from './security/password.js';
 import { initSecretBox } from './security/secretbox.js';
 import { bookingService } from './services/bookings.js';
 import { cameraService } from './services/cameras.js';
+import { icalService } from './services/ical.js';
+import { safeEqual } from './security/crypto.js';
 import { publicRoutes, webhookRoute } from './routes/public.js';
 import { authRoutes } from './routes/auth.js';
 import { accountRoutes } from './routes/account.js';
@@ -20,9 +22,10 @@ import { createRenderer, PAGES } from './views.js';
 export function createApp({ cfg, db, payments, mailer }) {
   initSecretBox(cfg);
   const inventory = inventoryService(db, cfg);
-  const bookings = bookingService({ db, cfg, inventory, payments, mailer });
   const cameras = cameraService({ db, cfg });
-  const ctx = { cfg, db, payments, mailer, inventory, bookings, cameras };
+  const bookings = bookingService({ db, cfg, inventory, payments, mailer, cameras });
+  const ical = icalService({ db, cfg, bookings, mailer });
+  const ctx = { cfg, db, payments, mailer, inventory, bookings, cameras, ical };
 
   const app = express();
   app.disable('x-powered-by');
@@ -76,6 +79,13 @@ export function createApp({ cfg, db, payments, mailer }) {
   app.use('/api/admin', adminRoutes(ctx));
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 
+  // Calendar feed for Airbnb to import (secret URL; no guest details inside).
+  app.get('/calendar/:file', (req, res) => {
+    const token = req.params.file.replace(/\.ics$/, '');
+    if (!cfg.ical.exportToken || !safeEqual(token, cfg.ical.exportToken)) return res.status(404).type('text').send('Not found');
+    res.set('Cache-Control', 'no-store').type('text/calendar; charset=utf-8').send(ical.exportIcs());
+  });
+
   // Pages (server-side includes), then static assets. The mock checkout page only
   // exists in local development.
   const views = createRenderer(cfg);
@@ -104,7 +114,7 @@ export function createApp({ cfg, db, payments, mailer }) {
     if (err instanceof z.ZodError) {
       const issue = err.issues[0];
       const field = issue.path.join('.');
-      return res.status(400).json({ error: issue.message, field });
+      return res.status(400).json({ error: friendlyIssue(issue), field });
     }
     if (err instanceof BookingError) return res.status(err.status).json({ error: err.message });
     if (err instanceof HashBusyError) {
@@ -117,4 +127,20 @@ export function createApp({ cfg, db, payments, mailer }) {
   });
 
   return { app, ctx };
+}
+
+// Zod's built-in messages ("Too big: expected number to be <=8") are for developers; the
+// schemas carry their own wording where it matters, and this covers the rest.
+function friendlyIssue(issue) {
+  if (!/^(Too big|Too small|Invalid|Unrecognized)/.test(issue.message)) return issue.message;
+  const key = String(issue.path.at(-1) ?? 'value');
+  const label = key.replace(/([A-Z])/g, ' $1').toLowerCase();
+  switch (issue.code) {
+    case 'too_big': return issue.origin === 'string' ? `The ${label} is too long.` : `The ${label} can be at most ${issue.maximum}.`;
+    case 'too_small': return issue.origin === 'string' ? `Please fill in the ${label}.` : `The ${label} must be at least ${issue.minimum}.`;
+    case 'invalid_type': return `Please fill in the ${label}.`;
+    case 'invalid_format': return issue.format === 'email' ? 'Enter a valid email address.' : `The ${label} isn’t in the right format.`;
+    case 'unrecognized_keys': return 'The request had unexpected fields. Reload the page and try again.';
+    default: return `Please check the ${label}.`;
+  }
 }

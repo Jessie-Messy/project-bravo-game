@@ -192,7 +192,8 @@ describe('security regressions', () => {
     const c = client(t.base);
     const login = await c.post('/api/auth/login', { email: 'boss@example.com', password: PW });
     await c.post('/api/auth/mfa', { challenge: login.data.challenge, code: _codeAt(secret, nowStep() + 1) });
-    const r = await c.post('/api/admin/blocks', { checkIn: futureStay(t.cfg).checkIn, checkOut: '9999-12-31', house: true, stalls: 0, rvSites: 0 });
+    const house = t.db.prepare("SELECT id FROM units WHERE kind = 'house'").get().id;
+    const r = await c.post('/api/admin/blocks', { checkIn: futureStay(t.cfg).checkIn, checkOut: '9999-12-31', unitIds: [house] });
     assert.equal(r.status, 400);
   });
 
@@ -211,7 +212,8 @@ describe('#10 / #11 / #14 configuration fails closed', () => {
     assert.throws(() => buildConfig({ NODE_ENV: 'test', SESSION_IDLE_MINUTES: 'forever' }), /SESSION_IDLE_MINUTES/);
   });
   test('production needs DATA_KEY and a camera allow-list', () => {
-    const base = { NODE_ENV: 'production', APP_ORIGIN: 'https://x.example', PAYMENTS_MODE: 'stripe', STRIPE_SECRET_KEY: 'sk', STRIPE_WEBHOOK_SECRET: 'wh', SMTP_URL: 'smtps://a:b@mail.example' };
+    const base = { NODE_ENV: 'production', APP_ORIGIN: 'https://x.example', PAYMENTS_MODE: 'stripe', STRIPE_SECRET_KEY: 'sk', STRIPE_WEBHOOK_SECRET: 'wh',
+      SMTP_URL: 'smtps://a:b@mail.example', RANCH_CONTACT_PHONE: '501-555-0100', ADMIN_ALERT_EMAIL: 'owner@example.com' };
     assert.throws(() => buildConfig(base), /DATA_KEY[\s\S]*CAMERA_ALLOWED_HOSTS/);
     assert.doesNotThrow(() => buildConfig({ ...base, DATA_KEY: Buffer.alloc(32, 7).toString('base64'), CAMERA_ALLOWED_HOSTS: '100.64.0.10' }));
   });

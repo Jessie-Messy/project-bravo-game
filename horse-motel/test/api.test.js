@@ -136,7 +136,9 @@ describe('booking, onboarding and camera access', () => {
     const tok = new URL(r.data.checkoutUrl).searchParams.get('t');
     const ok = await c.get(`/api/bookings/status?ref=${ref}&t=${tok}`);
     assert.equal(ok.data.status, 'pending');
-    assert.equal(ok.data.email, undefined, 'no personal data on the status endpoint');
+    assert.equal(ok.data.email, 's••@example.com', 'only a masked email on the status endpoint');
+    assert.equal(ok.data.name, undefined);
+    assert.equal(ok.data.phone, undefined);
   });
 
   test('cancelling a booking ends camera access immediately', async () => {
@@ -299,10 +301,12 @@ describe('admin', () => {
 
   test('blocking dates removes them from availability', async () => {
     const stay = futureStay(t.cfg, { inDays: 5, nights: 1 });
-    const r = await admin.post('/api/admin/blocks', { checkIn: stay.checkIn, checkOut: stay.checkOut, house: true, stalls: 8, rvSites: 0 });
+    const units = (await admin.get('/api/admin/units')).data.units;
+    const ids = units.filter((u) => u.kind === 'house' || u.kind === 'stall').map((u) => u.id);
+    const r = await admin.post('/api/admin/blocks', { checkIn: stay.checkIn, checkOut: stay.checkOut, unitIds: ids, note: 'Family visit' });
     assert.equal(r.status, 201);
     const a = await client(t.base).get(`/api/availability?from=${stay.checkIn}&days=1`);
-    assert.deepEqual(a.data.days[stay.checkIn], { house: 0, stalls: 0, rvSites: 6 });
+    assert.deepEqual(a.data.days[stay.checkIn], { house: 0, stalls: 0, rvSites: 6, rvSewer: 2 });
   });
 });
 

@@ -13,12 +13,13 @@ const contactSchema = z.object({
   notes: z.string().trim().max(500).optional().default(''),
 }).strict();
 
-export function publicRoutes({ cfg, db, inventory, bookings, payments }) {
+export function publicRoutes({ cfg, inventory, bookings, payments }) {
   const r = express.Router();
   const bookingLimiter = rateLimit({ windowMs: 3600e3, limit: cfg.rateLimits.bookingsPerHour, standardHeaders: 'draft-7', legacyHeaders: false,
     message: { error: 'Too many booking attempts. Please wait a while or call us.' } });
 
   r.get('/site', (req, res) => {
+    const t = inventory.totals();
     res.json({
       name: cfg.ranch.name,
       timezone: cfg.ranch.timezone,
@@ -26,8 +27,8 @@ export function publicRoutes({ cfg, db, inventory, bookings, payments }) {
       checkInHour: cfg.ranch.checkInHour,
       checkOutHour: cfg.ranch.checkOutHour,
       contact: { email: cfg.ranch.email, phone: cfg.ranch.phone },
-      inventory: { ...inventory.totals(), maxGuests: cfg.inventory.maxGuests, maxNights: cfg.inventory.maxNights,
-        bookingWindowDays: cfg.inventory.bookingWindowDays },
+      inventory: { house: t.house, stall: t.stall, rv: t.rv, rvSewer: t.rvSewer, maxGuests: cfg.inventory.maxGuests,
+        maxNights: cfg.inventory.maxNights, bookingWindowDays: cfg.inventory.bookingWindowDays },
       pricing: cfg.pricing,
       cameraAccess: cfg.cameraAccess,
       testPayments: payments.mode === 'mock',
@@ -52,7 +53,8 @@ export function publicRoutes({ cfg, db, inventory, bookings, payments }) {
     const problem = stayProblem(cfg, stay);
     if (problem) return res.json({ ok: false, reason: problem });
     const reason = inventory.unavailableReason(stay);
-    res.json({ ok: !reason, reason, quote: priceStay(cfg, stay) });
+    // The most of each thing still free on every night of these dates (caps the steppers).
+    res.json({ ok: !reason, reason, quote: priceStay(cfg, stay), free: inventory.minFree(stay.checkIn, stay.checkOut) });
   });
 
   r.post('/bookings', bookingLimiter, async (req, res) => {
@@ -61,14 +63,16 @@ export function publicRoutes({ cfg, db, inventory, bookings, payments }) {
       contact: z.unknown(),
       agree: z.object({ rules: z.literal(true, { message: 'Please accept the ranch rules and liability terms.' }),
         coggins: z.boolean() }).strict(),
+      // The guest's own unfinished hold from an earlier attempt, to release first.
+      replace: z.object({ ref: z.string().max(20), t: z.string().max(64) }).strict().optional(),
     }).strict().parse(req.body);
     const stay = stayRequestSchema(cfg).parse(body.stay);
     const contact = contactSchema.parse(body.contact);
     if (stay.stalls > 0 && !body.agree.coggins) {
       throw new BookingError('Please confirm each horse has a current negative Coggins test.');
     }
-    const out = await bookings.createHold(stay, contact, { ip: req.ip });
-    res.status(201).json({ ref: out.ref, checkoutUrl: out.checkoutUrl });
+    const out = await bookings.createHold(stay, contact, { ip: req.ip, replace: body.replace });
+    res.status(201).json({ ref: out.ref, checkoutUrl: out.checkoutUrl, statusToken: out.statusToken, holdUntil: out.holdUntil });
   });
 
   r.get('/bookings/status', (req, res) => {
@@ -83,13 +87,7 @@ export function publicRoutes({ cfg, db, inventory, bookings, payments }) {
     const { ref, t } = z.object({ ref: z.string().max(20), t: z.string().max(64) }).strict().parse(req.body);
     const s = bookings.publicStatus(ref, t);
     if (!s) return res.status(404).json({ error: 'We couldn’t find that booking.' });
-    if (s.status === 'pending') {
-      if (payments.mode === 'stripe') {
-        const row = db.prepare('SELECT stripe_session_id FROM bookings WHERE ref = ?').get(ref);
-        if (row?.stripe_session_id) await payments.expireSession(row.stripe_session_id);
-      }
-      bookings.expireNow(ref);
-    }
+    if (s.status === 'pending') await bookings.releaseHold(ref);
     res.json({ ok: true });
   });
 
@@ -109,7 +107,7 @@ export function publicRoutes({ cfg, db, inventory, bookings, payments }) {
 
 // Stripe webhook: signature-verified, idempotent, and the only thing that can mark a
 // booking as paid.
-export function webhookRoute({ db, payments, bookings, cameras }) {
+export function webhookRoute({ db, payments, bookings }) {
   const r = express.Router();
   if (payments.mode !== 'stripe') return r;
   r.post('/stripe', express.raw({ type: 'application/json', limit: '1mb' }), async (req, res) => {
@@ -131,12 +129,17 @@ export function webhookRoute({ db, payments, bookings, cameras }) {
       case 'checkout.session.async_payment_failed':
         if (ref) bookings.expireNow(ref);
         break;
-      case 'charge.refunded':
-        if (s.refunded && s.payment_intent) {
-          const b = db.prepare("SELECT id FROM bookings WHERE stripe_payment_intent = ? AND status = 'confirmed'").get(s.payment_intent);
-          if (b) { bookings.cancel(b.id, { reason: 'refunded in Stripe' }); cameras.revokeAll(); }
+      case 'charge.refunded': {
+        // A full refund (from the admin page or the Stripe dashboard) cancels the stay and
+        // ends camera access; a partial refund is just recorded.
+        const b = s.payment_intent && db.prepare("SELECT id, status FROM bookings WHERE stripe_payment_intent = ?").get(s.payment_intent);
+        if (b && s.refunded && b.status === 'confirmed') {
+          await bookings.cancel(b.id, { reason: 'refunded in Stripe', refundedCents: s.amount_refunded, notify: true });
+        } else if (b) {
+          db.prepare('UPDATE bookings SET refund_cents = ? WHERE id = ?').run(s.amount_refunded || 0, b.id);
         }
         break;
+      }
       default:
         break;
     }

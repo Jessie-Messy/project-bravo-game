@@ -25,7 +25,8 @@ const int = (v, d) => (v === undefined || v === '' ? d : Number.parseInt(v, 10))
 export function buildConfig(overrides = {}) {
   const e = { ...env, ...overrides };
   const production = e.NODE_ENV === 'production';
-  const origin = (e.APP_ORIGIN || 'http://localhost:3000').replace(/\/$/, '');
+  // In development the origin follows PORT, so links and the same-origin check just work.
+  const origin = (e.APP_ORIGIN || `http://localhost:${int(e.PORT, 3000)}`).replace(/\/$/, '');
 
   const cfg = {
     production,
@@ -49,11 +50,32 @@ export function buildConfig(overrides = {}) {
       phone: e.RANCH_CONTACT_PHONE || '',
       checkInHour: int(e.CHECK_IN_HOUR, 15),
       checkOutHour: int(e.CHECK_OUT_HOUR, 11),
+      address: e.RANCH_ADDRESS || 'Lonoke, Arkansas',
+      lat: e.RANCH_LAT || '34.863750',
+      lng: e.RANCH_LNG || '-91.916582',
+      // Shown in the hero; defaults are the listing's Airbnb rating at the time of writing.
+      rating: e.RATING ?? '5.0',
+      reviewCount: int(e.REVIEW_COUNT, 8),
+      reviewUrl: e.REVIEW_URL ?? 'https://www.airbnb.com/rooms/1711664297060154728#reviews',
+      cancellationPolicy: e.CANCELLATION_POLICY ||
+        'To cancel or change a booking, contact us as soon as you can. Refunds are decided case by case, and camera access ends as soon as a booking is cancelled.',
+    },
+
+    // Airbnb (or any iCal) calendar sync. Imported events block the units listed in
+    // ICAL_BLOCKS ("house" by default); our own bookings are published at
+    // /calendar/<ICAL_EXPORT_TOKEN>.ics for Airbnb to import.
+    ical: {
+      importUrls: (e.ICAL_IMPORT_URLS || '').split(/[\s,]+/).filter(Boolean),
+      blocks: (e.ICAL_BLOCKS || 'house').split(',').map((x) => x.trim()).filter(Boolean),
+      exportToken: e.ICAL_EXPORT_TOKEN || '',
+      syncMinutes: int(e.ICAL_SYNC_MINUTES, 30),
     },
 
     inventory: {
       stalls: int(e.STALL_COUNT, 8),
       rvSites: int(e.RV_SITE_COUNT, 6),
+      // The first N RV sites also have a sewer connection ("full hookup").
+      rvSewerSites: int(e.RV_SEWER_SITES, 2),
       maxGuests: int(e.HOUSE_MAX_GUESTS, 6),
       maxNights: int(e.MAX_NIGHTS, 28),
       bookingWindowDays: int(e.BOOKING_WINDOW_DAYS, 365),
@@ -65,6 +87,11 @@ export function buildConfig(overrides = {}) {
       houseNight: int(e.PRICE_HOUSE_NIGHT_CENTS, 17500),
       stallNight: int(e.PRICE_STALL_NIGHT_CENTS, 3500),
       rvNight: int(e.PRICE_RV_NIGHT_CENTS, 4500),
+      rvSewerNight: int(e.PRICE_RV_SEWER_NIGHT_CENTS, 5500),
+      // Optional tax added to the total (e.g. state + local lodging tax), in basis points:
+      // 1150 = 11.5%. 0 = no tax line.
+      taxBasisPoints: int(e.TAX_BASIS_POINTS, 0),
+      taxLabel: e.TAX_LABEL || 'Taxes',
       houseCleaning: int(e.PRICE_HOUSE_CLEANING_CENTS, 7500),
       stallCleaning: int(e.PRICE_STALL_CLEANING_CENTS, 1000),
     },
@@ -128,6 +155,8 @@ function validate(cfg) {
     PORT: [cfg.port, 1, 65535], TRUST_PROXY: [cfg.trustProxy, 0, 5],
     CHECK_IN_HOUR: [cfg.ranch.checkInHour, 0, 23], CHECK_OUT_HOUR: [cfg.ranch.checkOutHour, 0, 23],
     STALL_COUNT: [cfg.inventory.stalls, 0, 100], RV_SITE_COUNT: [cfg.inventory.rvSites, 0, 100],
+    RV_SEWER_SITES: [cfg.inventory.rvSewerSites, 0, cfg.inventory.rvSites], TAX_BASIS_POINTS: [cfg.pricing.taxBasisPoints, 0, 5000],
+    REVIEW_COUNT: [cfg.ranch.reviewCount, 0, 100000], ICAL_SYNC_MINUTES: [cfg.ical.syncMinutes, 5, 1440],
     HOUSE_MAX_GUESTS: [cfg.inventory.maxGuests, 1, 50], MAX_NIGHTS: [cfg.inventory.maxNights, 1, 90],
     BOOKING_WINDOW_DAYS: [cfg.inventory.bookingWindowDays, 1, 730],
     CAMERA_HOURS_BEFORE_CHECKIN: [cfg.cameraAccess.hoursBeforeCheckIn, 0, 48],
@@ -152,6 +181,9 @@ function validate(cfg) {
     if (!cfg.mail.smtpUrl) problems.push('SMTP_URL is required (guests are onboarded by email)');
     if (!cfg.dataKey) problems.push('DATA_KEY is required (openssl rand -base64 32)');
     if (!cfg.cameraAccess.allowedHosts.length) problems.push('CAMERA_ALLOWED_HOSTS is required (the address of your camera box)');
+    if (!cfg.ranch.email && !cfg.ranch.phone) problems.push('RANCH_CONTACT_EMAIL or RANCH_CONTACT_PHONE is required (guests need a way to reach you)');
+    if (!cfg.mail.adminAlertTo) problems.push('ADMIN_ALERT_EMAIL is required (that is how you hear about new bookings)');
+    if (cfg.ical.exportToken && cfg.ical.exportToken.length < 24) problems.push('ICAL_EXPORT_TOKEN must be at least 24 random characters');
   }
   if (!['stripe', 'mock'].includes(cfg.payments.mode)) problems.push('PAYMENTS_MODE must be stripe or mock');
   if (cfg.payments.mode === 'stripe' && !cfg.test &&
@@ -161,7 +193,11 @@ function validate(cfg) {
   try { new Intl.DateTimeFormat('en-US', { timeZone: cfg.ranch.timezone }); }
   catch { problems.push(`RANCH_TZ "${cfg.ranch.timezone}" is not a valid IANA time zone`); }
   for (const [k, v] of Object.entries(cfg.pricing)) {
-    if (k !== 'currency' && (!Number.isInteger(v) || v < 0)) problems.push(`price ${k} must be a whole number of cents`);
+    if (!['currency', 'taxLabel'].includes(k) && (!Number.isInteger(v) || v < 0)) problems.push(`price ${k} must be a whole number of cents`);
+  }
+  for (const u of cfg.ical.importUrls) {
+    try { if (new URL(u).protocol !== 'https:') problems.push('ICAL_IMPORT_URLS must be https:// addresses'); }
+    catch { problems.push(`ICAL_IMPORT_URLS has an invalid address: ${u.slice(0, 40)}`); }
   }
   if (problems.length) {
     throw new Error('Refusing to start with an unsafe configuration:\n  - ' + problems.join('\n  - '));

@@ -18,9 +18,13 @@ server.headersTimeout = 30e3;
 server.requestTimeout = 60e3;
 
 const sweep = setInterval(() => ctx.bookings.expireHolds().catch((e) => console.error('[holds]', e.message)), 60e3);
+const syncCalendars = () => ctx.ical.syncImports().catch((e) => console.error('[ical]', e.message));
+const calendarSync = setInterval(syncCalendars, cfg.ical.syncMinutes * 60e3);
+setTimeout(syncCalendars, 5000).unref();
 
 function shutdown() {
   clearInterval(sweep);
+  clearInterval(calendarSync);
   server.close(() => { db.close(); process.exit(0); });
   setTimeout(() => process.exit(0), 5000).unref();
 }

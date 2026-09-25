@@ -156,7 +156,7 @@ export function authRoutes({ db, cfg, mailer }) {
   });
 
   function liveToken(t) {
-    const row = db.prepare(`SELECT t.*, u.email, u.totp_enabled FROM auth_tokens t JOIN users u ON u.id = t.user_id
+    const row = db.prepare(`SELECT t.*, u.email, u.role, u.totp_enabled FROM auth_tokens t JOIN users u ON u.id = t.user_id
       WHERE t.token_hash = ?`).get(sha256(t));
     if (!row || row.used_at || row.expires_at < Date.now()) return null;
     return row;
@@ -166,7 +166,7 @@ export function authRoutes({ db, cfg, mailer }) {
     const body = z.object({ token }).strict().parse(req.body);
     const row = liveToken(body.token);
     if (!row) return res.status(404).json({ error: 'This link has expired or was already used. You can request a new one from “Forgot password”.' });
-    res.json({ purpose: row.purpose, email: row.email });
+    res.json({ purpose: row.purpose, email: row.email, role: row.role });
   });
 
   r.post('/set-password', limiter, async (req, res) => {

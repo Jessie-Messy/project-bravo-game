@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS units (
   kind    TEXT NOT NULL CHECK (kind IN ('house','stall','rv')),
   number  INTEGER NOT NULL,
   label   TEXT NOT NULL,
+  sewer   INTEGER NOT NULL DEFAULT 0,
   active  INTEGER NOT NULL DEFAULT 1,
   UNIQUE (kind, number)
 );
@@ -74,6 +75,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   house              INTEGER NOT NULL DEFAULT 0,
   stalls             INTEGER NOT NULL DEFAULT 0,
   rv_sites           INTEGER NOT NULL DEFAULT 0,
+  rv_sewer           INTEGER NOT NULL DEFAULT 0,
   guests             INTEGER NOT NULL DEFAULT 0,
   horses             INTEGER NOT NULL DEFAULT 0,
   notes              TEXT NOT NULL DEFAULT '',
@@ -83,6 +85,9 @@ CREATE TABLE IF NOT EXISTS bookings (
   stripe_payment_intent TEXT,
   hold_expires_at    INTEGER,
   hold_key           TEXT,
+  refund_cents       INTEGER NOT NULL DEFAULT 0,
+  source             TEXT NOT NULL DEFAULT 'web',
+  external_uid       TEXT,
   status_token_hash  TEXT,
   created_at         INTEGER NOT NULL,
   confirmed_at       INTEGER
@@ -153,24 +158,35 @@ function migrate(db) {
   const add = [
     ['users', 'lock_level', 'INTEGER NOT NULL DEFAULT 0'],
     ['bookings', 'hold_key', 'TEXT'],
+    ['bookings', 'rv_sewer', 'INTEGER NOT NULL DEFAULT 0'],
+    ['bookings', 'refund_cents', 'INTEGER NOT NULL DEFAULT 0'],
+    ['bookings', 'source', "TEXT NOT NULL DEFAULT 'web'"],
+    ['bookings', 'external_uid', 'TEXT'],
+    ['units', 'sewer', 'INTEGER NOT NULL DEFAULT 0'],
   ];
   for (const [table, col, ddl] of add) {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
     if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
   }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS bookings_external_uid ON bookings(external_uid) WHERE external_uid IS NOT NULL');
 }
 
 // Keeps the units table in step with the configured inventory. Units are only ever
 // deactivated, never deleted, so past bookings keep pointing at real rows.
 function seedUnits(db, cfg) {
   const want = { house: 1, stall: cfg.inventory.stalls, rv: cfg.inventory.rvSites };
-  const label = { house: () => 'Ranch house', stall: (n) => `Stall ${n}`, rv: (n) => `RV / trailer site ${n}` };
-  const upsert = db.prepare(`INSERT INTO units (kind, number, label, active) VALUES (?, ?, ?, 1)
-    ON CONFLICT(kind, number) DO UPDATE SET active = 1`);
+  const sewer = (kind, n) => (kind === 'rv' && n <= cfg.inventory.rvSewerSites ? 1 : 0);
+  const label = {
+    house: () => 'Ranch house',
+    stall: (n) => `Stall ${n}`,
+    rv: (n) => `RV site ${n}${sewer('rv', n) ? ' (full hookup)' : ''}`,
+  };
+  const upsert = db.prepare(`INSERT INTO units (kind, number, label, sewer, active) VALUES (?, ?, ?, ?, 1)
+    ON CONFLICT(kind, number) DO UPDATE SET active = 1, label = excluded.label, sewer = excluded.sewer`);
   const deactivate = db.prepare('UPDATE units SET active = 0 WHERE kind = ? AND number > ?');
   db.transaction(() => {
     for (const [kind, count] of Object.entries(want)) {
-      for (let n = 1; n <= count; n++) upsert.run(kind, n, label[kind](n));
+      for (let n = 1; n <= count; n++) upsert.run(kind, n, label[kind](n), sewer(kind, n));
       deactivate.run(kind, count);
     }
   })();

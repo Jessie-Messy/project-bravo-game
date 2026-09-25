@@ -16,6 +16,7 @@ export function createPayments(cfg) {
       },
       async retrieveSession() { return null; },
       async expireSession() {},
+      async refund() { return 0; },
       constructEvent() { throw new Error('no webhooks in mock mode'); },
     };
   }
@@ -46,6 +47,12 @@ export function createPayments(cfg) {
     },
     retrieveSession: (id) => stripe.checkout.sessions.retrieve(id),
     async expireSession(id) { try { await stripe.checkout.sessions.expire(id); } catch { /* already done */ } },
+    // Full refund of a booking's payment. Returns the amount refunded, in cents.
+    async refund(paymentIntent, ref) {
+      const r = await stripe.refunds.create({ payment_intent: paymentIntent, metadata: { booking_ref: ref } },
+        { idempotencyKey: `refund-${ref}` });
+      return r.amount;
+    },
     constructEvent: (raw, sig) => stripe.webhooks.constructEvent(raw, sig, cfg.payments.stripeWebhookSecret),
   };
 }
