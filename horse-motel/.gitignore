@@ -1,0 +1,6 @@
+node_modules/
+data/
+.env
+public/vendor/
+public/fonts/
+test/a11y/report/

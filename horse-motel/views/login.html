@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!--#head-->
+<title>Sign in — {{ranch}}</title>
+<meta name="robots" content="noindex">
+<script type="module" src="/js/login.js?v={{v}}"></script>
+</head>
+<body>
+<!--#header-->
+<main id="main" class="app-main" tabindex="-1">
+  <div class="wrap">
+    <div class="auth-card panel">
+      <form id="login-form" novalidate>
+        <h1 id="login-title">Sign in</h1>
+        <p class="muted">Guests: sign in to see your stay and watch your stall cameras.</p>
+        <div class="alert error" id="login-error" role="alert" hidden></div>
+        <div class="field">
+          <label for="email">Email</label>
+          <input type="email" id="email" autocomplete="username" required maxlength="254" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input type="password" id="password" autocomplete="current-password" required maxlength="200">
+        </div>
+        <div class="check">
+          <input type="checkbox" id="show-pw">
+          <label for="show-pw">Show password</label>
+        </div>
+        <button class="btn block" type="submit">Sign in</button>
+        <p class="mt-20"><a href="/forgot">Forgot your password?</a></p>
+        <p class="hint">First time here? After you book, we email you a link to create your password.</p>
+      </form>
+
+      <form id="mfa-form" novalidate hidden>
+        <h1 id="mfa-title" tabindex="-1">Enter your code</h1>
+        <p class="muted">Open your authenticator app and enter the 6-digit code for {{ranch}}.</p>
+        <div class="alert error" id="mfa-error" role="alert" hidden></div>
+        <div class="field">
+          <label for="code">6-digit code</label>
+          <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+        </div>
+        <button class="btn block" type="submit">Verify and sign in</button>
+        <p class="mt-20"><button type="button" class="linkish" id="mfa-back">Start over</button></p>
+      </form>
+    </div>
+  </div>
+</main>
+<!--#footer-->
+</body>
+</html>

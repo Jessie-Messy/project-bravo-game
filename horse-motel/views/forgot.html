@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!--#head-->
+<title>Reset your password — {{ranch}}</title>
+<meta name="robots" content="noindex">
+<script type="module" src="/js/forgot.js?v={{v}}"></script>
+</head>
+<body>
+<!--#header-->
+<main id="main" class="app-main" tabindex="-1">
+  <div class="wrap">
+    <div class="auth-card panel">
+      <form id="forgot-form" novalidate>
+        <h1>Reset your password</h1>
+        <p class="muted">Enter the email you booked with. If it has an account, we’ll send a link to choose a new password. The link expires in 30 minutes.</p>
+        <p class="muted">Never finished setting up your account? This works for that too.</p>
+        <div class="alert error" id="forgot-error" role="alert" hidden></div>
+        <div class="field">
+          <label for="email">Email</label>
+          <input type="email" id="email" autocomplete="email" required maxlength="254" spellcheck="false">
+        </div>
+        <button class="btn block" type="submit">Send reset link</button>
+      </form>
+      <div id="forgot-done" hidden>
+        <h1 tabindex="-1" id="done-title">Check your email</h1>
+        <p>If that address has an account with us, a reset link is on its way. It can take a couple of minutes — check your spam folder too.</p>
+        <p><a href="/login">Back to sign in</a></p>
+      </div>
+    </div>
+  </div>
+</main>
+<!--#footer-->
+</body>
+</html>

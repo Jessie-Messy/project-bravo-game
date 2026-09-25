@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!--#head-->
+<title>Admin — {{ranch}}</title>
+<meta name="robots" content="noindex">
+<script type="module" src="/js/admin.js?v={{v}}"></script>
+</head>
+<body>
+<!--#header-->
+<main id="main" class="app-main" tabindex="-1">
+  <div class="wrap">
+    <div class="page-head">
+      <div><p class="eyebrow">Owner tools</p><h1>Ranch admin</h1></div>
+      <button type="button" class="btn secondary small" id="logout">Sign out</button>
+    </div>
+    <p id="adm-loading" role="status">Loading…</p>
+    <div class="alert error" id="adm-error" role="alert" hidden></div>
+    <div id="adm" hidden>
+      <div class="tabs" role="tablist" aria-label="Admin sections">
+        <button role="tab" id="t-bookings" aria-controls="p-bookings" aria-selected="true">Bookings</button>
+        <button role="tab" id="t-block" aria-controls="p-block" aria-selected="false" tabindex="-1">Block dates</button>
+        <button role="tab" id="t-cameras" aria-controls="p-cameras" aria-selected="false" tabindex="-1">Cameras</button>
+        <button role="tab" id="t-activity" aria-controls="p-activity" aria-selected="false" tabindex="-1">Activity</button>
+      </div>
+
+      <section role="tabpanel" id="p-bookings" aria-labelledby="t-bookings" tabindex="0">
+        <h2 class="visually-hidden">Bookings</h2>
+        <div class="alert" id="bk-msg" role="status" hidden></div>
+        <div class="table-wrap">
+          <table class="data">
+            <caption>Upcoming and current bookings</caption>
+            <thead><tr><th scope="col">Dates</th><th scope="col">Guest</th><th scope="col">What</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
+            <tbody id="bk-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="p-block" aria-labelledby="t-block" tabindex="0" hidden>
+        <h2 class="visually-hidden">Block dates</h2>
+        <div class="grid-2">
+          <form class="panel" id="block-form" novalidate>
+            <h3>Block out dates</h3>
+            <p class="muted">Take stalls, hookups or the house off the calendar for maintenance, private use, or bookings taken by phone. Blocks appear in the bookings list, where you can remove them.</p>
+            <div class="date-inputs">
+              <div class="field"><label for="b-in">First night</label><input type="date" id="b-in" required></div>
+              <div class="field"><label for="b-out">Available again on</label><input type="date" id="b-out" required></div>
+            </div>
+            <div class="grid-2">
+              <div class="field"><label for="b-stalls">Stalls</label><input type="number" id="b-stalls" min="0" value="0" inputmode="numeric"></div>
+              <div class="field"><label for="b-rv">RV sites</label><input type="number" id="b-rv" min="0" value="0" inputmode="numeric"></div>
+            </div>
+            <div class="check"><input type="checkbox" id="b-house"><label for="b-house">Block the house</label></div>
+            <div class="field"><label for="b-note">Note (only you see this)</label><input type="text" id="b-note" maxlength="200"></div>
+            <div class="alert" id="block-msg" role="status" hidden></div>
+            <button class="btn" type="submit">Block these dates</button>
+          </form>
+          <form class="panel" id="mfa-reset-form" novalidate>
+            <h3>Guest lost their phone?</h3>
+            <p class="muted">Turn off two-step verification for a guest so they can sign in with just their password, then set it up again.</p>
+            <div class="field"><label for="r-email">Guest email</label><input type="email" id="r-email" required spellcheck="false"></div>
+            <div class="alert" id="reset-msg" role="status" hidden></div>
+            <button class="btn secondary" type="submit">Reset guest’s two-step verification</button>
+          </form>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="p-cameras" aria-labelledby="t-cameras" tabindex="0" hidden>
+        <h2 class="visually-hidden">Cameras</h2>
+        <div class="grid-2">
+          <div>
+            <div class="table-wrap">
+              <table class="data">
+                <caption>Cameras</caption>
+                <thead><tr><th scope="col">Camera</th><th scope="col">Shows</th><th scope="col">Actions</th></tr></thead>
+                <tbody id="cam-rows"></tbody>
+              </table>
+            </div>
+            <div class="mt-20" id="cam-preview"></div>
+          </div>
+          <form class="panel" id="cam-form" novalidate>
+            <h3 id="cam-form-title">Add a camera</h3>
+            <input type="hidden" id="c-id">
+            <div class="field"><label for="c-name">Name</label><input type="text" id="c-name" maxlength="60" required placeholder="Stall 1 camera"></div>
+            <div class="field">
+              <label for="c-type">Feed type</label>
+              <select id="c-type" aria-describedby="c-type-hint">
+                <option value="hls">Live video (HLS .m3u8)</option>
+                <option value="snapshot">Still picture (JPEG snapshot URL)</option>
+                <option value="demo">Demo (no camera — for testing)</option>
+              </select>
+              <p class="hint" id="c-type-hint">Most NVRs and cameras can publish HLS through MediaMTX or go2rtc. See the README.</p>
+            </div>
+            <div class="field">
+              <label for="c-url">Camera address</label>
+              <input type="url" id="c-url" maxlength="500" spellcheck="false" autocomplete="off" aria-describedby="c-url-hint">
+              <p class="hint" id="c-url-hint">Stored on the server only; guests never see it. Leave blank when editing to keep the current address.</p>
+            </div>
+            <fieldset>
+              <legend>Stalls and sites this camera shows</legend>
+              <div class="checks" id="c-units"></div>
+            </fieldset>
+            <div class="check"><input type="checkbox" id="c-active" checked><label for="c-active">Active</label></div>
+            <div class="alert" id="cam-msg" role="status" hidden></div>
+            <div class="row-actions">
+              <button class="btn" type="submit">Save camera</button>
+              <button class="btn secondary" type="button" id="c-cancel" hidden>Cancel editing</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="p-activity" aria-labelledby="t-activity" tabindex="0" hidden>
+        <h2 class="visually-hidden">Activity</h2>
+        <div class="table-wrap">
+          <table class="data">
+            <caption>Latest 200 security and booking events</caption>
+            <thead><tr><th scope="col">When</th><th scope="col">Event</th><th scope="col">Account</th><th scope="col">Detail</th><th scope="col">IP</th></tr></thead>
+            <tbody id="log-rows"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+<!--#footer-->
+</body>
+</html>

@@ -1,0 +1,163 @@
+# Rockin' C Ranch — booking site & stall cameras
+
+The website for Rockin' C Ranch, a horse hotel and country lodging in Lonoke, Arkansas.
+
+- **Availability calendar**: live counts of free stalls, RV/trailer hookups and the house for every night.
+- **Online booking**: guests choose dates, stalls, hookups and/or the house, see the price, and pay on Stripe's hosted checkout.
+- **Automatic onboarding**: when Stripe confirms payment, the site confirms the booking, assigns specific stalls, creates the guest's account (or adds the stay to their existing one), and emails a one-time link to set a password.
+- **Stall cameras**: signed-in guests see live video of **only the stalls they rented**, and **only during their stay** (from 3 hours before check-in to 2 hours after check-out, configurable).
+- **Admin page**: bookings, blocking out dates, camera-to-stall mapping, activity log.
+- Works on phones, tablets and computers; light and dark mode; built to WCAG 2.2 AA.
+
+Everything lives in this folder and is independent of the game in the rest of the repository.
+
+---
+
+## Quick start (on your computer, no payment keys needed)
+
+Needs Node.js 20.11 or newer.
+
+```bash
+cd horse-motel
+npm install          # also copies the video player and fonts into public/
+npm run seed-demo    # optional: a demo camera on every stall
+npm start            # http://localhost:3000
+```
+
+Without Stripe keys the site runs in **test mode**: "Continue to secure payment" goes to a test checkout page with a "Simulate successful payment" button, and emails are written to `data/outbox/` (and the console) instead of being sent. Book a stall, "pay", then open the set-up link from the console to create a password and see the camera page.
+
+Make yourself an owner account:
+
+```bash
+npm run create-admin -- you@example.com
+```
+
+Open the printed link, set a password, then **Account → Account & security → turn on two-step verification**. The admin page (`/admin`) will not open until you do.
+
+---
+
+## Going live
+
+### 1. Server
+
+Any small Linux VPS works (1 GB RAM is plenty). Put the app behind a reverse proxy that handles HTTPS. With [Caddy](https://caddyserver.com) that is the whole config:
+
+```
+book.example.com {
+  reverse_proxy 127.0.0.1:3000
+}
+```
+
+```bash
+cd horse-motel
+npm ci --omit=dev
+cp .env.example .env   # then edit it — see below
+npm run create-admin -- you@example.com
+node src/server.js     # run it under systemd or pm2 so it restarts
+```
+
+A sample systemd unit:
+
+```ini
+[Unit]
+Description=Rockin C Ranch site
+After=network.target
+
+[Service]
+WorkingDirectory=/srv/horse-motel
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+User=ranch
+Environment=NODE_ENV=production
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/horse-motel/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Data lives in `data/ranch.db` (SQLite). **Back it up daily** — e.g. `sqlite3 data/ranch.db ".backup /backups/ranch-$(date +%F).db"`.
+
+### 2. Settings (`.env`)
+
+Every setting is documented in [`.env.example`](.env.example). The ones that matter most:
+
+| Setting | What it is |
+|---|---|
+| `APP_ORIGIN` | Your public `https://` address. |
+| `PRICE_*_CENTS` | **Your real prices, in cents.** The defaults are placeholders. |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | From your Stripe dashboard (next step). |
+| `SMTP_URL`, `MAIL_FROM` | An email provider (Postmark, SendGrid, Amazon SES, Google Workspace SMTP…). Guests' set-up links go out by email. |
+| `ADMIN_ALERT_EMAIL` | Where you get new-booking alerts. |
+| `CAMERA_ALLOWED_HOSTS` | The address(es) of your camera box (see below). |
+
+The server **refuses to start** in production if HTTPS, Stripe or email are missing, so a half-configured site can never take bookings.
+
+### 3. Stripe
+
+1. Create a Stripe account and get your secret key (Developers → API keys).
+2. Developers → Webhooks → **Add endpoint**: `https://book.example.com/api/webhooks/stripe`, with these events:
+   `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`.
+3. Copy the endpoint's signing secret into `STRIPE_WEBHOOK_SECRET`.
+
+Guests pay on Stripe's own page, so card numbers never touch this server. A booking is only confirmed by Stripe's **signed** webhook, never by the browser coming back from checkout. Refunding a payment in full in Stripe cancels the booking and ends camera access automatically.
+
+### 4. Cameras
+
+Guests never connect to a camera directly. The site relays video from your camera system and checks, on **every** request, that the guest has a confirmed booking for that stall and that their stay is on right now. Camera addresses and passwords stay on the server.
+
+**Recommended set-up:**
+
+1. On a small always-on computer at the ranch (a Raspberry Pi or mini-PC on the same network as the cameras / NVR), run [MediaMTX](https://github.com/bluenviron/mediamtx) or [go2rtc](https://github.com/AlexxIT/go2rtc). Point it at each camera's RTSP stream; it republishes each as HLS, e.g. `http://<box>:8888/stall1/index.m3u8`.
+2. Connect that box and the web server privately with [Tailscale](https://tailscale.com) or WireGuard. **Do not port-forward cameras or the NVR to the internet.**
+3. Put the box's private address in `CAMERA_ALLOWED_HOSTS`.
+4. In **Admin → Cameras**, add each camera: name, "Live video (HLS)", its `.m3u8` address, and tick the stall(s) it shows. Use **Test** to check it plays.
+
+Cameras that can only produce still pictures work too: choose "Still picture" and give the snapshot URL (`http://user:pass@host/snapshot.jpg` style credentials are supported and never shown to anyone). Guests' pages refresh the picture every 2 seconds.
+
+---
+
+## How booking & onboarding works
+
+```
+Guest picks dates ─► POST /api/bookings ─► units reserved for 31 min (database-enforced,
+                                            can't be double-booked) ─► Stripe Checkout
+Stripe ─► signed webhook ─► booking confirmed ─► guest account created or linked
+                                              └► welcome email with one-time set-up link
+Guest sets password ─► signs in ─► sees stays + only their stalls' cameras, only during the stay
+Unpaid holds are released automatically (after checking with Stripe that no payment is in flight).
+```
+
+---
+
+## Security
+
+- **Payments**: Stripe Checkout (PCI handled by Stripe). Prices are computed on the server; the amount Stripe collected is checked against the booking before confirming. Webhooks are signature-verified and idempotent.
+- **No double booking**: `UNIQUE(unit, night)` in the database — enforced even under simultaneous requests.
+- **Accounts**: passwords hashed with scrypt (N=2¹⁷); at least 12 characters; common passwords refused. Accounts lock for 15 minutes after 5 failed sign-ins; rate limits on every sign-in, reset and booking endpoint. Sign-in errors don't reveal whether an email has an account.
+- **Two-step verification** (authenticator app, RFC 6238) — optional for guests, **required for admins**. Codes can't be replayed.
+- **Sessions**: random 256-bit tokens, stored only as hashes; `HttpOnly`, `SameSite=Lax`, `Secure`, `__Host-` cookie; 2-hour idle and 7-day absolute timeout; rotated at sign-in; all sessions revoked on password change/reset.
+- **Links in emails** (set-up, reset) are single-use, expire, are stored hashed, and travel in the URL fragment so they never appear in server logs or `Referer` headers.
+- **CSRF**: same-origin check on every write, JSON-only bodies, plus a per-session token for signed-in requests.
+- **Headers**: strict Content-Security-Policy (`script-src 'self'`, no inline scripts or styles, no third-party scripts or fonts), HSTS, `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, locked-down `Permissions-Policy`.
+- **Cameras**: per-request authorization tied to booking + time window; camera URLs/credentials never sent to browsers; upstream host allow-list; playlist rewriting blocks path traversal and off-host redirects; responses size-capped; every view is logged.
+- **Admin**: requires two-step verification on every session; activity log of sign-ins, bookings and camera views.
+- The server refuses to start with an unsafe production configuration.
+
+## Accessibility
+
+Built to WCAG 2.2 AA: semantic landmarks and headings, skip link, visible focus everywhere, a fully keyboard-operable calendar (arrow keys, Home/End, Page Up/Down) with typed-date inputs as an alternative, labelled form fields with errors announced and linked to their inputs, a native `<dialog>` photo viewer that traps and restores focus, 44 px touch targets, reduced-motion support, dark and Windows high-contrast modes, and no horizontal scrolling at 320 px (400% zoom).
+
+## Tests
+
+```bash
+npm test            # API: booking, payments, onboarding, auth, 2-step, CSRF, camera access, admin
+npm run test:a11y   # real-browser axe-core scan (phone + desktop, light + dark) and keyboard flows
+SCREENSHOTS=1 npm run test:a11y   # also saves screenshots to test/a11y/report/
+```
+
+## Updating photos
+
+Photos are in `photos-src/` with their descriptions (alt text) in `src/photos.js`. After changing them run `npm run images` (needs the dev dependencies).
