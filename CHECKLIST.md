@@ -95,9 +95,21 @@ Local game: `.claude/launch.json` → `bravo-dev` on :8127.
       ground milky when fog was a fraction of the whole camera distance
 - [x] `_dev.cam({mode:'iso'|'third'|'far'|'top'|'shoulder'|'first'})` pins the preset —
       a stored first-person mode silently ignored pitch/zoom in the shot tour
-- NEXT: C4 buildings (city = bare WALL boxes, no roofs). Plan: read rebuildWalls; find the
-      small enclosed WALL rectangles = buildings → roofed house kit (gable/hip roofs, timber
-      frame, doors, windows) + merlons/coping/plinth on curtain walls + world-space brick UVs
+- NEXT: C4 buildings. Facts: walls are 1-tile instanced boxes (`rebuildWalls`, game3d ~3073,
+      WALL_H=168, one material wallTex). City (world.js ~118): outer ring 280-340 x 332-392 with
+      3x3 corner towers + 3-wide gates; keep ring 296-324 x 348-376, 2 thick; 9 `buildHouse`
+      5x5 HOLLOW rooms (WALL border, PATH inside, 1 door gap) with shopkeepers INSIDE; bank
+      9x7 hollow at 306-314 x 359-365; Saltmere huts 3x2 ("WWW"/"W=W").
+      Plan:
+      [ ] C4a boot-time WALL component pass on the static map → per-tile flag: 0 plain (incl.
+          later player-placed walls), 1 fortification (bbox > 12), 2 building (bbox <= 10)
+      [ ] C4b buildings: second instanced mesh with a plaster + timber-frame canvas texture
+          and stone footing; merged gable roofs (shingle texture, overhang, gable ends,
+          chimney on some); lintel over each door gap; roof HIDDEN while the player is inside
+          its bbox (NPCs stand inside); warm emissive windows at night
+      [ ] C4c fortifications: zero the per-tile jitter; merlons + coping + plinth (instanced);
+          world-space UVs so brick courses run across tiles; corner towers taller + conical roof
+      [ ] C4d tests: every buildHouse/bank/hut classified as building; outer + keep = fort
 
 ### Critic findings (append here)
 Round 1 (baseline shots `.shots/base_*.jpg`), ranked worst first:
