@@ -53,8 +53,8 @@
   },
 
   "totals": {
-    "$comment": "Whole-payload ceilings, checked by verify.mjs across the baked directory.",
-    "maxTotalBytes": 8388608,
+    "$comment": "Whole-payload ceilings, checked by verify.mjs across the baked directory. Raised 8 MB -> 12 MB on 2026-09-26 at the owner's request, when the Calico cat took the payload to 7.96 MB; per-class texture caps are unchanged and remain the primary control.",
+    "maxTotalBytes": 12582912,
     "maxModelCount": 80
   }
 }

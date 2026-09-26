@@ -23,6 +23,32 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-26 — DEPLOYED v0.20.0 to production (for testing)
+
+Everything in the v0.20 entry below — rune gates, the edge ridge + mountains, aerial haze, grass,
+corpses/looting/harvesting/meat, cats and pets, the town buildings, trees — went live together.
+
+**Backups first** on the VPS in `/home/ubuntu/bravo-backups/`: `bravo-server-20260926-144046.tgz`
+and `medieval-client-20260926-144046.tgz`.
+
+**Order:** tests + budgets → platform `build.mjs` (every anchor matched; ships v0.20.0; output
+checked for extras — no `.shots`, tools, sources or secrets; the only IP in the build is the
+127.0.0.1 dev fallback) → **server first** (world-data rebuilt with `portalArrivals`; the new
+corpse and pet messages must exist before new clients arrive) → client.
+
+**Verified:** boot log `[orion-auth] ticket verification active` and `listening on 0.0.0.0:2567`
+(dev auth bypass off), SQLite, 48 server mobs; through nginx `corpse-data.js`, `portal_gate.glb`,
+`Calico_Cat_Pet.glb` all 200; the live page boots to v0.20.0 with no game errors.
+
+**Then the asset cap:** `assets/budgets.json` `maxTotalBytes` 8 MB → **12 MB** (owner's call; the
+cat had taken the payload to 7.96 MB). Per-class texture caps are unchanged.
+
+⚠ `npm run assets` re-bakes every model. If any existing GLB's bytes changed, Cloudflare may keep
+serving the cached older copy for up to 30 days — harmless (the old one is valid), but purge
+`/games/medieval/models/*` if a model change must show immediately.
+
+---
+
 ### 2026-09-26 — v0.20 (in progress): rune gates, the edge of the world, aerial perspective
 
 **Working list: `CHECKLIST.md` at the repo root.** After a compaction, resume from its first

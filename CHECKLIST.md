@@ -286,11 +286,11 @@ on the band's lower half, slope-based rock blend.
 2. [x] camera boom inside canopies: CAM_FADE dither in alphatest_fragment (canopy + near leaf mats)
 3. C-8 black slabs on the horizon (identify), C-10 water edge foam wash, C-11 contact AO
 4. cat idle frame; U1b 10 Hz far-anim check; B9 low-tier perf check
-5. Phase D: version bump v0.20.0, HANDOFF deploy note, ASK THE USER before deploying (server
-   changes: corpses/portalArrivals/pet schema need a server deploy + world-data rebuild)
+5. [x] deployed v0.20.0; await the user's test feedback
 
 ## Phase D — ship
 - [ ] D1 `npm test` + `npm run verify` green, budgets respected
 - [ ] D2 Perf check on the ultra and low tiers (draw calls, frame time)
 - [ ] D3 HANDOFF entry, version bump, commit + push
-- [ ] D4 Backups on the VPS, then deploy (only if the user asks / confirms)
+- [x] D4 Backups on the VPS, then deployed v0.20.0 (user asked 2026-09-26) — verified live
+- [x] D5 model budget raised 8 → 12 MB (user asked)
