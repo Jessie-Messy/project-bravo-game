@@ -150,8 +150,13 @@ DECISIONS (user, 2026-09-26):
       Take All, Harvest (2.2 s, needs knife or bladed weapon in hand); Skinning Knife sold by
       the merchant (no weapon swap); raw/cooked meat in bag + trade; cook at a campfire
       (craft menu); Eat action heals 36 HP over 12 s; _dev.kill(type), _dev.corpses
+- [x] server DROP_TYPES lacked mithril/runic/abyssal (untradeable between players) + meat added
+- [ ] M8 two-client check: second player sees the body, first-come take, harvest refused to the
+      second claimant ("someone got to it first"); a joiner mid-corpse gets corpse_new
+- [ ] M9 critic pass on Phase M
 - [x] bandits dropped STONE (no spawnDrops entry) → now 3-8 gold, 15% bandage
-- [ ] M6 multiplayer: corpses of SERVER mobs visible to everyone; normal = shared first-come
+- [x] M6 multiplayer (verified online against the local dev server: kill → server corpse c1 →
+      killer posts loot → server echoes → Take All via server → harvest claim ok): corpses of SERVER mobs visible to everyone; normal = shared first-come
       loot; special = damagers only, per-damager special roll (see DECISIONS); PvP player
       corpses unchanged
 - [x] M7 tests (tools/test/corpses.mjs, 95 checks; critic pass still to do): every mob type has a corpse/loot/harvest table (no silent 'undefined' drops),

@@ -7,7 +7,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave, netCallGuards,
   netHousePlace, netHouseUpdate, netHouseRemove,
-  netDropAdd, netDropTake, netTradeReq, netTradeAccept, netTradeOffer, netTradeConfirm, netTradeCancel,
+  netDropAdd, netDropTake, netCorpseFill, netCorpseTake, netCorpseHarvest, netTradeReq, netTradeAccept, netTradeOffer, netTradeConfirm, netTradeCancel,
   playerName, MP_ENABLED } from './net.js';
 import { TILE, MAP_W, MAP_H, T, BLOCKING, CITY,
   HARVEST_RANGE, SWORD_RANGE, SWORD_ARC, TREE_HP, STONE_HP, IRON_HP, RESPAWN_TREE, RESPAWN_STONE, RESPAWN_IRON, DAY_CYCLE_SEC,
@@ -5571,6 +5571,8 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     return e.state;
   },
   get corpses(){ return mobCorpses; },
+  // One real hit on a given mob (server mobs send the intent to the server).
+  hit(e, dmg=30){ e.iframes=0; damageEnemy(e, dmg); return e.hp; },
   // Live sky exposure. Forces a PMREM re-bake, so the env map and the visible
   // dome never disagree while you're tuning.
   skyGain:(v)=>sky.setGain(v),
@@ -9196,6 +9198,8 @@ function openMobCorpse(c){
 }
 function takeAllMobCorpse(c){
   if(!c || !c.loot.length) return;
+  // A server mob's body: the server hands the loot out, once, to whoever asks first.
+  if(c.srvCid && net.status==='online'){ netCorpseTake(c.srvCid); return; }
   let n = 0; for(const d of c.loot){ takeLootEntry(d); n++; }
   c.loot.length = 0; snd.pickup();
   addFloater(player.x,player.y-30,'looted '+n+' item'+(n===1?'':'s'));
@@ -9221,18 +9225,23 @@ function updateMobCorpses(dt){
     if(!mobCorpses.includes(c) || Math.hypot(c.x - player.x, c.y - player.y) > CORPSE_REACH*TILE*1.2 || player.dead){
       G.harvesting = null;
     } else if((h.t += dt) >= HARVEST_SECS){
-      const got = rollHarvest(c.type) || {};
-      const parts = [];
-      for(const [k, n] of Object.entries(got)) if(n > 0){ inv[k] = (inv[k]||0) + n; parts.push('+'+n+' '+itemLabel(k)); }
-      addFloater(player.x, player.y-34, parts.length ? parts.join('  ') : 'nothing worth taking');
-      snd.pickup();
-      c.harvested = true;
-      // A butchered carcass shrinks a little and does not linger.
-      c.root.scale.setScalar(0.82);
-      c.ttl = Math.min(c.ttl, (now - c.t0) + HARVESTED_TTL);
       G.harvesting = null;
+      // A server mob's body is butchered once, whoever claims it first.
+      if(c.srvCid && net.status==='online') netCorpseHarvest(c.srvCid);
+      else finishHarvest(c);
     }
   }
+}
+function finishHarvest(c){
+  const got = rollHarvest(c.type) || {};
+  const parts = [];
+  for(const [k, n] of Object.entries(got)) if(n > 0){ inv[k] = (inv[k]||0) + n; parts.push('+'+n+' '+itemLabel(k)); }
+  addFloater(player.x, player.y-34, parts.length ? parts.join('  ') : 'nothing worth taking');
+  snd.pickup();
+  c.harvested = true;
+  // A butchered carcass shrinks a little and does not linger.
+  c.root.scale.setScalar(0.82);
+  c.ttl = Math.min(c.ttl, (performance.now()/1000 - c.t0) + HARVESTED_TTL);
 }
 function mobCorpseXY(){ return panelAt('mobcorpse', Math.round(G.canvas.width/2-130), Math.round(G.canvas.height/2-140), 260, 280); }
 function _mobCorpseButtons(c){
@@ -15834,9 +15843,35 @@ if(MP_ENABLED){
       if(hooks.onKill) hooks.onKill(e);             // quest credit
       snd.enemyDie();
     }
-    // Everyone sees the body. Its loot is whatever THIS client's death roll
-    // produced — the killer's, until the server holds shared corpse loot (M6).
+    // Everyone sees the body. The KILLER's death roll is its loot: posted to the
+    // server once, which then shares it first-come with everyone (owner's rule
+    // for ordinary mobs). Until the server's copy arrives the body reads empty.
     if(hooks.onCorpse) hooks.onCorpse(e, n0);
+    const c = mobCorpses[mobCorpses.length-1];
+    if(c && m.cid){
+      c.srvCid = m.cid;
+      if(m.killer===net.selfId) netCorpseFill(m.cid, c.loot.map(d=>d.item?{t:d.type,item:d.item}:{t:d.type}));
+      c.loot = [];
+    }
+  };
+  const corpseBySrv = cid => mobCorpses.find(c=>c.srvCid===cid);
+  const fromWire = items => (items||[]).map(it=>it.item?{type:it.t,item:it.item}:{type:it.t});
+  net.onCorpseItems = m => { const c=corpseBySrv(m.cid); if(c) c.loot = fromWire(m.items); };
+  net.onCorpseGot = m => {
+    let n=0; for(const d of fromWire(m.items)){ takeLootEntry(d); n++; }
+    if(n){ snd.pickup(); addFloater(player.x,player.y-30,'looted '+n+' item'+(n===1?'':'s')); }
+  };
+  net.onCorpseHarvested = m => { const c=corpseBySrv(m.cid); if(c) c.harvested = true; };
+  net.onCorpseHarv = m => {
+    const c = corpseBySrv(m.cid);
+    if(m.ok && c) finishHarvest(c);
+    else addFloater(player.x,player.y-30,'someone got to it first');
+  };
+  net.onCorpseNew = m => {                       // bodies that were already there when we joined
+    if(corpseBySrv(m.cid)) return;
+    const c = makeMobCorpse({ type:m.type, x:m.x, y:m.y, loot:fromWire(m.items), special:false, openable:true, srvCid:m.cid });
+    c.harvested = !!m.harvested; c.searched = true;
+    c.t0 -= Math.max(0, m.age|0);                  // keep the server's clock on its remaining life
   };
   net.onHouses=list=>applyServerHouses(list);       // shared houses
   net.onPlacedObjects=list=>{                       // shared persistent placed items (torches, lanterns, forges, etc.)

@@ -512,7 +512,11 @@ class BravoRoom extends Room {
     // ── Ground drops (shared, first-come pickup) ──
     this.drops = new Map();   // dropId -> {type,count,x,y,expire}
     this.dropSeq = 0;
-    const DROP_TYPES = new Set(['wood','stone','planks','arrows','hide','bone','gold','skull','bandages','potions','iron_ore','iron_ingot','steel_ingot','siege_ram','torch','lantern']);
+    // ⚠ Every tradeable/droppable resource must be here, or the server silently
+    // drops it from trades and ground drops. mithril, runic and abyssal were
+    // missing — they could not be traded between players at all.
+    const DROP_TYPES = new Set(['wood','stone','planks','arrows','hide','bone','gold','skull','bandages','potions','iron_ore','iron_ingot','steel_ingot','siege_ram','torch','lantern',
+      'mithril_ore','mithril_ingot','runic_ore','runic_ingot','abyssal_ingot','raw_meat','cooked_meat']);
     this.onMessage('drop_add', (client, m) => {
       const p = this.state.players.get(client.sessionId);
       if (!p || p.dead || typeof m !== 'object' || m === null) return;
@@ -535,7 +539,60 @@ class BravoRoom extends Room {
     this.clock.setInterval(() => {
       const now = Date.now();
       for (const [id, d] of this.drops) if (d.expire < now) { this.drops.delete(id); this.broadcast('drop_gone', { id }); }
+      for (const [cid, c] of this.corpses) if (c.expire < now) this.corpses.delete(cid);   // clients time out their own copy
     }, 10000);
+
+    // ── Shared corpses of server mobs ──
+    // Owner's rule: an ordinary mob's corpse is open to EVERYONE, with one shared
+    // set of loot, first come first served. The server holds that set. The loot
+    // tables live in the client (enemies.js), so the killer's client rolls it —
+    // exactly the trust the old killer-only ground drops already had — and posts
+    // it ONCE; after that the server is the only one who can hand it out.
+    // Harvesting (meat, hide) is claimed here too, so a body is butchered once.
+    this.corpses = new Map();   // cid -> {type,x,y,killer,items:null|[],harvested,expire}
+    this.corpseSeq = 1;
+    const CORPSE_MS = 90000, CORPSE_REACH = TILE * 3;
+    const LOOT_TYPE = t => DROP_TYPES.has(t) || /^(loot_[a-z_]{1,20}|sigil_[a-z]{1,12}|arpg_item)$/.test(t);
+    this.makeCorpse = (m, killer) => {
+      const cid = 'c' + (this.corpseSeq++);
+      this.corpses.set(cid, { type: '' + m.type, x: m.x, y: m.y, killer, items: null, harvested: false,
+                              expire: Date.now() + CORPSE_MS });
+      return cid;
+    };
+    this.onMessage('corpse_fill', (client, m) => {
+      const c = this.corpses.get('' + (m && m.cid));
+      if (!c || c.items !== null || c.killer !== client.sessionId || !Array.isArray(m.items)) return;
+      const items = [];
+      for (const it of m.items.slice(0, 24)) {
+        if (!it || typeof it !== 'object') continue;
+        const t = '' + it.t; if (!LOOT_TYPE(t)) continue;
+        const e = { t };
+        if (t === 'arpg_item') {
+          try { if (!it.item || JSON.stringify(it.item).length > 1500) continue; } catch (_) { continue; }
+          e.item = it.item;
+        }
+        items.push(e);
+      }
+      c.items = items;
+      this.broadcast('corpse_items', { cid: '' + m.cid, items });
+    });
+    this.onMessage('corpse_take', (client, m) => {
+      const cid = '' + (m && m.cid), c = this.corpses.get(cid);
+      const p = this.state.players.get(client.sessionId);
+      if (!c || !p || p.dead || !c.items || !c.items.length) return;
+      if (Math.hypot(c.x - p.x, c.y - p.y) > CORPSE_REACH) return;
+      const got = c.items; c.items = [];
+      client.send('corpse_got', { cid, items: got });           // only the taker gains it
+      this.broadcast('corpse_items', { cid, items: [] });
+    });
+    this.onMessage('corpse_harvest', (client, m) => {
+      const cid = '' + (m && m.cid), c = this.corpses.get(cid);
+      const p = this.state.players.get(client.sessionId);
+      if (!c || !p || p.dead) return;
+      const ok = !c.harvested && Math.hypot(c.x - p.x, c.y - p.y) <= CORPSE_REACH;
+      if (ok) { c.harvested = true; this.broadcast('corpse_harvested', { cid }); }
+      client.send('corpse_harv', { cid, ok });
+    });
 
     // ── Player trading (server-brokered escrow) ──
     // Each session is between two players; both post an offer (gold + items),
@@ -665,6 +722,10 @@ class BravoRoom extends Room {
     client.send('houses', this.houses);   // current shared houses
     client.send('placed_objects', this.placedObjects);   // current shared placed items (torches, lanterns, etc.)
     for (const [id, d] of this.drops) client.send('drop_add', { id, type: d.type, count: d.count, x: d.x, y: d.y });
+    // Bodies already lying about, so a joiner sees the same field as everyone.
+    for (const [cid, c] of this.corpses)
+      client.send('corpse_new', { cid, type: c.type, x: c.x, y: c.y, items: c.items || [], harvested: c.harvested,
+                                  age: Math.round((Date.now() - (c.expire - 90000)) / 1000) });
     this.meta.set(client.sessionId, {
       lastMoveAt: Date.now(), lastTpAt: Date.now(),   // join placement counts as a tp
       lastAtkAt: 0, lastChatAt: 0, lastHitBy: null, lastHitAt: 0, speedFlags: 0,

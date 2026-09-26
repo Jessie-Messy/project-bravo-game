@@ -167,7 +167,10 @@ class MobSim {
     if (m.hp <= 0) {
       m.hp = 0; m.dead = true;
       mt.respawn = RESPAWN_DELAY + CORPSE_TIME;
-      this.room.broadcast('mob_dead', { id: '' + msg.id, killer: client.sessionId });
+      // The body outlives the mob (which respawns in 48 s). The room owns it;
+      // its loot arrives from the killer's client (corpse_fill).
+      const cid = this.room.makeCorpse ? this.room.makeCorpse(m, client.sessionId) : null;
+      this.room.broadcast('mob_dead', { id: '' + msg.id, killer: client.sessionId, cid });
     }
   }
 }

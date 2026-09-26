@@ -76,7 +76,23 @@ for (const t of CD.SPECIAL_TYPES) check(`special type ${t} is a real mob`, !!E.E
   const c = enemies.indexOf('if (hooks.onCorpse) hooks.onCorpse(e, n0);', i);
   check('local deaths hand their drops to the corpse AFTER the kill hook', i > 0 && k > i && c > k,
         'onCorpse must run after onKill or the kill hook\'s drops land on the ground');
-  check('server-mob deaths make a corpse on every client', /if\(hooks\.onCorpse\) hooks\.onCorpse\(e, n0\);\s*\n\s*\};/.test(game));
+  // The server-mob death handler: the corpse is made OUTSIDE the killer-only
+  // branch (everyone sees the body), and the killer posts the loot once.
+  const a = game.indexOf('net.onMobDead=m=>{');
+  const body = a >= 0 ? game.slice(a, game.indexOf('\n  };', a)) : '';
+  const killerBranch = body.slice(body.indexOf('if(m.killer===net.selfId){'), body.indexOf('}', body.indexOf('if(m.killer===net.selfId){')));
+  check('server-mob deaths make a corpse on every client', body.includes('if(hooks.onCorpse) hooks.onCorpse(e, n0);') && !killerBranch.includes('onCorpse'));
+  check('the killer posts the loot to the server once', /if\(m\.killer===net\.selfId\) netCorpseFill\(m\.cid/.test(body));
+}
+// The server side of the owner's rules for ordinary corpses.
+{
+  const room = fs.readFileSync('server/bravo-room.js', 'utf8');
+  check('server: only the killer may fill, and only once', room.includes('c.items !== null || c.killer !== client.sessionId'));
+  check('server: taking empties the shared loot for everyone', room.includes('const got = c.items; c.items = [];') && room.includes("this.broadcast('corpse_items', { cid, items: [] });"));
+  check('server: a body is harvested once', room.includes('const ok = !c.harvested'));
+  const dt = room.slice(room.indexOf('const DROP_TYPES'), room.indexOf('const DROP_TYPES') + 600);
+  for (const k of ['raw_meat', 'cooked_meat', 'mithril_ingot', 'runic_ingot', 'abyssal_ingot'])
+    check(`server DROP_TYPES allows ${k}`, dt.includes("'" + k + "'"));
 }
 check('boss gold stays on the ground', /if\(special && d\.type === 'gold'\)\{ drops\.push\(d\)/.test(game));
 check('a pelt is skinned, not looted', /if\(pelt && d\.type === 'hide'\) continue;/.test(game));

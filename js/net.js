@@ -23,6 +23,7 @@ export const net = {
   onSave: null,         // server-side save blob to apply on join
   onWorldTime: null,    // authoritative world clock {t} — keeps everyone's sky in sync
   onDropAdd: null, onDropGone: null, onDropGot: null,   // shared ground drops
+  onCorpseItems: null, onCorpseGot: null, onCorpseHarv: null, onCorpseHarvested: null, onCorpseNew: null,   // shared corpses
   onTradeInvite: null, onTradeStart: null, onTradeUpdate: null, onTradeDone: null, onTradeEnd: null,
   onlineCount: 0,
 };
@@ -116,6 +117,11 @@ export async function initNet(getSelfFn) {
     room.onMessage('drop_add',  m => { if (net.onDropAdd)  net.onDropAdd(m); });
     room.onMessage('drop_gone', m => { if (net.onDropGone) net.onDropGone(m); });
     room.onMessage('drop_got',  m => { if (net.onDropGot)  net.onDropGot(m); });
+    room.onMessage('corpse_items',     m => { if (net.onCorpseItems)     net.onCorpseItems(m); });
+    room.onMessage('corpse_got',       m => { if (net.onCorpseGot)       net.onCorpseGot(m); });
+    room.onMessage('corpse_harv',      m => { if (net.onCorpseHarv)      net.onCorpseHarv(m); });
+    room.onMessage('corpse_harvested', m => { if (net.onCorpseHarvested) net.onCorpseHarvested(m); });
+    room.onMessage('corpse_new',       m => { if (net.onCorpseNew)       net.onCorpseNew(m); });
     room.onMessage('trade_invite', m => { if (net.onTradeInvite) net.onTradeInvite(m); });
     room.onMessage('trade_start',  m => { if (net.onTradeStart)  net.onTradeStart(m); });
     room.onMessage('trade_update', m => { if (net.onTradeUpdate) net.onTradeUpdate(m); });
@@ -210,6 +216,9 @@ export function netSave(blob) {
 // Ground drops + trading senders
 export function netDropAdd(type, count) { if (net.status==='online'&&net.room) net.room.send('drop_add', { type, count }); }
 export function netDropTake(id) { if (net.status==='online'&&net.room) net.room.send('drop_take', { id }); }
+export function netCorpseFill(cid, items) { if (net.status==='online'&&net.room) net.room.send('corpse_fill', { cid, items }); }
+export function netCorpseTake(cid)        { if (net.status==='online'&&net.room) net.room.send('corpse_take', { cid }); }
+export function netCorpseHarvest(cid)     { if (net.status==='online'&&net.room) net.room.send('corpse_harvest', { cid }); }
 export function netTradeReq(to) { if (net.status==='online'&&net.room) net.room.send('trade_req', { to }); }
 export function netTradeAccept(from) { if (net.status==='online'&&net.room) net.room.send('trade_accept', { from }); }
 export function netTradeOffer(offer) { if (net.status==='online'&&net.room) net.room.send('trade_offer', offer); }
