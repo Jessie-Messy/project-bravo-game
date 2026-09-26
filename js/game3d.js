@@ -6235,6 +6235,28 @@ let GAIT_REF = 80;
 // implementation instead of five copies that drifted apart.
 // Drive one model instance from its enemy: position, smooth turn, clips.
 // animate=false (distant mob) keeps it placed but freezes the skinning mixer.
+// ── Far animation: a slower clock, not a frozen pose ──────────────
+// Past the animation-LOD radius, characters used to skip their mixer entirely
+// and hold whatever pose they were in — so a distant wolf mid-stride slid
+// across the field like it was flying. Now the clip keeps running, stepped at
+// FAR_ANIM_HZ instead of every frame. Mixer evaluation is the CPU cost being
+// saved, and ten steps a second keeps nearly all of that saving while legs
+// visibly move. The first step's phase is random per character, so a herd's
+// updates spread across frames instead of all landing on the same one.
+const FAR_ANIM_HZ = 10;
+function farMixerStep(holder, mixer, dt){
+  holder._farAcc = (holder._farAcc ?? Math.random() / FAR_ANIM_HZ) + dt;
+  // Restart slightly early by a random amount: a starting phase alone gets
+  // erased by one long frame (a load hitch pushes every character over the
+  // threshold together), and after that they would all tick in lockstep.
+  if(holder._farAcc >= 1 / FAR_ANIM_HZ){ mixer.update(holder._farAcc); holder._farAcc = -Math.random() * 0.04; }
+}
+function farTick(holder, dt){          // the same clock, for rigs animated from `t`
+  holder._farAcc = (holder._farAcc ?? Math.random() / FAR_ANIM_HZ) + dt;
+  if(holder._farAcc < 1 / FAR_ANIM_HZ) return false;
+  holder._farAcc = -Math.random() * 0.04; return true;
+}
+
 function animModel(inst, e, t, adt, animate){
   inst.obj.visible=true;
   inst.obj.position.set(e.x,heightAt(e.x,e.y),e.y);
@@ -6272,7 +6294,11 @@ function animModel(inst, e, t, adt, animate){
     if(Math.hypot(fx,fz) < TILE * 7) tgt = Math.atan2(-fx,-fz); }
   if(tgt !== null && inst.fresh){ inst.obj.rotation.y = tgt; inst.fresh = false; }
   else if(tgt !== null) turnToward(inst.obj, tgt, adt, 'mob');
-  if(!animate) return;                 // animation-LOD: skip clips + skinning when far
+  if(!animate){                        // animation-LOD: far = right clip, slower clock
+    if(t >= (e._atkUntil || 0)) setModelAnim(inst, moving ? 'walk' : 'idle');
+    farMixerStep(e, inst.mixer, adt);
+    return;
+  }
   const isAttacking = e.attackTimer > (e.attackCooldown - 0.5);
   if(isAttacking && t > (e._atkUntil || 0) && inst.actions.attack){
     const clipDur = inst.actions.attack.getClip().duration;
@@ -14087,7 +14113,7 @@ function syncEntities(t){
       _slotRigCache[si]={type:e.type,hiding:isHiding};
     }
     // walk cycle + attack swing; turns toward movement, faces player when idle
-    if(eNear){
+    if(eNear || farTick(e, adt)){
       const af=e.attackCooldown-e.attackTimer;
       animateRig(grp, e.x, e.y, t,
         {turn:true, faceX:player.x, faceZ:player.y, attack:(af>=0&&af<0.28)?1-af/0.28:0});
@@ -14220,7 +14246,8 @@ function syncEntities(t){
     if(pd2<NPC_LOOK2) tgt=Math.atan2(-pdx,-pdz);   // look at the player in range
     else if(moving) tgt=Math.atan2(-(n.tx-o.position.x),-(n.tz-o.position.z));
     turnToward(o, tgt, adt, 'npc');
-    if(near){ setNpcAnim(n, moving?'walk':(n.curIdle||'idle')); n.mixer.update(adt); }
+    setNpcAnim(n, moving?'walk':(n.curIdle||'idle'));
+    if(near) n.mixer.update(adt); else farMixerStep(n, n.mixer, adt);
   }
   for(let i=0;i<arrowPool.length;i++){const a=projectiles[i];if(!a){arrowPool[i].visible=false;continue;}arrowPool[i].visible=true;arrowPool[i].position.set(a.x,heightAt(a.x,a.y)+18,a.y);arrowPool[i].rotation.y=-Math.atan2(a.vy,a.vx);}
   const _lt=performance.now()*0.001;
@@ -15312,9 +15339,9 @@ function syncRemotePlayers(t,dt){
       const catching=Math.hypot(st.x-v.rx,st.y-v.rz)>4;   // still gliding → walking
       if(t>=m.busyUntil) setRemoteAnim(m, st.onHorse?'idle':(catching?'walk':'idle'));
       // Skinning is the expensive half of a remote player. Past AD, or outside the
-      // nearest-N cap, the pose simply freezes — at that distance the character is
-      // a few pixels tall and nobody can tell.
-      if(_animate) m.mixer.update(dt);
+      // nearest-N cap, the clip steps at FAR_ANIM_HZ instead of every frame — it
+      // used to freeze outright, which read as figures gliding in mid-stride.
+      if(_animate) m.mixer.update(dt); else farMixerStep(m, m.mixer, dt);
       setRigOpacity(m.mats, op);
       // A hidden model needs no weapon attached, and swapping props is not free.
       if(visible) remoteWeapon(v,w);
@@ -15333,10 +15360,10 @@ function syncRemotePlayers(t,dt){
       if(st.onHorse){
         v.horse.obj.position.set(v.rx,0,v.rz);
         if(v.model) v.horse.obj.rotation.y=v.model.obj.rotation.y;
-        if(_animate) v.horse.mixer.update(dt);
+        if(_animate) v.horse.mixer.update(dt); else farMixerStep(v.horse, v.horse.mixer, dt);
       }else if(st.horseDown){
         v.horse.obj.position.set(st.horseX,0,st.horseY);
-        if(_animate) v.horse.mixer.update(dt*0.35);
+        if(_animate) v.horse.mixer.update(dt*0.35); else farMixerStep(v.horse, v.horse.mixer, dt*0.35);
       }
     }
     if(v.model){}else if(v.rig){

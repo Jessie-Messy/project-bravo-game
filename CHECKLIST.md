@@ -103,6 +103,13 @@ Local game: `.claude/launch.json` → `bravo-dev` on :8127.
 - [x] B9 Perf: skirt ~50k tris, +0.4 ms/frame on the long vista, ~0 at iso (desktop ultra)
       [ ] still to check on the LOW tier / mobile
 
+## User feedback (2026-09-26)
+- [x] U1 Distant wolves froze mid-stride and "supermanned" across the field: past the
+      animation-LOD radius the mixer was skipped entirely. Now `farMixerStep` / `farTick` step
+      the right clip at FAR_ANIM_HZ (10 Hz), phase-jittered — mobs, rig mobs, NPCs, remote
+      players, horses
+- [ ] U1b verify in real play at night + with many remotes (_dev.mpLoad) that 10 Hz reads OK
+
 ## Phase C — graphics critic loop (grass, background trees, buildings)
 - [ ] C1 Critic reviews baseline screenshots → ranked findings list appended below
 - [~] C2 Grass — tufts of 3 (grass.js makeTuftGeometry, TUFT_BLADES), live camera-distance
