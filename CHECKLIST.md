@@ -263,7 +263,8 @@ Round 1 (baseline shots `.shots/base_*.jpg`), ranked worst first:
       bend normals toward terrain normal (tufts of 3 crossed strips = fewer instances)
 - [x] [critic] C-6 Far trees are lollipops: TRUNKH 0.42→~0.26 of TREE_H, per-instance
       height 0.75–1.3 / yaw / lean, greyer trunks #4b3d31, canopy colour jitter
-- [ ] [critic] C-7 Canopy shading flat & dark (#1d3f1a); leaf texture has fish-scale outline
+- [x] [critic] C-7 Canopy shading flat & dark (leaf normal 1.8→0.8 killed the rings; albedo lifted;
+      wrap lighting NOT done) (#1d3f1a); leaf texture has fish-scale outline
       rings; add wrap lighting + outward normals; raise albedo ~#3d6a2a
 - [ ] [critic] C-8 Black slabs on the horizon (horizon_field, vista, grass_close) — unfogged
       far wall/bridge boxes? Identify and fix
@@ -280,7 +281,7 @@ band to a ridge, band blocking, low-res skirt beyond the map so no sky shows und
 on the band's lower half, slope-based rock blend.
 
 ## NEXT UP (in order, as of 2026-09-26 afternoon)
-1. C-7 canopy shading; C4e critic pass on buildings (.shots/b1_*.jpg) — then a round-2
+1. C4e critic pass on buildings (.shots/b1_*.jpg) — then a round-2
    graphics critic on the whole tour (window.TOUR in the page; see HANDOFF dev tooling)
 2. [critic] camera boom inside tree canopies — fade canopies near the camera
 3. C-8 black slabs on the horizon (identify), C-10 water edge foam wash, C-11 contact AO

@@ -1972,11 +1972,13 @@ const barkTex = makeCanvasTex(128,256,(x,w,h)=>{
 });
 // Foliage — clumped needle masses so the canopy has depth instead of a flat cone.
 const leafTex = makeCanvasTex(256,256,(x,w,h)=>{
-  x.fillStyle='#24471f'; x.fillRect(0,0,w,h);
+  // Lifted from #24471f / (58,112,46): canopies read as flat near-black
+  // masses at play distance (critic C-7).
+  x.fillStyle='#2e5826'; x.fillRect(0,0,w,h);
   for(let i=0;i<520;i++){
     const cx=Math.random()*w, cy=Math.random()*h, r=5+Math.random()*17;
     const t=0.55+fbm(cx/16,cy/16,12,3)*0.95;
-    x.fillStyle=`rgba(${(58*t)|0},${(112*t)|0},${(46*t)|0},.85)`;
+    x.fillStyle=`rgba(${(70*t)|0},${(128*t)|0},${(52*t)|0},.85)`;
     x.beginPath(); x.ellipse(cx,cy,r,r*(0.5+Math.random()*0.45),Math.random()*3,0,Math.PI*2); x.fill();
   }
   for(let i=0;i<180;i++){                                   // sunlit tips
@@ -1987,7 +1989,10 @@ const leafTex = makeCanvasTex(256,256,(x,w,h)=>{
   grain(x,w,h,10,0.09);
 });
 const barkNrm = normalFromTex(barkTex, 2.4);
-const leafNrm = normalFromTex(leafTex, 1.8);
+// 0.8, not 1.8: the normal map is derived from the overlapping leaf ellipses,
+// and at full strength every ellipse edge became a ridge — the "fish-scale"
+// rings the critic saw on every canopy (C-7).
+const leafNrm = normalFromTex(leafTex, 0.8);
 barkTex.repeat.set(2,1); barkNrm.repeat.set(2,1);   // wrap the trunk twice so ridges stay fine
 
 // Ground detail. The terrain colour is one big baked canvas (8px per tile,
