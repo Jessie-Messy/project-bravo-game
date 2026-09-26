@@ -78,7 +78,28 @@ Local game: `.claude/launch.json` → `bravo-dev` on :8127.
       (note: a GHOST — dead player — walks through, by the existing ghost design)
 - [x] B7 Tests: every ridge-zone tile is RIDGE; outermost ring solid WITH edits applied;
       spawns on grass; nothing placed in the ridge
-- [ ] B8 Critic pass on Phase B → append findings
+- [x] B8 Critic pass on Phase B — findings (fix in this order):
+  - [x] [critic] B8-1 server wolf [35,50] is CAVE_WALL after world_edits (frozen in rock); run
+        ALL spawn/placement checks in world.mjs on the EDITED map; [120,90] becomes PATH
+  - [x] [critic] B8-2 world.mjs "nothing placed in ridge" passes COAST_NPCS world coords as tiles
+  - [ ] [critic] B8-3 haze order backwards: in-map ridge gets range fog, skirt/range don't →
+        near ridge paler than mountains behind, hard contour at terrMesh edge (worse on mobile).
+        Cap range fog (e.g. min 0.7) for all materials and let the skirt take it too
+  - [ ] [critic] B8-4 camBoomFloor samples heightAt (clamped at the edge) — boom end can sit
+        inside the skirt past the edge; max it with the skirt's heightOf
+  - [ ] [critic] B8-5 one shared snow line (terrain 430-560 vs skirt 1050-1250 vs range)
+  - [ ] [critic] B8-6 ORE_IRON now solid: ore respawn only checks the LOCAL player — ore that
+        respawns under a mob/remote traps it; coast CLIFF seals small pockets (fine) and 18
+        one-tile passages (check the important ones)
+  - [ ] [critic] B8-7 rivers (x=5/474, rows 87-89, 205-208, 352-355) and 6 PATH tiles run into
+        the ridge — fade the lift near water into a gorge; trim the dead-end path
+  - [ ] [critic] B8-8 global haze also hits ADDITIVE glows (portal pools, motes, VFX) → greyish
+        by day; fog:false on additive materials
+  - [ ] [critic-low] load rescue moves a mid-river save to the bank (WADE off) and never netTp's
+  - [ ] [critic-low] skirt snow brighter than the foreground at night; far range fine
+  - [ ] [critic-low] js/editor.js has no colours for tiles 13-17 and still uses MAP_H=554
+  - [ ] [critic-visual] ridge still a smooth dune: stronger crevices/detail normal, higher crag,
+        scree band + boulders/pines on foothills, forest belt at skirt base, sharper peaks
 - [x] B9 Perf: skirt ~50k tris, +0.4 ms/frame on the long vista, ~0 at iso (desktop ultra)
       [ ] still to check on the LOW tier / mobile
 

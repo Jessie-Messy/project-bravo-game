@@ -119,10 +119,22 @@ check('coast band is sealed east of the region', outside === 0,
 // spawn must still find ground: makeEnemy searches out to radius 6 for its
 // tile type and quietly spawns NOTHING if it finds none.
 {
+  // ⚠ On the EDITED map: world_edits.json lands after generation on the client
+  // and in build-world-data, and the server spawns on the edited tile. [35,50]
+  // passed on the raw map and was CAVE_WALL — a wolf sealed in rock — once edited.
+  const fsE = await import('node:fs');
+  const em = map.map(r => r.slice());
+  try {
+    const we = JSON.parse(fsE.readFileSync('world_edits.json', 'utf8'));
+    for (const [k, t] of Object.entries(we.map || {})) {
+      const [x, y] = k.split(',').map(Number);
+      if (em[y] && typeof em[y][x] === 'number') em[y][x] = t;
+    }
+  } catch (_) {}
   const inRidge = (x, y) => map[y] && map[y][x] === T.RIDGE;
   const findWithin = (x, y, tiles, R) => {
     for (let r = 0; r <= R; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
-      const t = map[y + dy] && map[y + dy][x + dx];
+      const t = em[y + dy] && em[y + dy][x + dx];
       if (tiles.includes(t)) return true;
     }
     return false;
@@ -134,11 +146,12 @@ check('coast band is sealed east of the region', outside === 0,
   // The SERVER spawns exactly on the tile, with no search — so the tile itself
   // must be open ground, or online the mob starts inside a wall.
   const onRock = [];
-  for (const [x, y] of [...W.WOLF_SPAWNS, ...W.BANDIT_SPAWNS]) if (map[y][x] !== T.GRASS) onRock.push(x + ',' + y + '=' + NAME[map[y][x]]);
+  for (const [x, y] of [...W.WOLF_SPAWNS, ...W.BANDIT_SPAWNS]) if (em[y][x] !== T.GRASS) onRock.push(x + ',' + y + '=' + NAME[em[y][x]]);
   check('every server spawn tile is grass', onRock.length === 0, onRock.join(' '));
   const buried = [];
   for (const [x, y] of Object.keys(W.COAST_PORTALS).map(k => k.split(',').map(Number))) if (inRidge(x, y)) buried.push('gate ' + x + ',' + y);
-  for (const n of W.COAST_NPCS) if (inRidge(n.x, n.y)) buried.push('npc ' + n.id);
+  // COAST_NPCS carry WORLD coordinates, not tiles.
+  for (const n of W.COAST_NPCS) if (inRidge(Math.floor(n.x / C.TILE), Math.floor(n.y / C.TILE))) buried.push('npc ' + n.id);
   for (const c of W.WORLD_CHESTS) if (inRidge(c.x, c.y)) buried.push('chest ' + c.x + ',' + c.y);
   for (const b of W.COAST_BOSS_SPAWNS) if (inRidge(b.x, b.y)) buried.push('boss ' + b.boss);
   for (const p of W.COAST_HOUSE_PLOTS) if (inRidge(p.x, p.y)) buried.push('plot ' + p.x + ',' + p.y);
