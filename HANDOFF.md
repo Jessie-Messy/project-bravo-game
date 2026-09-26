@@ -71,6 +71,23 @@ distance reads everywhere and the mountains stay silhouettes. Per material: `NO_
 (skirt, range) and `HAZE_CAP`. Range fog now 0.55–1.5 × camFar (it started at 1.05×, i.e.
 never visible).
 
+**Mob corpses, looting, harvesting (Phase M, owner's rules).** A killed mob leaves its body for
+90 s (`js/corpse-data.js` holds every rule/table; the runtime is game3d "Mob corpses"). Whatever
+the death dropped goes INTO the body (`hooks.onCorpse(e, n0)` runs after the kill hook and
+splices this death's items out of `drops`). Ordinary corpses: open to everyone, one shared loot
+set. Special corpses (bosses/champions/named, `isSpecialKill`): only players who hit it
+(`e._hitByMe`); boss gold showers stay on the ground. Harvest: 2.2 s, needs a knife (merchant,
+`player.hasKnife`, saved) or a bladed weapon in hand; species with a pelt no longer drop loose
+hide. Raw meat cooks at a campfire (craft menu); cooked meat is the `eat` action (36 HP / 12 s).
+- **Server mobs share their corpses:** server/bravo-room.js owns them (`makeCorpse`,
+  `corpse_fill` killer-only once, `corpse_take` first-come within 3 tiles, `corpse_harvest`
+  claimed once, `corpse_new` for joiners). `mob_dead` carries the server x/y. Verified with two
+  players against the local dev server. **Needs a server deploy.**
+- Fixed on the way: bandits dropped stone; server DROP_TYPES lacked mithril/runic/abyssal (they
+  could not be traded between players).
+- Distant characters animate at 10 Hz (`farMixerStep`) instead of freezing mid-stride.
+- `_dev.kill(type)`, `_dev.hit(e, dmg)`, `_dev.corpses`. Tests: `tools/test/corpses.mjs`.
+
 **Dev tooling.** `_dev.frames(n)` runs update+render synchronously (a hidden tab throttles
 rAF, so console teleports never reached the canvas). `tools/devserver.mjs` accepts
 `POST /__shot?name=` with header `X-Bravo-Shot: 1` and writes `.shots/<name>.jpg`
