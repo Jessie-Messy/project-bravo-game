@@ -74,14 +74,76 @@ check('dungeon floor 1 intact', dungeonFloor > 300, 'only ' + dungeonFloor + ' C
 // ── Band separation ─────────────────────────────────────────────────
 let sep = 0, sepBad = 0;
 for (let y = TERRAIN_MAP_H; y < COAST_Y0; y++)
-  for (let x = 0; x < MAP_W; x++) { sep++; if (map[y][x] !== T.CAVE_WALL) sepBad++; }
+  for (let x = 0; x < MAP_W; x++) { sep++; if (!BLOCKING[map[y][x]]) sepBad++; }
 check('separator rows are solid', sepBad === 0, sepBad + ' of ' + sep + ' rows 554-559 are walkable');
 
 let outside = 0;
 for (let y = COAST_Y0; y < COAST_Y0 + COAST_H; y++)
-  for (let x = COAST_X0 + COAST_W; x < MAP_W; x++) if (map[y][x] !== T.CAVE_WALL) outside++;
+  for (let x = COAST_X0 + COAST_W; x < MAP_W; x++) if (!BLOCKING[map[y][x]]) outside++;
 check('coast band is sealed east of the region', outside === 0,
       outside + ' unauthored open tiles east of x' + (COAST_X0 + COAST_W));
+
+// ── The edge of the world is a wall ─────────────────────────────────
+// T.RIDGE rings every region. Checked twice: on the generated map, and again
+// with world_edits.json applied on top — edits land AFTER the ridge pass (on
+// the client and in build-world-data), so an edit that opened a floor tile on
+// the rim would be a hole in the world that only the edited map shows.
+{
+  let notRidge = 0;
+  for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++)
+    if (W.ridgeZone(x, y) && map[y][x] !== T.RIDGE) notRidge++;
+  check('every ridge-zone tile is RIDGE', notRidge === 0, notRidge + ' are not');
+
+  const fs = await import('node:fs');
+  const edited = map.map(r => r.slice());
+  try {
+    const we = JSON.parse(fs.readFileSync('world_edits.json', 'utf8'));
+    for (const [k, t] of Object.entries(we.map || {})) {
+      const [x, y] = k.split(',').map(Number);
+      if (edited[y] && typeof edited[y][x] === 'number') edited[y][x] = t;
+    }
+  } catch (_) {}
+  const open = (x, y) => !BLOCKING[edited[y][x]];
+  let holes = [];
+  for (let x = 0; x < MAP_W; x++) { if (open(x, 0)) holes.push(x + ',0'); }
+  for (let y = 0; y < DUNGEON_Y0; y++) { if (open(0, y)) holes.push('0,' + y); if (open(MAP_W - 1, y)) holes.push((MAP_W - 1) + ',' + y); }
+  for (let x = 0; x < MAP_W; x++) { if (open(x, DUNGEON_Y0 - 1)) holes.push(x + ',' + (DUNGEON_Y0 - 1)); }
+  for (let y = COAST_Y0; y < COAST_Y0 + COAST_H; y++) {
+    if (open(COAST_X0, y)) holes.push(COAST_X0 + ',' + y);
+    if (open(COAST_X0 + COAST_W - 1, y)) holes.push((COAST_X0 + COAST_W - 1) + ',' + y);
+  }
+  for (let x = COAST_X0; x < COAST_X0 + COAST_W; x++) if (open(x, MAP_H - 1)) holes.push(x + ',' + (MAP_H - 1));
+  check('the outermost ring is solid, edits applied', holes.length === 0, holes.length + ' open: ' + holes.slice(0, 8).join(' '));
+}
+// Nothing that lives in the world may start inside the rock, and every open
+// spawn must still find ground: makeEnemy searches out to radius 6 for its
+// tile type and quietly spawns NOTHING if it finds none.
+{
+  const inRidge = (x, y) => map[y] && map[y][x] === T.RIDGE;
+  const findWithin = (x, y, tiles, R) => {
+    for (let r = 0; r <= R; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      const t = map[y + dy] && map[y + dy][x + dx];
+      if (tiles.includes(t)) return true;
+    }
+    return false;
+  };
+  const lost = [];
+  for (const [x, y] of W.WOLF_SPAWNS)   if (!findWithin(x, y, [T.GRASS], 6)) lost.push('wolf ' + x + ',' + y);
+  for (const [x, y] of W.BANDIT_SPAWNS) if (!findWithin(x, y, [T.GRASS], 6)) lost.push('bandit ' + x + ',' + y);
+  check('every wolf and bandit spawn still finds grass', lost.length === 0, lost.join(' '));
+  // The SERVER spawns exactly on the tile, with no search — so the tile itself
+  // must be open ground, or online the mob starts inside a wall.
+  const onRock = [];
+  for (const [x, y] of [...W.WOLF_SPAWNS, ...W.BANDIT_SPAWNS]) if (map[y][x] !== T.GRASS) onRock.push(x + ',' + y + '=' + NAME[map[y][x]]);
+  check('every server spawn tile is grass', onRock.length === 0, onRock.join(' '));
+  const buried = [];
+  for (const [x, y] of Object.keys(W.COAST_PORTALS).map(k => k.split(',').map(Number))) if (inRidge(x, y)) buried.push('gate ' + x + ',' + y);
+  for (const n of W.COAST_NPCS) if (inRidge(n.x, n.y)) buried.push('npc ' + n.id);
+  for (const c of W.WORLD_CHESTS) if (inRidge(c.x, c.y)) buried.push('chest ' + c.x + ',' + c.y);
+  for (const b of W.COAST_BOSS_SPAWNS) if (inRidge(b.x, b.y)) buried.push('boss ' + b.boss);
+  for (const p of W.COAST_HOUSE_PLOTS) if (inRidge(p.x, p.y)) buried.push('plot ' + p.x + ',' + p.y);
+  check('nothing is placed inside the ridge', buried.length === 0, buried.join(' '));
+}
 
 // ── The coast has the mix it is supposed to have ────────────────────
 const coastCount = {};

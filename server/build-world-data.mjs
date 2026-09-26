@@ -28,7 +28,7 @@ const { map, HEALER, WORLD_HEALERS, customTileDefs } = await import(pathToUrl('j
 const { T, BLOCKING, MAP_W, MAP_H, CITY,
         COAST_Y0, NOTO_BAD_AT, NOTO_DECAY_MS, COMBAT_WINDOW_MS,
       } = await import(pathToUrl('js/constants.js'));
-const { WOLF_SPAWNS, BANDIT_SPAWNS, COAST_SAFE_ZONE } = await import(pathToUrl('js/world.js'));
+const { WOLF_SPAWNS, BANDIT_SPAWNS, COAST_SAFE_ZONE, PORTAL_ARRIVALS } = await import(pathToUrl('js/world.js'));
 
 function pathToUrl(p) { return 'file:///' + path.join(root, p).replace(/\\/g, '/'); }
 
@@ -61,6 +61,9 @@ const out = {
   walkB64: Buffer.from(bits).toString('base64'),
   wolfSpawns: WOLF_SPAWNS, banditSpawns: BANDIT_SPAWNS,
   portals,
+  // Landing points that are not beside a portal tile (dungeon floor 1's entry,
+  // the city square). The 'portal' teleport check accepts these too.
+  portalArrivals: PORTAL_ARRIVALS.map(p => [p.x, p.y]),
   healers: [[HEALER.x, HEALER.y]].concat(WORLD_HEALERS.map(h => [h.x, h.y])),
   city: CITY,
   // ── Region rules, copied straight out of js/constants.js ──

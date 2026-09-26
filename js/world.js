@@ -933,19 +933,24 @@ export const CAVE_MOBS = [
   [360,250,46,35,'spider',4],
   [420,390,40,38,'troll',4],
 ];
+// ⚠ The server spawns mobs EXACTLY on these tiles (server/mobs.js, no search),
+// so each must be open grass. Moved 2026-09-26: four stood in what is now the
+// edge ridge (x >= 475), and [410,120] sat inside a hand-built cave, where the
+// client never spawned it and the server spawned a wolf in the rock.
+// tools/test/world.mjs checks every one.
 export const WOLF_SPAWNS = [
-  [50,340],[410,120],[150,50],[360,430],[445,280],[70,220],
+  [50,340],[410,138],[150,50],[360,430],[445,280],[70,220],
   [120,150],[310,80],[185,430],[445,140],[80,390],[265,50],
   [425,305],[105,200],[355,155],[205,325],[455,70],[30,295],
   [170,260],[420,430],[55,90],[330,195],[245,445],[470,340],
-  [35,50],[475,60],[30,460],[475,460],[25,180],[478,185],
+  [35,50],[469,60],[30,460],[469,460],[25,180],[469,185],
   [140,100],[285,120],[395,65],[145,290],[390,200],[250,410],
   [70,340],[440,370],[200,20],[360,25],[110,465],[440,20],
 ];
 export const BANDIT_SPAWNS = [
   [120,90],[390,340],[285,40],[155,430],[410,205],[55,155],
   [255,355],[455,255],[105,445],[330,440],[460,110],[200,155],
-  [30,120],[475,400],[250,280],[400,460],[160,320],[350,30],
+  [30,120],[469,400],[250,280],[400,460],[160,320],[350,30],
 ];
 
 // Dungeon portal positions
@@ -953,3 +958,66 @@ export const DUNGEON_PORTAL_A   = { x: 190, y: 231 };
 export const DUNGEON_PORTAL_B   = { x:  81, y: 162 };
 export const DUNGEON_ENTRY_TILE = { x: DUNGEON_X0+14, y: DUNGEON_Y0+36 };
 export const DUNGEON_CITY_EXIT  = { x: DUNGEON_X0+38, y: DUNGEON_Y0+57 };
+// Where a gate can land you that is NOT beside another gate. The server only
+// accepts a 'portal' teleport that lands within 6 tiles of a portal tile, and
+// dungeon floor 1's entry point is 11 tiles from the nearest one — so online,
+// EVERY dungeon entry was refused and the server kept you frozen at the cave
+// mouth for everyone else. build-world-data ships this list to the server,
+// and usePortal() reads the same objects, so the two cannot disagree.
+export const CITY_ARRIVAL = { x: 305, y: 351 };
+export const PORTAL_ARRIVALS = [DUNGEON_ENTRY_TILE, CITY_ARRIVAL];
+
+// ── The edge of the world ─────────────────────────────────────────────────
+// Every region is ringed by a band of T.RIDGE, and the rock BETWEEN regions —
+// the separator rows, and the unused block east of the coast — is ridge too.
+// The height field lifts ridge tiles into mountains (game3d.js, "ridge relief"),
+// so the world no longer just stops: you walk uphill into a wall of rock that
+// carries on past the map edge as the backdrop range.
+//
+// Layout (constants.js):   overworld y 0-479 · separator 480-489 · dungeon
+// 490-553 · separator 554-559 · coast y 560-679, x 0-199.
+//
+// ⚠ Runs at generation, BEFORE world_edits.json is applied (client and
+// build-world-data both apply edits afterwards). That order is deliberate: the
+// designer's hand-built cave in the north-west corner reaches to x=2, and edits
+// winning over the band keeps it exactly as drawn — it is walled by its own
+// cave walls already.
+export const RIDGE_BAND = 5;          // overworld edge band, tiles
+export const COAST_RIDGE_BAND = 4;    // coast W / E / S edge band, tiles
+const OVERWORLD_H = DUNGEON_Y0 - 10;  // 480: the separator is the 10 rows above the dungeon
+export function ridgeZone(tx, ty) {
+  if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return false;
+  if (ty < DUNGEON_Y0) {
+    return tx < RIDGE_BAND || tx >= MAP_W - RIDGE_BAND || ty < RIDGE_BAND || ty >= OVERWORLD_H - RIDGE_BAND;
+  }
+  if (ty < DUNGEON_Y0 + DUNGEON_H) return false;          // the dungeon keeps its own walls
+  if (ty < COAST_Y0) return true;                          // separator above the coast
+  // The coast. Its NORTH side is the bay, closed by the separator above — no
+  // band there, or the ridge would fill the sea.
+  return tx < COAST_X0 + COAST_RIDGE_BAND || tx >= COAST_X0 + COAST_W - COAST_RIDGE_BAND
+      || ty >= COAST_Y0 + COAST_H - COAST_RIDGE_BAND;
+}
+(function raiseRidges(){
+  for (let ty = 0; ty < MAP_H; ty++) for (let tx = 0; tx < MAP_W; tx++) {
+    if (!ridgeZone(tx, ty)) continue;
+    map[ty][tx] = T.RIDGE; origTile[ty][tx] = T.RIDGE;
+    resourceHp[ty][tx] = 0; respawnAt[ty][tx] = null;
+  }
+})();
+
+// ── Which colour is this portal? ──────────────────────────────────────────
+// RED leads somewhere dangerous — the open-PvP coast or down into the dungeon.
+// BLUE leads somewhere safe — a city, the PvM mainland, back above ground.
+// Coloured by DESTINATION, because the colour is a promise about what is on the
+// other side: you should never walk through blue and arrive where you can be
+// killed by another player.
+//
+// ⚠ The only copy of this rule. The renderer, the minimap and the tests all ask
+// here; a second inline guess somewhere else is how a gate ends up lying.
+export function portalKind(tx, ty) {
+  const gate = COAST_PORTALS[tx + ',' + ty];
+  if (gate) return gate.to === 'coast' ? 'red' : 'blue';
+  if (ty < DUNGEON_Y0) return 'red';                    // an overworld cave mouth: down
+  if (DUNGEON_STAIRS[tx + ',' + ty]) return 'red';      // floor to floor: still underground
+  return 'blue';                                        // floor 1's exits: back to daylight
+}

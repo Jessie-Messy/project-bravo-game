@@ -36,6 +36,10 @@ export const T = {
   //          so the bridge deck+rail builder does not try to rail a pier)
   // CLIFF    rock face, blocking, and NOT full-cover — see _isFullCover
   SAND:13, SHALLOWS:14, DOCK:15, CLIFF:16,
+  // RIDGE    the edge of the world: the mountain band round every region and the
+  //          rock between them. Blocking, and drawn ONLY by the height field —
+  //          no obstacle mesh — so the wall is the land rising, not a fence.
+  RIDGE:17,
 };
 // ⚠ Indexed by tile id. Add a tile above, add it here, or it silently reads
 // `undefined` and behaves as walkable.
@@ -44,6 +48,7 @@ export const BLOCKING = {
   [5]:true,[6]:false,[7]:false,[8]:true,[9]:false,
   [10]:false,[11]:true,[12]:true,
   [13]:false,[14]:false,[15]:false,[16]:true,
+  [17]:true,
 };
 export const CITY = { x1:280, y1:332, x2:340, y2:392 };  // Lunar
 

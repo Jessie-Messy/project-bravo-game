@@ -11,7 +11,7 @@
 // A different port used to be the workaround, because a different origin gets a clean
 // cache. That only works once per port. This just refuses to be cached at all.
 import { createServer } from 'node:http';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize, sep } from 'node:path';
 
 const ROOT = process.cwd();
@@ -35,7 +35,35 @@ const TYPES = {
   '.woff2':'font/woff2',
 };
 
+// POST /__shot?name=foo  (body: a PNG data URL) writes .shots/foo.png.
+// Screenshots taken inside the browser pane only exist as images in the
+// conversation; this puts them on disk so a critic can A/B them later.
+// Loopback-only, name sanitised, and .shots/ is gitignored and never deployed.
+// ⚠ Loopback is not enough on its own: any web page open in the same browser
+// can POST to localhost, and a text/plain body needs no CORS preflight. The
+// custom header forces one (which this server never answers), so only a
+// same-origin page — the game itself — can write here. Body capped at 16 MB.
+const SHOT_MAX = 16 * 1024 * 1024;
+async function saveShot(req, res) {
+  const ra = req.socket.remoteAddress || '';
+  if (!/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(ra)) { res.writeHead(403).end('loopback only'); return; }
+  if (req.headers['x-bravo-shot'] !== '1') { res.writeHead(403).end('missing X-Bravo-Shot'); return; }
+  const name = (new URL(req.url, 'http://x').searchParams.get('name') || 'shot').replace(/[^a-z0-9_-]/gi, '_').slice(0, 64);
+  const chunks = []; let size = 0;
+  for await (const c of req) { size += c.length; if (size > SHOT_MAX) { res.writeHead(413).end('too large'); return; } chunks.push(c); }
+  const m = Buffer.concat(chunks).toString('utf8').match(/^data:image\/(png|jpeg);base64,(.+)$/s);
+  if (!m) { res.writeHead(400).end('expected a data URL'); return; }
+  await mkdir(join(ROOT, '.shots'), { recursive: true });
+  const file = join(ROOT, '.shots', name + (m[1] === 'png' ? '.png' : '.jpg'));
+  await writeFile(file, Buffer.from(m[2], 'base64'));
+  res.writeHead(200, { 'Content-Type': 'text/plain' }).end(file);
+}
+
 createServer(async (req, res) => {
+  if (req.method === 'POST' && (req.url || '').startsWith('/__shot')) {
+    try { await saveShot(req, res); } catch (e) { res.writeHead(500).end(String(e)); }
+    return;
+  }
   try {
     const url = decodeURIComponent((req.url || '/').split('?')[0]);
     // Contain the path inside ROOT: normalize resolves any ../ before it is joined.

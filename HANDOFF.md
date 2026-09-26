@@ -23,6 +23,61 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-26 — v0.20 (in progress): rune gates, the edge of the world, aerial perspective
+
+**Working list: `CHECKLIST.md` at the repo root.** After a compaction, resume from its first
+unchecked box. Critic findings go there as `[critic]` items.
+
+**Rune gates (red = PvP / dungeon, blue = safe).** Every T.TELEPORT tile is now a standing
+stone arch you walk THROUGH. The model is built by headless Blender (`tools/blender/portal.py`
+→ `models_src/portal_gate.glb` → `npm run assets`), classed as `structure` in budgets.json,
+~3.9k tris, ~20 KB baked. One neutral mesh serves both colours: the runtime swaps materials by
+node name (Stone / Runes / Surface / Shards). The membrane is a vortex ShaderMaterial, one per
+kind, whose rim is computed from `PORTAL_GEOM` — **which mirrors the constants in portal.py;
+`tools/test/portals.mjs` fails if they drift.** Colour is decided ONLY by `portalKind()` in
+world.js, by destination. Travel triggers on crossing the membrane plane inside the opening
+(`portalCrossed`), and you come out of the far gate's matching face (`arriveNear` / `gateExit`).
+Pillars are client-only point colliders (`pointColliders`, enemies.js) with an escape rule.
+- ⚠ Bake gotchas, both hit: gltf-transform `prune()` strips UVs no texture references (the
+  vortex reads object-space position instead), and Blender exports an all-white COLOR_0
+  unless the colour attribute is made ACTIVE (portal.py does this).
+- **Live bugs fixed on the way (need a SERVER deploy to take effect online):**
+  1. The Saltmere gate called `netTp(x, y, 'portal')`; `netTp` takes only a reason, so the
+     server got a number and refused every coast-gate teleport.
+  2. Dungeon floor 1's entry point is 11 tiles from any portal and the server only accepts
+     'portal' landings within 6 — **every dungeon entry was refused online**, and the server
+     kept showing you at the cave mouth. world-data.json now carries `portalArrivals`
+     (`PORTAL_ARRIVALS` in world.js) and bravo-room.js accepts them.
+  3. Client portal cooldown (1.2 s) was shorter than the server's TP_COOLDOWN (2.5 s); now 2.6.
+
+**The edge of the world.** New blocking tile `T.RIDGE` (17), placed by `ridgeZone()` in
+world.js: a 5-tile band round the overworld, both separators, the dead block east of the
+coast, and a 4-tile W/E/S band on the coast. It runs at generation, BEFORE world_edits.json,
+so the designer's walled cave in the NW corner survives as drawn. It has no obstacle mesh:
+`ridgeLift` (game3d.js) raises it with a chamfer distance field into a crest, deep blocks
+become ranges, and 12-tile foothills lead up to it (`footFlat` keeps rivers, the city, the
+dungeon, the coast's shore/village/plots level). `skirtMesh` — one draw — carries the land 72
+tiles past every edge from the same height field, sunk under the terrain meshes where they
+overlap so the seam cannot crack. `farRange` is a camera-following ring of peaks at 11.4 km.
+- ⚠ **`blockedAt` (enemies.js) now reads `BLOCKING`.** It used to hand-list four tiles, so
+  CLIFF, ORE_IRON and STAINED_GLASS were walkable on the client while solid on the server.
+- Four wolf/bandit spawns stood in the new band and one ([410,120]) inside a cave; the server
+  spawns exactly on the tile, so they were moved to grass and world.mjs now checks every one.
+- A save inside newly-solid ground steps out to open ground on load (`findClearSpawn`).
+
+**Aerial perspective.** `THREE.ShaderChunk.fog_fragment` is overridden once near the top of
+game3d.js: every fogged material gets a capped exponential haze on top of the range fog, so
+distance reads everywhere and the mountains stay silhouettes. Per material: `NO_RANGE_FOG`
+(skirt, range) and `HAZE_CAP`. Range fog now 0.55–1.5 × camFar (it started at 1.05×, i.e.
+never visible).
+
+**Dev tooling.** `_dev.frames(n)` runs update+render synchronously (a hidden tab throttles
+rAF, so console teleports never reached the canvas). `tools/devserver.mjs` accepts
+`POST /__shot?name=` with header `X-Bravo-Shot: 1` and writes `.shots/<name>.jpg`
+(gitignored, loopback-only) so screenshots can be critiqued from disk.
+
+---
+
 ### 2026-09-20 — DEPLOYED v0.19.0 to production
 
 Live at `orionsyndicateguild.org/games/medieval/`. First deploy since v0.12.5 (2026-09-11),

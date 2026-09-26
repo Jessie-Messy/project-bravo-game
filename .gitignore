@@ -24,3 +24,6 @@ deploy_server_to_vps.bat
 # 2026-09-19 history scrub removed it; it is a useful read-only diagnostic, so it
 # lives on disk rather than being lost.
 tools/vps_audit.sh
+
+# Dev-server screenshot drop (tools/devserver.mjs POST /__shot). Local only.
+.shots/

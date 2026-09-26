@@ -228,7 +228,11 @@ class BravoRoom extends Room {
       const nearTile = (tx, ty, r) => Math.hypot(x - (tx * TILE + TILE / 2), y - (ty * TILE + TILE / 2)) < TILE * r;
       let ok = false;
       if (reason === 'portal' && world) {
-        ok = world.portals.some(([tx, ty]) => nearTile(tx, ty, 6)) || nearTile(305, 351, 6);
+        // A gate lands you beside the far gate, or on one of the fixed arrival
+        // points (world-data portalArrivals). Before that list existed the
+        // dungeon entry — 11 tiles from any portal — was refused every time.
+        ok = world.portals.some(([tx, ty]) => nearTile(tx, ty, 6))
+          || (world.portalArrivals || [[305, 351]]).some(([tx, ty]) => nearTile(tx, ty, 6));
       } else if (reason === 'unstuck') {
         // rescue to the city square; 5-min cooldown enforced here too
         if (now - (mt.lastUnstuckAt || 0) < 300000) { console.warn(`[bravo] unstuck refused (cooldown) ${p.name}`); return; }

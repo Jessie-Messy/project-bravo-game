@@ -41,9 +41,9 @@ import { CHAMP_ALTARS, DUNGEON_PORTAL_A, DUNGEON_PORTAL_B,
   DUNGEON_FLOORS, DUNGEON_STAIRS, DUNGEON_BOSS_SPAWNS, WORLD_CHESTS, floorAt,
   COAST_PORTALS, CITY_COAST_GATE,
   COAST_VILLAGE, COAST_HOUSE_PLOTS, COAST_DOCK_TILES, FERRY_MAINLAND,
-  COAST_NPCS, COAST_SAFE_ZONE, COAST_BOSS_SPAWNS } from './world.js';
+  COAST_NPCS, COAST_SAFE_ZONE, COAST_BOSS_SPAWNS, portalKind, CITY_ARRIVAL } from './world.js';
 import { updateEnemy, champSpawnTick, damageEnemy, damagePlayer,
-  spawnRandomEnemy, boxBlocked, populateWorld, populateDungeon, hooks,
+  spawnRandomEnemy, boxBlocked, pointColliders, populateWorld, populateDungeon, hooks,
   makeEnemy, ENEMY_CFG, extraBlocking, spawnDrops, BOSS_ABILITIES,
   bossForceCast, bossResolveNow, bossPickForTest, WADE,
 } from './enemies.js';
@@ -216,6 +216,38 @@ renderer.toneMappingExposure = 0.85;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a2a14);
 scene.fog = new THREE.Fog(0x1a2a14, 4000, 9000);
+
+// ── Aerial perspective ────────────────────────────────────────────
+// Linear range fog alone did two bad things. Tuned to hide the render-distance
+// edge, it started past everything on screen, so distant land stayed fully
+// saturated right up to a razor edge against the sky. And anything that
+// SHOULD be seen far off — the mountains — sat past its far end and turned
+// into pure fog colour, indistinguishable from cloud.
+//
+// So every fogged material also gets a capped exponential haze: land lightens
+// and cools with distance the way it does outdoors, but never past 52%, so a
+// far ridge is always still a silhouette. Done once, here, in the shared chunk,
+// so terrain, trees, grass, buildings and the mountain skirt all haze by the
+// same rule and can't disagree at a seam. A material that must not get the
+// range fog (the skirt, which lives past it) defines NO_RANGE_FOG; one that
+// needs a different ceiling on the haze defines HAZE_CAP.
+THREE.ShaderChunk.fog_fragment = `
+#ifdef USE_FOG
+  #ifdef FOG_EXP2
+    float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+  #else
+    float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+  #endif
+  #ifdef NO_RANGE_FOG
+    fogFactor = 0.0;
+  #endif
+  #ifndef HAZE_CAP
+    #define HAZE_CAP 0.52
+  #endif
+  fogFactor = max( fogFactor, min( HAZE_CAP, 1.0 - exp( - vFogDepth / 13000.0 ) ) );
+  gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
+#endif
+`;
 
 // ── PBR environment ───────────────────────────────────────────────
 // Every MeshStandardMaterial in the game (props, armour, weapons, chests)
@@ -766,6 +798,10 @@ const TILE_COLORS = {
   // from the drop-off and there was no visual cue for where you could walk.
   [T.SAND]:         [201,178,133], [T.SHALLOWS]: [86,128,146],
   [T.DOCK]:         [122,80,48],   [T.CLIFF]:    [124,116,104],
+  // Scree: a touch warmer and darker than CLIFF so the edge band reads as
+  // weathered mountainside; the terrain shader adds rock on the steep faces and
+  // snow on the heights over the top of it.
+  [T.RIDGE]:        [104,98,88],
 };
 
 // Custom tiles (world editor): ids >= 100. Register their ground color,
@@ -887,9 +923,10 @@ function _buildPalette(){
 // SAND/SHALLOWS/DOCK are ground; CLIFF is an obstacle and is deliberately not
 // here (and not in FULL_COVER either) — ground shows around its base exactly as
 // it does around a boulder.
+// RIDGE is ground too: it has no mesh, the rock IS the painted terrain.
 const GROUND_TILE = new Set([T.GRASS, T.PATH, T.WATER, T.BRIDGE, T.CAVE_FLOOR,
                              T.CAVE_ENTRANCE, T.TELEPORT,
-                             T.SAND, T.SHALLOWS, T.DOCK]);
+                             T.SAND, T.SHALLOWS, T.DOCK, T.RIDGE]);
 function _isGroundType(t){
   if(GROUND_TILE.has(t)) return true;
   const d = customTileDefs[t];
@@ -1231,10 +1268,101 @@ function riverDepth(tx, ty){
   const u = Math.min(1, dry / 2.5);
   return RIVER_MAX_DEPTH * (u*u*(3-2*u));
 }
+// ── Ridge relief: the edge of the world ─────────────────────────────
+// T.RIDGE tiles (world.js ridgeZone) are lifted into a mountain wall. Height
+// grows with distance INTO the rock — a chamfer distance field, so contours are
+// round rather than the squares a plain BFS gives — which makes the thin edge
+// bands rise steeply to a crest while the deep blocks (the separator above the
+// coast, the rock east of it) become rugged ranges with snow on top.
+//
+// Walkable tiles near the rock get a gentle foothill swell first, so you climb
+// INTO the wall rather than meeting a step. The foothills are multiplied by
+// terrainFlatAt, which keeps rivers, the city and the dungeon strip level —
+// the water plane and the buildings both depend on that.
+const RIDGE_H = 430;
+const _ridgeDist = (() => {
+  const W_ = MAP_W, H_ = MAP_H, N = W_ * H_, INF = 1e9, E = Math.SQRT2;
+  const isR = new Uint8Array(N);
+  for(let y = 0; y < H_; y++) for(let x = 0; x < W_; x++) if(map[y][x] === T.RIDGE) isR[y*W_ + x] = 1;
+  const chamfer = (zero) => {
+    const d = new Float32Array(N);
+    for(let i = 0; i < N; i++) d[i] = zero(i) ? 0 : INF;
+    for(let y = 0; y < H_; y++) for(let x = 0; x < W_; x++){
+      const i = y*W_ + x; let v = d[i]; if(v === 0) continue;
+      if(x > 0) v = Math.min(v, d[i-1] + 1);
+      if(y > 0){ v = Math.min(v, d[i-W_] + 1);
+        if(x > 0) v = Math.min(v, d[i-W_-1] + E);
+        if(x < W_-1) v = Math.min(v, d[i-W_+1] + E); }
+      d[i] = v;
+    }
+    for(let y = H_-1; y >= 0; y--) for(let x = W_-1; x >= 0; x--){
+      const i = y*W_ + x; let v = d[i]; if(v === 0) continue;
+      if(x < W_-1) v = Math.min(v, d[i+1] + 1);
+      if(y < H_-1){ v = Math.min(v, d[i+W_] + 1);
+        if(x < W_-1) v = Math.min(v, d[i+W_+1] + E);
+        if(x > 0) v = Math.min(v, d[i+W_-1] + E); }
+      d[i] = v;
+    }
+    return d;
+  };
+  // dIn: how deep into the rock (0 off it). dOut: how far from the rock (0 on it).
+  return { dIn: chamfer(i => !isR[i]), dOut: chamfer(i => isR[i] === 1) };
+})();
+// Value noise + a ridged variant for the crest line. Local and seeded so every
+// client derives the identical wall — like the rest of the height field.
+function _rh(x, y){ let h = (Math.imul(x|0, 374761393) ^ Math.imul(y|0, 668265263) ^ 0x5bd1e995) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; }
+function _rn(x, y){ const xi = Math.floor(x), yi = Math.floor(y); let fx = x - xi, fy = y - yi;
+  fx = fx*fx*(3-2*fx); fy = fy*fy*(3-2*fy);
+  const a = _rh(xi,yi), b = _rh(xi+1,yi), c = _rh(xi,yi+1), d = _rh(xi+1,yi+1);
+  return a + (b-a)*fx + (c-a)*fy + (a-b-c+d)*fx*fy; }
+function _rr(x, y){ const n = 1 - Math.abs(_rn(x, y)*2 - 1); return n*n; }
+const _sstep = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t*t*(3 - 2*t); };
+function ridgeLift(tx, ty){
+  const i = ty*MAP_W + tx;
+  if(map[ty][tx] === T.RIDGE){
+    const d = _ridgeDist.dIn[i];
+    // The crest height wanders along the range: saddles and peaks, not a kerb.
+    const hr = RIDGE_H * (0.70 + 0.60*_rn(tx/17 + 3.1, ty/17 + 7.7));
+    const deep = _sstep(3, 14, d);
+    // Shoulders and gullies at the scale the 2-tile mesh can still carry, so
+    // the band reads as rock rather than a smooth grey dune.
+    const crag = 70 * _rr(tx/3.6 + 11, ty/3.6 + 5) * Math.min(1, d/2);
+    return hr * (1 - Math.exp(-(d - 0.4) / 2.3)) + crag
+         + deep * (280*_rr(tx/7.5, ty/7.5) + 160*_rn(tx/23, ty/23));
+  }
+  const d = _ridgeDist.dOut[i];
+  if(d >= FOOT_R) return 0;
+  const k = 1 - d/FOOT_R;
+  return RIDGE_H * 0.30 * k*k * footFlat(tx, ty);
+}
+// Where foothills may rise. The mainland asks terrainFlatAt (rivers, city).
+// terrainFlatAt levels EVERYTHING from the dungeon strip south — right for the
+// dungeon, but it left the coast with no foothills at all, so its edge ridge
+// went up as a 400-unit wall over three tiles and read as a slab floating
+// over the beach. The coast gets its own rule: level near water, sand, docks,
+// the village and the house plots; free to swell elsewhere.
+const FOOT_R = 12;
+const _coastLevel = new Set([T.WATER, T.SHALLOWS, T.SAND, T.DOCK, T.WALL, T.PATH, T.TELEPORT]);
+function footFlat(tx, ty){
+  if(ty < DUNGEON_Y0 - 6) return terrainFlatAt(tx, ty);
+  if(ty < COAST_Y0) return 0;                               // dungeon strip + separator
+  const Z = COAST_SAFE_ZONE;
+  if(tx >= Z.x1 - 4 && tx <= Z.x2 + 4 && ty >= Z.y1 - 4 && ty <= Z.y2 + 4) return 0;
+  for(const pl of COAST_HOUSE_PLOTS)
+    if(tx >= pl.x - 3 && tx < pl.x + pl.size + 3 && ty >= pl.y - 3 && ty < pl.y + pl.size + 3) return 0;
+  let near = Infinity;
+  for(let oy = -3; oy <= 3; oy++){ const row = map[ty+oy]; if(!row) continue;
+    for(let ox = -3; ox <= 3; ox++) if(_coastLevel.has(row[tx+ox])){
+      const dd = Math.max(Math.abs(ox), Math.abs(oy)); if(dd < near) near = dd; } }
+  return near > 3 ? 1 : near / 3;
+}
+
 const terrain = createHeightField({
   TILE, MAP_W, MAP_H, amplitude: TERRAIN_AMP, seed: 0x8EAD10,
   flatAt: terrainFlatAt,
   bedAt: riverDepth,
+  liftAt: ridgeLift,
 });
 const heightAt = terrain.heightAt;
 
@@ -1297,6 +1425,190 @@ scene.add(terrMesh);
 // Built once and KEPT, rather than disposed on leaving. Re-baking 24 000 tiles
 // every trip to save 6 MB is the wrong trade — the bake is the expensive half,
 // not the memory.
+// ── Beyond the edge: the mountain skirt ─────────────────────────────
+// The terrain meshes stop at the map's edge (and never covered the rock between
+// the regions at all). This one mesh covers everything else out to OUT tiles
+// past the edge: the separator above the coast, the block east of it, and the
+// mountains that carry the edge ridge on up and away.
+//
+// Continuity is the whole trick. Inside the world it samples heightAt, the same
+// field the terrain meshes use; past the edge it starts from heightAt at the
+// nearest edge point and only ever ADDS height, so it meets the ridge crest
+// exactly and climbs from there. Where it overlaps a terrain mesh it sits a few
+// units BELOW it, so the seam can never open into a crack — and the coast is
+// covered too, sunk under its surface, so the region shows land rather than a
+// hole before its ground has been built.
+//
+// One draw call, no texture: colour is baked per vertex from height and slope
+// (forest low, rock, snow high), in the same linear rock tone the terrain
+// shader puts on its steep faces, so the two meet without a colour seam.
+const SKIRT_OUT = 72, SKIRT_STEP = 3;
+const skirtMesh = (() => {
+  const x0 = -SKIRT_OUT, x1 = MAP_W + SKIRT_OUT, y0 = -SKIRT_OUT, y1 = MAP_H + SKIRT_OUT;
+  const nx = Math.floor((x1 - x0) / SKIRT_STEP) + 1, ny = Math.floor((y1 - y0) / SKIRT_STEP) + 1;
+  const pos = new Float32Array(nx * ny * 3), col = new Float32Array(nx * ny * 3);
+  // The main terrain mesh covers [0,MAP_W] x [0,TERRAIN_MAP_H]; the coast's
+  // [COAST_X0, +COAST_W] x [COAST_Y0, +COAST_H]. Two tiles of overlap each.
+  // Inclusive: a skirt vertex exactly ON a terrain mesh's edge must sink too,
+  // or the two surfaces are coplanar along the seam and z-fight into a bright
+  // strip across the crest.
+  const inMain  = (X, Y) => X >= 0 && X <= MAP_W && Y >= 0 && Y <= TERRAIN_MAP_H;
+  const inCoast = (X, Y) => X >= COAST_X0 && X <= COAST_X0 + COAST_W && Y >= COAST_Y0 && Y <= COAST_Y0 + COAST_H;
+  // No skirt quad lies wholly inside a terrain mesh. Sunk ones there poked
+  // up through the finer mesh between its vertices as thin dark slivers.
+  const hole    = (X, Y) => inMain(X, Y) || inCoast(X, Y);
+  const heightOf = (X, Y) => {
+    const cx = Math.min(MAP_W - 0.5, Math.max(0.5, X)), cy = Math.min(MAP_H - 0.5, Math.max(0.5, Y));
+    const base = heightAt(cx * TILE, cy * TILE);
+    const de = Math.hypot(X - cx, Y - cy);
+    if(inMain(X, Y))  return base - 30;
+    if(inCoast(X, Y)) return base - 30;
+    if(de === 0) return base;
+    return base + 330 * (1 - Math.exp(-de / 6))
+         + _sstep(2, 26, de) * (560 * _rr(X/13, Y/13) + 320 * _rn(X/37 + 2, Y/37 + 9))
+         + _sstep(1, 10, de) * 150 * _rr(X/5 + 3, Y/5 + 1);
+  };
+  let k = 0;
+  for(let j = 0; j < ny; j++) for(let i = 0; i < nx; i++, k += 3){
+    const X = x0 + i * SKIRT_STEP, Y = y0 + j * SKIRT_STEP;
+    pos[k] = X * TILE; pos[k+1] = heightOf(X, Y); pos[k+2] = Y * TILE;
+  }
+  const idx = [];
+  for(let j = 0; j < ny - 1; j++) for(let i = 0; i < nx - 1; i++){
+    const X = x0 + i * SKIRT_STEP, Y = y0 + j * SKIRT_STEP;
+    // Skip a quad only when all four corners are well inside the main mesh.
+    if(hole(X, Y) && hole(X + SKIRT_STEP, Y + SKIRT_STEP) && inMain(X, Y) === inMain(X + SKIRT_STEP, Y + SKIRT_STEP)) continue;
+    const a = j*nx + i, b = a + 1, c = a + nx, d = c + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  // Colour from height + slope, after the normals exist.
+  const nrm = geo.attributes.normal.array;
+  // ROCK_NEAR is the terrain shader's own steep-face rock, so the skirt meets
+  // the ridge without a colour seam; farther out it darkens and cools toward
+  // ROCK_FAR, so the range has the value contrast to stand out from a pale sky
+  // once the haze has lightened it.
+  const FOREST = [0.06, 0.10, 0.05], ROCK_NEAR = [0.40, 0.365, 0.335], ROCK_FAR = [0.20, 0.20, 0.215],
+        SNOW = [0.74, 0.78, 0.84];
+  for(let v = 0, p = 0; v < nx * ny; v++, p += 3){
+    const X = pos[p] / TILE, Y = pos[p+2] / TILE, h = pos[p+1];
+    const up = nrm[p+1], n1 = _rn(X/9, Y/9), n2 = _rn(X/3 + 5, Y/3 + 1);
+    const tone = 0.78 + 0.3 * n1 + 0.12 * n2;
+    const cx = Math.min(MAP_W, Math.max(0, X)), cy = Math.min(MAP_H, Math.max(0, Y));
+    const far = _sstep(3, 18, Math.hypot(X - cx, Y - cy));
+    let r = (ROCK_NEAR[0] + (ROCK_FAR[0]-ROCK_NEAR[0])*far) * tone,
+        g = (ROCK_NEAR[1] + (ROCK_FAR[1]-ROCK_NEAR[1])*far) * tone,
+        b = (ROCK_NEAR[2] + (ROCK_FAR[2]-ROCK_NEAR[2])*far) * tone;
+    // Conifer cover on the gentler, lower slopes — below the tree line only.
+    const forest = _sstep(0.70, 0.88, up) * (1 - _sstep(520, 760, h + (n1 - 0.5) * 200));
+    r += (FOREST[0]*tone - r) * forest; g += (FOREST[1]*tone - g) * forest; b += (FOREST[2]*tone - b) * forest;
+    // Snow only on the true peaks, thinned where it is too steep to lie.
+    const snow = _sstep(1050, 1250, h + (n1 - 0.5) * 260) * _sstep(0.45, 0.7, up);
+    r += (SNOW[0] - r) * snow; g += (SNOW[1] - g) * snow; b += (SNOW[2] - b) * snow;
+    col[p] = r; col[p+1] = g; col[p+2] = b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.computeBoundingSphere();
+  // No RANGE fog: that is tuned for the playfield and reaches full strength a
+  // few thousand units out, exactly where these peaks stand, which rendered
+  // them as pure fog colour. They still get the shared aerial haze (see
+  // fog_fragment near the top of this file), so they lighten and cool with
+  // distance by the same rule as the terrain they continue.
+  const mat = new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0.96, metalness:0 });
+  mat.defines = { NO_RANGE_FOG: '' };
+  // The same world-space rock detail as the terrain's steep faces (strata by
+  // height, broken by noise), or the near slopes read as grey plastic next to
+  // the textured ridge they continue.
+  mat.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>
+        varying vec3 vSkW;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vSkW = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec3 vSkW;
+        float _sh(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+        float _sn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+          return mix(mix(_sh(i), _sh(i+vec2(1,0)), f.x), mix(_sh(i+vec2(0,1)), _sh(i+vec2(1,1)), f.x), f.y); }`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        {
+          float a = _sn(vSkW.xz / 90.0), b = _sn(vSkW.xz / 23.0 + 4.1);
+          float strata = 0.5 + 0.5 * sin(vSkW.y * 0.06 + a * 5.0 + b * 1.5);
+          diffuseColor.rgb *= (0.80 + 0.26 * a + 0.10 * b) * (0.88 + 0.16 * strata);
+        }`);
+  };
+  const m = new THREE.Mesh(geo, mat);
+  m.receiveShadow = true;
+  scene.add(m);
+  return m;
+})();
+
+// ── The far range ───────────────────────────────────────────────────
+// A ring of peaks that follows the camera, just inside the far plane. The skirt
+// is real land and stops a few kilometres past the edge; from the middle of a
+// 23-km map its crest is a low line on the horizon. This stands behind it —
+// taller, bluer, hazier — the way a skybox would, but as silhouettes you can
+// read. Following the camera means it never gets closer: it is scenery, not
+// somewhere to walk to, and at 11 km the lack of parallax can't be seen.
+//
+// One draw call. Unlit vertex colour (lit it would have to agree with the sun
+// from 11 km away, which nobody can check), dimmed with the day cycle so it
+// does not glow at midnight, and hazed by the shared aerial-perspective rule.
+const FAR_RANGE_R = 11400;
+const farRange = (() => {
+  const N = 360, pos = [], col = [], idx = [];
+  // Noise sampled ON a circle, so the skyline closes on itself with no seam
+  // where the angle wraps. Two ridged octaves plus a slow swell: massifs and
+  // saddles rather than evenly spaced teeth.
+  const peakAt = (th) => {
+    const cs = Math.cos(th), sn = Math.sin(th);
+    const a = _rr(cs * 1.8 + 3, sn * 1.8 + 7), b = _rr(cs * 4.6 + 1, sn * 4.6 + 2), c = _rn(cs * 0.7 + 9, sn * 0.7);
+    return 220 + 1150 * a * (0.5 + 0.5 * c) + 320 * b;
+  };
+  for(let i = 0; i <= N; i++){
+    const u = i / N, th = u * Math.PI * 2;
+    const x = Math.cos(th) * FAR_RANGE_R, z = Math.sin(th) * FAR_RANGE_R;
+    const h = peakAt(th);
+    // Three rows: buried base, the snow line, the crest.
+    // Snow blends in with height rather than switching on at a threshold — a
+    // hard switch capped a whole stretch of skyline in one flat pale band.
+    const sn = _sstep(950, 1400, h);
+    const crest = [0.21 + 0.36*sn, 0.22 + 0.39*sn, 0.25 + 0.42*sn];
+    for(const [y, c] of [[-900, [0.10, 0.11, 0.13]], [h * 0.62, [0.16, 0.17, 0.20]], [h, crest]]){
+      pos.push(x, y, z);
+      // Facets: a per-column tone so the silhouette reads as faces catching
+      // light at different angles, not one flat cut-out.
+      const f = 0.82 + 0.34 * _rn(Math.cos(th) * 14, Math.sin(th) * 14 + 3.3);
+      col.push(c[0] * f, c[1] * f, c[2] * f);
+    }
+  }
+  for(let i = 0; i < N; i++){
+    const a = i * 3, b = a + 3;
+    idx.push(a, b, a + 1,  b, b + 1, a + 1,  a + 1, b + 1, a + 2,  b + 1, b + 2, a + 2);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.setIndex(idx);
+  const mat = new THREE.MeshBasicMaterial({ vertexColors:true, side:THREE.DoubleSide });
+  // A lower haze ceiling than the land: at the full 52% this range all but
+  // vanished into a pale noon sky, and it only exists to be seen.
+  mat.defines = { NO_RANGE_FOG: '', HAZE_CAP: '0.34' };
+  const m = new THREE.Mesh(geo, mat);
+  m.frustumCulled = false;          // it moves with the camera
+  m.renderOrder = -1;               // behind everything it overlaps anyway; draw it early
+  scene.add(m);
+  return m;
+})();
+function updateFarRange(){
+  farRange.position.set(camera.position.x, 0, camera.position.z);
+  farRange.material.color.setScalar(0.18 + 0.82 * _envDayF);
+}
+
 let coastSurface = null;
 function ensureCoastSurface(){
   if(coastSurface) return coastSurface;
@@ -1322,6 +1634,9 @@ function ensureCoastSurface(){
   mesh.position.set(cx, 0, cz);
   terrain.displacePlane(mesh.geometry, cx, cz);
   mesh.receiveShadow = true;
+  // Same ground shader as the mainland — slope rock, height tint, snow — or the
+  // coast's edge ridge would be a grey-brown ramp with none of the rock on it.
+  mesh.material.onBeforeCompile = terrMesh.material.onBeforeCompile;
   coastSurface.mesh = mesh;
   scene.add(mesh);
   console.log('[world] Saltmere ground built: ' + cv.width + 'x' + cv.height +
@@ -1386,6 +1701,12 @@ const miniCtx = miniCanvas.getContext('2d');
     d[i]=c[0]; d[i+1]=c[1]; d[i+2]=c[2]; d[i+3]=255;
   }
   miniCtx.putImageData(img,0,0);
+  // Gates in their kind colour, and a 3x3 dot so a single pixel on a 480px map
+  // is findable at all. Red = danger on the other side, blue = safe.
+  for (let y=0;y<MAP_H;y++) for (let x=0;x<MAP_W;x++) if (map[y][x]===T.TELEPORT){
+    miniCtx.fillStyle = portalKind(x,y)==='red' ? '#ff3a22' : '#3aa0ff';
+    miniCtx.fillRect(x-1, y-1, 3, 3);
+  }
 })();
 function updateMiniPx(tx, ty){
   const c = TILE_COLORS[map[ty][tx]] || [0,0,0];
@@ -1718,6 +2039,9 @@ const _grassCfg = () => Object.assign({}, GRASS_CFG[getTier()] || GRASS_CFG.medi
 // beneath a tree is still grass, and a boundary should bend through obstacles
 // rather than stop at them.
 function _grassClassAt(tx, ty){
+  // Off the map is no grass. Without this a tx past the edge indexes the
+  // NEXT row, and blades grew out over the void beyond the world.
+  if(tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return 0;
   if(!_grassClassMap){
     _grassClassMap = new Int8Array(MAP_W*MAP_H);
     for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++)
@@ -1743,9 +2067,8 @@ function _grassTileClass(tx, ty){
 // painter would use is what keeps the two edges on top of each other.
 function _bladeOnGrass(gx, gz){
   const fx = gx/TILE, fy = gz/TILE;
-  let tx = fx|0, ty = fy|0;
-  if(tx<0) tx=0; else if(tx>=MAP_W) tx=MAP_W-1;
-  if(ty<0) ty=0; else if(ty>=MAP_H) ty=MAP_H-1;
+  if(fx < 0 || fy < 0 || fx >= MAP_W || fy >= MAP_H) return false;   // never past the edge
+  const tx = fx|0, ty = fy|0;
   const g0 = groundUnder[ty*MAP_W+tx];
   return _warpedTileAt(fx, fy, (fx*TERR_PX)|0, (fy*TERR_PX)|0, g0) === T.GRASS;
 }
@@ -2049,16 +2372,19 @@ terrMesh.material.onBeforeCompile = (shader) => {
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', `#include <common>
       varying vec3 vWNrm;
-      varying float vWY;`)
+      varying float vWY;
+      varying vec2 vWXZ;`)
     .replace('#include <begin_vertex>', `#include <begin_vertex>
       vWNrm = normalize(mat3(modelMatrix) * normal);
-      vWY   = (modelMatrix * vec4(transformed, 1.0)).y;`);
+      vWY   = (modelMatrix * vec4(transformed, 1.0)).y;
+      vWXZ  = (modelMatrix * vec4(transformed, 1.0)).xz;`);
   shader.fragmentShader = shader.fragmentShader
     .replace('#include <common>', `#include <common>
       uniform float uMacroAmt;
       uniform float uSlopeAmt;
       varying vec3 vWNrm;
       varying float vWY;
+      varying vec2 vWXZ;
       float _th(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
       float _vn(vec2 p){
         vec2 i = floor(p), f = fract(p);
@@ -2089,13 +2415,28 @@ terrMesh.material.onBeforeCompile = (shader) => {
         // Break the boundary with the same noise field, or the rock arrives on
         // a clean contour line that reads as a printed band.
         rockF = clamp(rockF * (0.72 + m * 0.75), 0.0, 1.0);
-        vec3 rockCol = vec3(0.40, 0.365, 0.335) * (0.80 + m * 0.42);
+        // Rock detail in WORLD space. The ground texture is one pixel per tile,
+        // far too coarse to carry stone, so a steep face was one flat grey.
+        // Strata follow height (bedding planes), broken by noise; the crevice
+        // term darkens the low spots of a finer field.
+        float rn1 = _vn(vWXZ / 70.0), rn2 = _vn(vWXZ / 19.0 + 7.3);
+        float strata = 0.5 + 0.5 * sin(vWY * 0.085 + rn1 * 5.0 + rn2 * 1.5);
+        float crev = smoothstep(0.22, 0.04, _vn(vWXZ / 41.0 + 3.1)) * 0.6;
+        vec3 rockCol = vec3(0.40, 0.365, 0.335) * (0.72 + m * 0.30 + rn1 * 0.22)
+                     * (0.86 + strata * 0.20) * (1.0 - crev * 0.35);
         diffuseColor.rgb = mix(diffuseColor.rgb, rockCol, rockF * 0.82);
 
         // Height tint: hollows stay lush and damp, tops dry out and pale off.
         // Subtle on purpose — this is a depth cue, not a biome.
         float alt = clamp(vWY / ${TERRAIN_AMP.toFixed(1)}, 0.0, 1.0);
         diffuseColor.rgb *= mix(vec3(0.94, 1.00, 0.92), vec3(1.06, 1.02, 0.90), alt);
+
+        // Snow on the ridge heights only — nothing walkable reaches this far up
+        // (the ordinary relief tops out at ${TERRAIN_AMP}). A cool off-white,
+        // never pure white, so it doesn't compete with the clouds; thinned on
+        // steep faces where snow can't lie; the noise breaks the snow line.
+        float snowF = smoothstep(430.0, 560.0, vWY + (m - 0.5) * 140.0) * (1.0 - rockF * 0.55);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.84, 0.87, 0.92), snowF * 0.92);
       }`);
 };
 // Wooden planks for bridge decks
@@ -5160,7 +5501,16 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     });
   },
   perf:()=>JSON.stringify(_perf.report()),
+  // Run n frames synchronously. A browser throttles rAF in a hidden tab, so a
+  // teleport or clock change made from the console never reaches the canvas and
+  // the capture shows the previous place. This draws them now.
+  frames(n=3, dt=1/60){
+    for(let i=0;i<n;i++){ update(dt); render3D(performance.now()/1000); }
+    return this.shot();
+  },
   get scene(){ return scene; }, get sky(){ return sky; }, get camera(){ return camera; },
+  // Every gate: tile, kind, walk axis. _dev.portals.map(p=>[p.tx,p.ty,p.kind,p.axis])
+  get portals(){ return portals; },
   // Live sky exposure. Forces a PMREM re-bake, so the env map and the visible
   // dome never disagree while you're tuning.
   skyGain:(v)=>sky.setGain(v),
@@ -6539,52 +6889,347 @@ function animateArches(t) {
   }
 }
 
-// ── Animated teleport portals ("sparklies") ───────────────────────
-// One glowing swirl + orbiting sparkle motes per T.TELEPORT tile.
-const portals = [];
-const _sparkGeo = new THREE.SphereGeometry(2.6, 6, 5);
-function makePortal(cx, cz) {
-  const g = new THREE.Group(); g.position.set(cx, heightAt(cx,cz), cz);
-  const discGeo = new THREE.CircleGeometry(TILE*0.5, 22); discGeo.rotateX(-Math.PI/2);
-  const disc = new THREE.Mesh(discGeo, new THREE.MeshBasicMaterial({
-    color:0xb060ff, transparent:true, opacity:0.5, blending:THREE.AdditiveBlending,
-    depthWrite:false, side:THREE.DoubleSide }));
-  disc.position.y = 3;
-  const colGeo = new THREE.CylinderGeometry(TILE*0.26, TILE*0.4, TILE*2.4, 14, 1, true);
-  const col = new THREE.Mesh(colGeo, new THREE.MeshBasicMaterial({
-    color:0x9040ff, transparent:true, opacity:0.22, blending:THREE.AdditiveBlending,
-    depthWrite:false, side:THREE.DoubleSide }));
-  col.position.y = TILE*1.2;
-  const sparks = new THREE.Group();
-  for (let i=0;i<9;i++) {
-    const s = new THREE.Mesh(_sparkGeo, new THREE.MeshBasicMaterial({
-      color:0xe0b0ff, transparent:true, blending:THREE.AdditiveBlending, depthWrite:false }));
-    s.userData.phase = i/9 * Math.PI*2;
-    sparks.add(s);
-  }
-  g.add(disc, col, sparks);
-  g.userData = { disc, col, sparks };
-  scene.add(g); portals.push(g); return g;
+// ── Rune gates ────────────────────────────────────────────────────
+// Every T.TELEPORT tile gets a standing stone arch you WALK THROUGH
+// (models/portal_gate.glb, built by tools/blender/portal.py). The membrane is a
+// vortex shader, the runes and shards glow in the gate's kind colour:
+//   RED  — the other side is dangerous: the open-PvP coast, or the dungeon
+//   BLUE — the other side is safe: a city, the PvM mainland, daylight
+// The colour is decided by portalKind() in world.js and nowhere else.
+//
+// ⚠ GATE GEOMETRY IS SHARED WITH THE BLENDER SCRIPT. PORTAL_GEOM mirrors the
+// constants at the top of tools/blender/portal.py (in tiles). Change one, change
+// both — the vortex's rim glow and the pillar colliders are computed from these
+// numbers, not measured from the mesh.
+const PORTAL_GEOM = { A:0.75, HS:2.30, R:1.5, PW:0.50 };
+PORTAL_GEOM.APEX = PORTAL_GEOM.HS + Math.sqrt(PORTAL_GEOM.R**2 - PORTAL_GEOM.A**2);
+const PORTAL_COLS = {
+  red:  { core:0xff4a1c, rim:0xffc27a, deep:0x4a0600, rune:0xff3a14, label:'⚔ danger beyond' },
+  blue: { core:0x2e8cff, rim:0xa8ecff, deep:0x03124a, rune:0x3aa8ff, label:'⛨ safe lands' },
+};
+const portals = [];          // { tx, ty, kind, x, z, ax, az, g }
+
+// Which way do you walk through it? Along whichever axis is more open, so the
+// pillars stand in the walls of a corridor rather than across it. A tie goes to
+// north-south, the way every hand-placed gate in world.js is approached.
+function portalAxis(tx, ty){
+  const open = (x, y) => map[y] && map[y][x] !== undefined && !BLOCKING[map[y][x]];
+  const score = (dx, dy) => (open(tx-dx,ty-dy)+open(tx+dx,ty+dy))*2 + open(tx-2*dx,ty-2*dy)+open(tx+2*dx,ty+2*dy);
+  return score(1,0) > score(0,1) ? 'x' : 'z';
+}
+
+// The vortex. One material per KIND, shared by every gate of that kind, so the
+// whole map's gates cost two programs and one uniform write each per frame.
+function makeVortexMaterial(kind){
+  const c = PORTAL_COLS[kind], G_ = PORTAL_GEOM;
+  return new THREE.ShaderMaterial({
+    uniforms:{
+      uTime:{value:0}, uFlare:{value:0},
+      uCore:{value:new THREE.Color(c.core)}, uRim:{value:new THREE.Color(c.rim)}, uDeep:{value:new THREE.Color(c.deep)},
+      uA:{value:G_.A}, uHS:{value:G_.HS}, uR:{value:G_.R}, uH:{value:G_.APEX},
+    },
+    // ⚠ OBJECT-SPACE POSITION, NOT UV. The bake's prune() strips any UV set no
+    // texture references, so the membrane arrives with no uv at all. The mesh
+    // is authored in tiles with the opening centred on x=0, so its own position
+    // IS the coordinate the swirl and the rim need.
+    vertexShader:`varying vec2 vP; void main(){ vP=position.xy; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader:`
+      uniform float uTime, uFlare, uA, uHS, uR, uH;
+      uniform vec3 uCore, uRim, uDeep;
+      varying vec2 vP;
+      float hsh(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+      float nz(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+        return mix(mix(hsh(i),hsh(i+vec2(1,0)),f.x), mix(hsh(i+vec2(0,1)),hsh(i+vec2(1,1)),f.x), f.y); }
+      float fbm(vec2 p){ float s=0.0, a=0.5; for(int i=0;i<4;i++){ s+=a*nz(p); p*=2.03; a*=0.5; } return s; }
+      void main(){
+        // Tile units, so the rim can be measured against the real arch.
+        float px = vP.x, pz = vP.y;
+        float d = uA - abs(px);                                   // the straight jambs
+        if(pz > uHS) d = min(d, uR - length(vec2(abs(px) + uA, pz - uHS)));   // the pointed arcs
+        d = max(d, 0.0);
+        // Swirl about a centre a little below the middle, tighter toward the eye.
+        vec2 c = vec2(px, pz - uH*0.44);
+        float r = length(c);
+        float ang = atan(c.y, c.x + 1e-4);                        // atan(0,0) is undefined
+        float sw = ang + 1.6/(r + 0.35) - uTime*1.4;
+        vec2 q = vec2(cos(sw), sin(sw)) * (1.2 + r*2.2);
+        float f = fbm(q + vec2(uTime*0.21, -uTime*0.33));
+        float arms = 0.5 + 0.5*sin(sw*3.0 + f*5.0);
+        float streak = smoothstep(0.62, 0.9, f*arms*1.6);
+        vec3 col = mix(uDeep, uCore, arms*0.75 + f*0.35);
+        col += uCore * exp(-r*2.4) * (1.0 + uFlare*3.0);          // the bright eye
+        col += uRim  * streak * 1.4;                              // sparks riding the arms
+        col += uRim  * exp(-d*11.0) * (2.4 + uFlare*2.0);         // hot rim where it meets stone
+        float a = clamp(0.74 + 0.26*arms + streak, 0.0, 1.0) * smoothstep(0.0, 0.03, d);
+        gl_FragColor = vec4(col, a);
+        // A ShaderMaterial gets neither for free. Without them the low tier —
+        // which renders straight to the canvas with no OutputPass — wrote this
+        // in linear with no tone mapping: crushed deeps, a clipped white rim.
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+    transparent:true, depthWrite:false, side:THREE.DoubleSide, toneMapped:true,
+  });
+}
+const _vortexMat = { red:makeVortexMaterial('red'), blue:makeVortexMaterial('blue') };
+const _flareAt = {};   // kind -> render-clock second of the last walk-through
+const _runeMat = {}, _shardMat = {};
+for(const k of ['red','blue']){
+  _runeMat[k]  = new THREE.MeshStandardMaterial({color:0x221812, emissive:PORTAL_COLS[k].rune, emissiveIntensity:2.6, roughness:0.5});
+  _shardMat[k] = new THREE.MeshStandardMaterial({color:PORTAL_COLS[k].core, emissive:PORTAL_COLS[k].core, emissiveIntensity:1.8, roughness:0.2, metalness:0.1});
+}
+const _gateStoneMat = new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.9, metalness:0});
+// A soft pool of coloured light on the ground. A real PointLight per gate would
+// add a light to every lit material's shader for the whole map; this is one
+// additive disc and reads the same at game distance.
+const _poolTex = (()=>{
+  const c=document.createElement('canvas'); c.width=c.height=64;
+  const x=c.getContext('2d'), g=x.createRadialGradient(32,32,0,32,32,32);
+  g.addColorStop(0,'rgba(255,255,255,0.9)'); g.addColorStop(0.45,'rgba(255,255,255,0.35)'); g.addColorStop(1,'rgba(255,255,255,0)');
+  x.fillStyle=g; x.fillRect(0,0,64,64);
+  return new THREE.CanvasTexture(c);
+})();
+const _poolGeo = new THREE.PlaneGeometry(TILE*5.2, TILE*5.2).rotateX(-Math.PI/2);
+// Motes drifting up through the opening. Points, one draw per gate, positions
+// advanced on the CPU only while the gate is near enough to see.
+const MOTES = 22;
+function makeMotes(kind){
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(MOTES*3), seed = new Float32Array(MOTES);
+  for(let i=0;i<MOTES;i++) seed[i]=Math.random();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  geo.userData.seed = seed;
+  const m = new THREE.Points(geo, new THREE.PointsMaterial({
+    map:_poolTex, color:PORTAL_COLS[kind].rim, size:7, sizeAttenuation:true, transparent:true, opacity:0.9,
+    blending:THREE.AdditiveBlending, depthWrite:false }));
+  // Positions are rewritten every frame, so the computed bound would be stale:
+  // give it a fixed one that encloses the whole gate instead.
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, TILE*1.8, 0), TILE*2.6);
+  return m;
+}
+
+function makeGate(tx, ty){
+  const kind = portalKind(tx, ty);
+  const axis = portalAxis(tx, ty);
+  // The opening is 1.5 tiles wide, so it spills a quarter tile into each
+  // lateral neighbour. A cave wall there swallowed half the membrane (dungeon
+  // mouth B). Slide the gate half a tile away from a single blocked side; the
+  // buried pillar then reads as set into the rock. A corridor blocked on BOTH
+  // sides stays centred — there is nowhere better to go.
+  const lx = axis==='x' ? 0 : 1, ly = axis==='x' ? 1 : 0;       // lateral, map coords
+  const solid = (x, y) => !map[y] || map[y][x] === undefined || !!BLOCKING[map[y][x]];
+  const bL = solid(tx-lx, ty-ly), bR = solid(tx+lx, ty+ly);
+  const shift = bL && !bR ? 0.5 : bR && !bL ? -0.5 : 0;
+  const cx = tx*TILE+TILE/2 + shift*TILE*lx, cz = ty*TILE+TILE/2 + shift*TILE*ly;
+  const g = new THREE.Group();
+  g.position.set(cx, heightAt(cx,cz) - 1.5, cz);
+  // The GLB walks along its own Z; turn it when the corridor runs east-west.
+  g.rotation.y = axis === 'x' ? Math.PI/2 : 0;
+  const pool = new THREE.Mesh(_poolGeo, new THREE.MeshBasicMaterial({
+    map:_poolTex, color:PORTAL_COLS[kind].core, transparent:true, opacity:0.55,
+    blending:THREE.AdditiveBlending, depthWrite:false }));
+  pool.position.y = 2.5; pool.renderOrder = 1;
+  const motes = makeMotes(kind);
+  g.add(pool, motes);
+  scene.add(g);
+  const p = { tx, ty, kind, x:cx, z:cz, axis,
+              ax: axis==='x' ? 1 : 0, az: axis==='x' ? 0 : 1,    // walk-through direction, map coords
+              g, pool, motes, shards:null };
+  portals.push(p);
+  return p;
 }
 for (let ty=0;ty<MAP_H;ty++) for (let tx=0;tx<MAP_W;tx++)
-  if (map[ty][tx]===T.TELEPORT) makePortal(tx*TILE+TILE/2, ty*TILE+TILE/2);
+  if (map[ty][tx]===T.TELEPORT) makeGate(tx, ty);
 
-// Advance every portal's animation (called from render3D each frame)
-function animatePortals(t) {
-  for (const p of portals) {
-    const { disc, col, sparks } = p.userData;
-    const pulse = 0.5 + 0.35*Math.sin(t*3.2);
-    disc.material.opacity = 0.30 + pulse*0.45; disc.rotation.y = t*0.6;
-    col.material.opacity  = 0.12 + pulse*0.22; col.rotation.y  = -t*0.4;
-    sparks.rotation.y = t*1.6;
-    const kids = sparks.children;
-    for (let i=0;i<kids.length;i++) {
-      const s = kids[i], ph = s.userData.phase;
-      const r = TILE*0.34 + Math.sin(t*2 + ph)*4;
-      s.position.set(Math.cos(ph)*r, TILE*0.35 + (0.5+0.5*Math.sin(t*1.8+ph))*TILE, Math.sin(ph)*r);
-      s.material.opacity = 0.35 + 0.6*Math.abs(Math.sin(t*3 + ph));
+// The stone, runes, membrane and shards arrive when the GLB does. Until then
+// (or if it never loads) the pool and motes still mark every gate, and the
+// tile trigger below still works — nothing about travel waits on art.
+gltfLoader.load('models/portal_gate.glb', gltf => {
+  const parts = {};
+  gltf.scene.traverse(o => { if(o.isMesh) parts[o.name] = o; });
+  for(const p of portals){
+    const s = TILE;                         // authored in tiles
+    const add = (name, mat) => {
+      const src = parts[name]; if(!src) return null;
+      const m = new THREE.Mesh(src.geometry, mat);
+      m.scale.setScalar(s);
+      m.castShadow = name==='Stone'; m.receiveShadow = name==='Stone';
+      p.g.add(m); return m;
+    };
+    // Pillars collide only once they are drawn — an invisible post you walk
+    // into is worse than walking through a stone one that never loaded.
+    if(add('Stone', _gateStoneMat)){
+      const lat = (PORTAL_GEOM.A + PORTAL_GEOM.PW/2) * TILE;
+      for(const s2 of [-1,1]) pointColliders.push({ x: p.x + s2*lat*p.az, y: p.z + s2*lat*p.ax, r: TILE*0.32 });
     }
+    add('Runes', _runeMat[p.kind]);
+    const surf = add('Surface', _vortexMat[p.kind]);
+    if(surf){ surf.renderOrder = 2; surf.userData.fx = true; }
+    p.shards = add('Shards', _shardMat[p.kind]);
   }
+  refreshFxList();
+}, undefined, err => console.warn('[portal] gate GLB failed; gates fall back to pool + motes', err));
+
+// Per frame, from render3D. Shared-material uniforms are one write per kind;
+// motes and shards only move for gates close enough to see.
+function animatePortals(t) {
+  for(const k in _vortexMat){
+    const u = _vortexMat[k].uniforms;
+    // Wrapped: the sin-hash noise loses precision as its input grows, and a
+    // mediump mobile GPU gets there within a long session. One small hitch
+    // every ten minutes is the price.
+    u.uTime.value = t % 600;
+    u.uFlare.value = Math.max(0, 1 - (t - (_flareAt[k] ?? -9)) / 0.8);   // by time, not per frame
+  }
+  const lim = (TILE*45)**2;
+  for (const p of portals) {
+    const dx = p.x - player.x, dz = p.z - player.y;
+    if(dx*dx + dz*dz > lim) continue;
+    p.pool.material.opacity = 0.42 + 0.14*Math.sin(t*2.1 + p.tx);
+    if(p.shards){ p.shards.position.y = Math.sin(t*1.3 + p.ty)*5; p.shards.rotation.y = Math.sin(t*0.4)*0.25; }
+    const pos = p.motes.geometry.attributes.position, seed = p.motes.geometry.userData.seed;
+    const A = PORTAL_GEOM.A*TILE, H = PORTAL_GEOM.APEX*TILE;
+    for(let i=0;i<MOTES;i++){
+      const sd = seed[i], life = (t*0.22 + sd) % 1;
+      pos.array[i*3]   = (sd*2-1)*A*0.9 + Math.sin(t*1.7 + sd*20)*6;
+      pos.array[i*3+1] = life*H*1.05;
+      pos.array[i*3+2] = Math.sin(sd*40 + t)*10;
+    }
+    pos.needsUpdate = true;
+  }
+}
+
+// Where you come out of a gate: out along its walk axis, on the preferred side
+// if that side is standable, otherwise the other one. Arriving in the opening
+// would send you straight back once the cooldown lapsed; arriving beside it
+// would put you inside a pillar.
+function gateNear(tx, ty, r=2){
+  let best=null, bd=Infinity;
+  for(const p of portals){
+    const d = Math.max(Math.abs(p.tx-tx), Math.abs(p.ty-ty));
+    if(d <= r && d < bd){ bd=d; best=p; }
+  }
+  return best;
+}
+function gateExit(p, side){
+  const OUT = TILE*1.8;
+  for(const s of [side||1, -(side||1)]){
+    const x = p.x + p.ax*OUT*s, y = p.z + p.az*OUT*s;
+    if(!boxBlocked(x, y, player.r, true)) return {x, y};
+  }
+  return {x:p.x + p.ax*OUT*(side||1), y:p.z + p.az*OUT*(side||1)};
+}
+// Arrive at tile (tx,ty): at the exit of the gate standing there, if there is
+// one, otherwise on the tile itself. `side` picks which face you come out of.
+function arriveNear(tx, ty, side){
+  const p = gateNear(tx, ty);
+  const e = p ? gateExit(p, side) : {x:tx*TILE+TILE/2, y:ty*TILE+TILE/2};
+  player.x = e.x; player.y = e.y;
+}
+
+// Did this frame's step carry you through a gate's membrane? The plane runs
+// through the tile centre across the walk axis; crossing it inside the opening
+// is going through. A bare tile test fired half a tile BEFORE the membrane (and
+// missed the outer quarter of a 1.5-tile opening entirely), which reads as the
+// gate grabbing you rather than you stepping into it.
+//
+// Until the GLB has loaded there is no membrane to step into, so the old rule —
+// stand on the tile — stays in force; travel never waits on art.
+function portalCrossed(px0, py0){
+  const tx = Math.floor(player.x/TILE), ty = Math.floor(player.y/TILE);
+  const half = PORTAL_GEOM.A*TILE*0.92;
+  for(const p of portals){
+    const dx = player.x - p.x, dy = player.y - p.z;
+    if(dx*dx + dy*dy > (TILE*3)**2) continue;
+    const w  = dx*p.ax + dy*p.az,                     w0 = (px0-p.x)*p.ax + (py0-p.z)*p.az;
+    const u  = dx*p.az + dy*p.ax;
+    if(!p.shards){                                    // art not loaded: tile rule
+      if(tx===p.tx && ty===p.ty) return {p, side: w0<0 ? -1 : 1};
+      continue;
+    }
+    if(Math.abs(u) > half) continue;
+    // Anything under two tiles is movement THROUGH the membrane — that
+    // includes Shadowstep's 80-unit blink. Beyond that it was a teleport.
+    if(Math.abs(w - w0) > TILE*2) continue;
+    // Sign change only. `|| w === 0` also fired for someone merely STANDING in
+    // the plane once the cooldown ran out — e.g. dropped there by a fallback
+    // exit — and bounced them straight back through.
+    if((w0 < 0) !== (w < 0)) return {p, side: w0 < 0 ? -1 : 1};
+  }
+  return null;
+}
+
+// Go through gate p, having come from `side` (-1/+1 along its walk axis).
+// You come out of the far gate still moving the same way: out of its -side.
+// ⚠ Longer than the server's TP_COOLDOWN (2500 ms, bravo-room.js). You land
+// 1.8 tiles from the far gate — under half a second's walk — so a client
+// cooldown shorter than the server's let you turn round and re-cross inside a
+// window where the server silently drops the teleport and then rejects every
+// move as a speed hack.
+const PORTAL_COOLDOWN = 2.6;
+function usePortal(p, side){
+  const ptx = p.tx, pty = p.ty;
+  portalFlash(p.kind);
+  G.portalCooldown = PORTAL_COOLDOWN;
+  // ⚠ COAST GATES FIRST. The dungeon branch below only asks whether you are
+  // currently underground, so a gate standing in the city would send you down
+  // a hole rather than to the coast.
+  const gate = COAST_PORTALS[ptx+','+pty];
+  if(gate){
+    if(gate.to==='coast') ensureCoastSurface();       // pay for the ground first
+    arriveNear(gate.sx, gate.sy, -side);
+    addFloater(player.x,player.y-40, gate.to==='coast'?'⛩ Saltmere — open PvP':'⛩ Lunar City');
+    // ⚠ netTp takes ONLY a reason. This used to be netTp(player.x,player.y,'portal'),
+    // which sent the x coordinate as the reason; the server refused every one
+    // and the gate rubber-banded you back online.
+    netTp('portal');
+    return;
+  }
+  const stair = DUNGEON_STAIRS[ptx+','+pty];
+  if(!G.inDungeon){                                   // overworld -> floor 1
+    G.dungeonEntryX = player.x; G.dungeonEntryY = player.y;
+    G.dungeonEntryGate = { tx:ptx, ty:pty, side };
+    arriveNear(DUNGEON_ENTRY_TILE.x, DUNGEON_ENTRY_TILE.y, -side);
+    G.inDungeon = true; enterFloor(1);
+  } else if(stair){                                   // floor <-> floor
+    arriveNear(stair.sx, stair.sy, -side);
+    enterFloor(stair.to);
+  } else {                                            // floor 1's original exits
+    const relX = ptx - DUNGEON_X0;
+    if(relX < DUNGEON_W/2){
+      const e = G.dungeonEntryGate;
+      // Back out of the gate you went in by, on the side you entered from.
+      // G.dungeonEntryGate is session-only: after a reload inside the dungeon
+      // it is gone, so fall back to mouth A's exit — never its centre, which
+      // is standing in the membrane.
+      if(e) arriveNear(e.tx, e.ty, e.side);
+      else arriveNear(DUNGEON_PORTAL_A.x, DUNGEON_PORTAL_A.y, 1);
+      addFloater(player.x,player.y-30,'back above ground!');
+    } else {
+      player.x = CITY_ARRIVAL.x*TILE+TILE/2; player.y = CITY_ARRIVAL.y*TILE+TILE/2;
+      addFloater(player.x,player.y-30,'arrived at the city!');
+    }
+    G.inDungeon = false; G.dungeonFloor = 0;
+  }
+  netTp('portal');
+}
+
+// The walk-through flash: a full-screen wash in the gate's colour that fades
+// out over the arrival, so the jump reads as passing through rather than a cut.
+const _portalFlash = (()=>{
+  const d = document.createElement('div');
+  d.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:5;opacity:0;transition:opacity .7s ease-out;';
+  document.body.appendChild(d);
+  return d;
+})();
+function portalFlash(kind){
+  const c = kind==='red' ? '255,70,30' : '60,150,255';
+  _portalFlash.style.background = `radial-gradient(ellipse at center, rgba(255,255,255,.85) 0%, rgba(${c},.75) 35%, rgba(${c},.35) 70%, rgba(0,0,0,.4) 100%)`;
+  _portalFlash.style.transition = 'none'; _portalFlash.style.opacity = '1';
+  void _portalFlash.offsetWidth;                      // commit before fading
+  _portalFlash.style.transition = 'opacity .75s ease-out'; _portalFlash.style.opacity = '0';
+  _flareAt[kind] = performance.now()/1000;
+  snd.cave();
 }
 
 // ── Raycaster — mouse→world (y=0 plane) ──────────────────────────
@@ -9916,7 +10561,12 @@ function drawInteractPrompts(){
       const sp=houseSignPos(h); if(getNearbyHouseDoorIndex()===-1) add(sp.x,sp.z,'[E] house settings',TILE*2.4);
     }
     for(const a of CHAMP_ALTARS)if(a.state==='idle')add(a.x,a.y,'⚔ champion shrine',TILE*4);
-    for(const p of portals)add(p.position.x,p.position.z,'▼ enter dungeon',TILE*2.4);
+    for(const p of portals){
+      const coast = COAST_PORTALS[p.tx+','+p.ty];
+      const lab = coast ? (coast.to==='coast' ? '⚔ Saltmere — open PvP' : '⛨ Lunar City')
+                : p.ty < DUNGEON_Y0 ? '⚔ into the dungeon' : PORTAL_COLS[p.kind].label;
+      add(p.x,p.z,lab,TILE*3.2,215);   // above the keystone
+    }
   }
   if(!items.length)return;
   ctx.textAlign='center';ctx.font='bold 12px ui-monospace,Menlo,Consolas,monospace';
@@ -10212,7 +10862,7 @@ function resetForNewCharacter(){
   questState.idx=0; questState.prog=0;
   G.contracts=null; G.contractRank=0;
   G.chestsLooted={}; G.floorBossesDown={};
-  G.dungeonBest=1; G.dungeonFloor=0; G.inDungeon=false;
+  G.dungeonBest=1; G.dungeonFloor=0; G.inDungeon=false; G.dungeonEntryGate=null;
   G.corpse=null; G.corpseLootOpen=false;
   G.antiqStock=null; G.antiqStockAt=0; G.bounty=null; G.bountyAt=0;
   G.totalKills=0; G.gambitHinted=false; G.achiev=new Set();
@@ -10233,6 +10883,10 @@ function loadGame(blob){
     }
     if(!s||typeof s!=='object')return false;
     player.x=s.px;player.y=s.py;player.hp=s.hp;Object.assign(inv,s.inv);
+    // A save from before the world changed under it — the edge ridge, a tile
+    // that became solid — can put you inside rock, where every direction is
+    // blocked and nothing tells you why. Step out to the nearest open ground.
+    if(boxBlocked(player.x,player.y,player.r,true)) findClearSpawn();
     player.name=s.name||player.name||'Traveler';
     player.gender=s.gender||'male';
     player.race=s.race||'Human';
@@ -10452,7 +11106,9 @@ window.addEventListener('keydown',e=>{
         let dist=80,finalX=player.x,finalY=player.y;
         for(let stepAmt=5;stepAmt<=dist;stepAmt+=5){
           const tx=player.x+dx*stepAmt,ty=player.y+dy*stepAmt;
-          if(boxBlocked(tx,ty,player.r)||doorBlocks(tx,ty,player.r))break;
+          // isPlayerCheck explicitly: the proximity guess only covers steps near
+          // the start, so the far end of the blink ignored gate pillars.
+          if(boxBlocked(tx,ty,player.r,true)||doorBlocks(tx,ty,player.r))break;
           finalX=tx;finalY=ty;
         }
         player.x=finalX;player.y=finalY;
@@ -13108,44 +13764,11 @@ function update(dt){
   G.onCoast = player.y >= COAST_Y0*TILE;
   if(G.onCoast && !coastSurface) ensureCoastSurface();
   updateCoastBosses(dt);
-  if(G.portalCooldown<=0){
-    const ptx=Math.floor(player.x/TILE), pty=Math.floor(player.y/TILE);
-    if(ptx>=0&&pty>=0&&ptx<MAP_W&&pty<MAP_H&&map[pty][ptx]===T.TELEPORT){
-      // ⚠ COAST GATES FIRST. The dungeon branch below only asks whether you are
-      // currently underground, so a TELEPORT tile standing in the city would
-      // send you down a hole rather than to the coast.
-      const gate=COAST_PORTALS[ptx+','+pty];
-      if(gate){
-        if(gate.to==='coast') ensureCoastSurface();       // pay for the ground first
-        player.x=gate.sx*TILE+TILE/2; player.y=gate.sy*TILE+TILE/2;
-        G.portalCooldown=1.2;
-        addFloater(player.x,player.y-40, gate.to==='coast'?'⛩ Saltmere':'⛩ Lunar City');
-        netTp(player.x,player.y,'portal');
-        return;
-      }
-      const stair=DUNGEON_STAIRS[ptx+','+pty];
-      if(!G.inDungeon){                                   // overworld → floor 1
-        G.dungeonEntryX=player.x; G.dungeonEntryY=player.y;
-        player.x=DUNGEON_ENTRY_TILE.x*TILE+TILE/2; player.y=DUNGEON_ENTRY_TILE.y*TILE+TILE/2;
-        G.inDungeon=true; enterFloor(1);
-      } else if(stair){                                   // floor ↔ floor
-        player.x=stair.sx*TILE+TILE/2; player.y=stair.sy*TILE+TILE/2;
-        enterFloor(stair.to);
-      } else {                                            // floor 1's original exits
-        const relX=ptx-DUNGEON_X0;
-        if(relX<DUNGEON_W/2){
-          player.x=G.dungeonEntryX||(DUNGEON_PORTAL_A.x*TILE+TILE/2);
-          player.y=G.dungeonEntryY||(DUNGEON_PORTAL_A.y*TILE+TILE/2);
-          addFloater(player.x,player.y-30,'back above ground!');
-        } else {
-          player.x=305*TILE+TILE/2; player.y=351*TILE+TILE/2;
-          addFloater(player.x,player.y-30,'arrived at the city!');
-        }
-        G.inDungeon=false; G.dungeonFloor=0; snd.cave();
-      }
-      G.portalCooldown=1.2; netTp('portal');
-    }
+  if(G.portalCooldown<=0 && G._ppx!==undefined){
+    const hit = portalCrossed(G._ppx, G._ppy);
+    if(hit) usePortal(hit.p, hit.side);
   }
+  G._ppx = player.x; G._ppy = player.y;
   if(G.portalCooldown>0)G.portalCooldown=Math.max(0,G.portalCooldown-dt);
   questPoll();
   G.camX=player.x-G.canvas.width/2;G.camY=player.y-G.canvas.height/2;
@@ -13407,7 +14030,10 @@ function syncEntities(t){
   // Fog fades by camera distance, so push it *past* the far (north) edge of
   // vision — then it never fades anything on-screen, only the far background.
   const _camFar = Math.hypot(Math.cos(camPitch)*CAM_R*camZoom + RD, Math.sin(camPitch)*CAM_R*camZoom);
-  scene.fog.near = _camFar*1.05; scene.fog.far = _camFar*2.0;
+  // Starts well inside the render distance and ends a little past it, so things
+  // fade out rather than popping at RD. It used to start at 1.05x — past
+  // everything on screen, so it never faded anything at all (critic C-1).
+  scene.fog.near = _camFar*0.55; scene.fog.far = _camFar*1.5;
   let ei=0;
   for(const e of enemies){
     if(ei>=enemyPool.length)break;const si=ei,grp=enemyPool[ei++];
@@ -13667,6 +14293,7 @@ function render3D(t){
   // After update() has placed the camera for this frame — fitting against last
   // frame's camera makes shadow edges lag visibly when you run.
   fitSunShadow();
+  updateFarRange();
   const rdt = Math.min(Math.max(t-_lastRenderT, 0), 0.1); _lastRenderT = t;
   if(rndr) rndr.render(rdt); else renderer.render(scene,camera);
   const ctx=G.ctx;ctx.clearRect(0,0,G.canvas.width,G.canvas.height);
@@ -14990,6 +15617,7 @@ function refreshFxList(){
   fxGroup.clear();
   scene.traverse(o => {
     if(!o.isMesh && !o.isPoints && !o.isSprite) return;
+    if(o.userData.fx){ fxGroup.add(o); return; }     // opted in: e.g. the portal vortex
     const mats = Array.isArray(o.material) ? o.material : [o.material];
     for(const m of mats){
       if(m && m.blending === THREE.AdditiveBlending){ fxGroup.add(o); break; }

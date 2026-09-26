@@ -41,7 +41,7 @@
     {
       "name": "structure",
       "reason": "Buildings and large world geometry. Big on screen, but static and seen from a distance.",
-      "match": ["^Smithy$"],
+      "match": ["^Smithy$", "^portal_gate$"],
       "budget": { "maxTexture": 1024, "maxTriangles": 30000, "maxBytes": 1572864 }
     }
   ],

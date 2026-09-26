@@ -1,5 +1,5 @@
 // enemies.js — enemy config, factory, AI, champion system
-import { TILE, MAP_W, MAP_H, T,
+import { TILE, MAP_W, MAP_H, T, BLOCKING,
   ENEMY_RESPAWN_DELAY, WOLF_TARGET, BANDIT_TARGET, ENEMY_POP_CHECK_INTERVAL,
   CHAMP_KILLS_PER_CANDLE, CHAMP_MAX_MOBS, CHAMP_DUNGEON_MAX,
   DUNGEON_X0, DUNGEON_Y0, DUNGEON_W, DUNGEON_H,
@@ -59,8 +59,13 @@ export const extraBlocking = new Set();
 export const WADE = { on: false };
 function blockedAt(px, py, isPlayerCheck) {
   const t = tileAt(px,py);
-  if (t===T.WATER && !WADE.on) return true;
-  if (t===T.TREE||t===T.STONE||t===T.WALL||t===T.CAVE_WALL||extraBlocking.has(t)) return true;
+  if (t===T.WATER) return !WADE.on;
+  // ⚠ READ BLOCKING, don't list tiles. This used to be a hand-written list
+  // (tree, stone, wall, cave wall) that every later tile was supposed to be
+  // added to and none were: CLIFF, ORE_IRON and STAINED_GLASS were all solid in
+  // BLOCKING — and so on the server — and walkable here. You could stroll up
+  // the Saltmere cliffs. One table, so a new tile cannot be forgotten twice.
+  if (BLOCKING[t] || extraBlocking.has(t)) return true;
   if (!isPlayerCheck && G.placedHouses) {
     const tx = Math.floor(px/TILE), ty = Math.floor(py/TILE);
     for (const h of G.placedHouses) {
@@ -70,8 +75,30 @@ function blockedAt(px, py, isPlayerCheck) {
   }
   return false;
 }
+// Round obstacles smaller than a tile — the portal gates' pillars. The tile grid
+// cannot express "this half of the tile is stone", and turning the pillar tiles
+// into walls would change the server's walkability bitmap for a purely visual
+// object. Client-side and player-only: the server allowing slightly MORE than
+// the client is harmless, and mobs never path through a gate.
+//
+// ⚠ ESCAPE RULE. A move is refused only if it ends CLOSER to the pillar than
+// where the player stands now. Anything that drops a player inside one — an
+// old save, a teleport, a dev jump — can always walk out; a hard "inside means
+// blocked" test would freeze them in place with no way to find out why.
+export const pointColliders = [];   // { x, y, r }
+function pointBlocked(cx, cy, r) {
+  for (const c of pointColliders) {
+    const dx = cx - c.x, dy = cy - c.y, rr = c.r + r;
+    const d2 = dx*dx + dy*dy;
+    if (d2 >= rr*rr) continue;
+    const px = player.x - c.x, py = player.y - c.y;
+    if (d2 < px*px + py*py) return true;
+  }
+  return false;
+}
 export function boxBlocked(cx, cy, r, isPlayerCheck) {
   const isPlr = isPlayerCheck !== undefined ? isPlayerCheck : (Math.hypot(cx - player.x, cy - player.y) < player.r * 1.5);
+  if (isPlr && pointColliders.length && pointBlocked(cx, cy, r)) return true;
   return blockedAt(cx-r,cy-r,isPlr)||blockedAt(cx+r,cy-r,isPlr)||blockedAt(cx-r,cy+r,isPlr)||blockedAt(cx+r,cy+r,isPlr);
 }
 

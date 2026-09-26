@@ -43,7 +43,12 @@ function rng(seed){
  * Applied before the blur so the banks shelve smoothly instead of dropping off
  * a step.
  */
-export function createHeightField({ TILE, MAP_W, MAP_H, amplitude = 90, seed = 1337, flatAt = null, bedAt = null }){
+/**
+ * `liftAt(tx,ty)` returns height ADDED after every flatten and blur — the edge
+ * ridge. Added last so a flatten can't erase a mountain and a blur can't smear
+ * one into the river; it must therefore be smooth on its own.
+ */
+export function createHeightField({ TILE, MAP_W, MAP_H, amplitude = 90, seed = 1337, flatAt = null, bedAt = null, liftAt = null }){
   const rand = rng(seed);
   // Random phase offsets so the terrain isn't visibly symmetric about the origin
   const ox = rand() * 1000, oy = rand() * 1000;
@@ -131,6 +136,14 @@ export function createHeightField({ TILE, MAP_W, MAP_H, amplitude = 90, seed = 1
         if(bedAt){ const b = bedAt(tx, ty); if(b > 0) field[i] -= b; }
       }
     }
+  }
+
+  if(liftAt){
+    for(let ty = 0; ty < MAP_H; ty++)
+      for(let tx = 0; tx < MAP_W; tx++){
+        const l = liftAt(tx, ty);
+        if(l) field[ty * MAP_W + tx] += l;
+      }
   }
 
   // Bilinear sample in WORLD units. Tile centres sit at +0.5, matching the

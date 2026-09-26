@@ -13,7 +13,8 @@
     "test:world": "node tools/test/world.mjs",
     "test:jewelry": "node tools/test/jewelry.mjs",
     "test:tiers": "node tools/test/tiers.mjs",
-    "test": "npm run test:dressing && npm run test:world && npm run test:jewelry && npm run test:tiers"
+    "test:portals": "node tools/test/portals.mjs",
+    "test": "npm run test:dressing && npm run test:world && npm run test:jewelry && npm run test:tiers && npm run test:portals"
   },
   "dependencies": {
     "@gltf-transform/core": "^4.5.0",
