@@ -110,6 +110,33 @@ Local game: `.claude/launch.json` → `bravo-dev` on :8127.
       players, horses
 - [ ] U1b verify in real play at night + with many remotes (_dev.mpLoad) that 10 Hz reads OK
 
+## Phase M — mob corpses, looting, harvesting meat & hides (user, 2026-09-26)
+Must land BEFORE P3 (taming needs meat). Today: no meat item, no cooking; mobs throw loot
+straight onto the ground at death (`spawnDrops`, enemies.js ~164 — includes 'hide'); a
+corpse + loot window exists for dead PLAYERS only (game3d "Player corpse" ~6872, "Corpse
+loot" ~9027) — reuse its UI pattern.
+- [ ] M1 mob corpses: a killed mob leaves its body (death pose / last frame, or a lie-down
+      tilt) for CORPSE_TTL (~90 s, then fades); pooled, capped (oldest despawns first);
+      respawn timers unchanged. Server mobs (wolf/bandit) die on the server — corpse is a
+      client-side record keyed by mob id at the death position
+- [ ] M2 search: [E] on a corpse opens a loot window listing what the kill dropped (gold,
+      gear, ARPG items, artifacts, sigils…) instead of scattering it; "take all"; bosses
+      keep their showers of gold/ingots on the ground (spectacle), or loot bag — decide
+- [ ] M3 harvest: [E]/hold on a searched corpse with a knife/any blade → progress bar →
+      yields per species (wolf: meat + hide; bandit: nothing to harvest; crab/serpent: meat,
+      shell/scales?; cat: never harvestable). Corpse marked harvested (visual: shrinks/pelt
+      removed). Harvest skill XP (new skill "Skinning"/"Butchery" or fold into an existing
+      one — decide)
+- [ ] M4 items: raw_meat, (cooked_meat via campfire cooking → heals), hide already exists;
+      BAG_ITEMS entries (⚠ HANDOFF gotcha: a new pickup missing from BAG_ITEMS never shows in
+      the bag), icons, stack sizes, bank/trade support, save/load
+- [ ] M5 cooking: use raw_meat at a lit campfire/placed fire → cooked_meat (food heal over
+      time); burnt chance at low skill (optional)
+- [ ] M6 multiplayer: corpses of SERVER mobs visible to everyone; loot is per-player (whoever
+      killed/tagged it) or first-come — decide; PvP player corpses unchanged
+- [ ] M7 tests: every mob type has a corpse/loot/harvest table (no silent 'undefined' drops),
+      BAG_ITEMS covers every new item, save round-trip; critic pass
+
 ## Phase P — cats: wild mobs that can become pets (user, 2026-09-26; interleave with C)
 Asset: `models_src/Calico_Cat_Pet.glb` (user-supplied) → baked `models/Calico_Cat_Pet.glb`
 0.31 MB, class `character`, 27-bone skin, ONE clip "Armature|Unreal Take" (1 s loop, hips
@@ -122,7 +149,7 @@ cap or KTX2 textures). Ask the user before raising it.
 - [ ] P2 wild cat mob: ENEMY_CFG 'cat' (skittish, low HP, flees, never aggressive), MOB_MODELS
       entry + scale/yaw fit, a few spawns near forest edges / Saltmere; server mobs? (decide:
       client-only wildlife like the dungeon mobs vs server-authoritative like wolves)
-- [ ] P3 taming: [E] on a wild cat with a food item (check which items exist — fish/meat?),
+- [ ] P3 taming (needs M4 meat): [E] on a wild cat holding raw/cooked meat,
       chance-based with feedback; tamed cat despawns from the wild pool and becomes `player.pet`
       {type, name, hp, maxHp, lvl, xp}; ONE active pet; saved in the save blob
 - [ ] P4 pet AI: follow ~1.5 tiles behind, path around obstacles (boxBlocked), catch up /
