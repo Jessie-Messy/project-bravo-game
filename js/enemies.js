@@ -165,6 +165,10 @@ export function spawnDrops(e) {
   let resource, count;
   if(e.type==='wolf')       { resource='hide';  count=1+Math.floor(Math.random()*2); }
   else if(e.type==='goblin'){ resource='gold';  count=2+Math.floor(Math.random()*4); }
+  // Bandits had no entry and fell through to the default — a purse full of
+  // rocks. They carry coin, and now and then a field dressing.
+  else if(e.type==='bandit'){ resource='gold';  count=3+Math.floor(Math.random()*6);
+    if(Math.random()<0.15) drops.push({ type:'bandages', x:e.x, y:e.y-6, lifetime:30 }); }
   else if(e.type==='spider'){ resource='hide';  count=1+Math.floor(Math.random()*2); }
   else if(e.type==='troll') { resource='stone'; count=2+Math.floor(Math.random()*3); }
   else if(e.type==='goblin_k')   { resource='gold';  count=12+Math.floor(Math.random()*8); }
@@ -414,10 +418,14 @@ export function damagePlayer(dmg, attacker) {
 }
 
 // Optional listeners set by the entry point (e.g. quest system)
-export const hooks = { onKill: null };
+// onCorpse(e, n0): called after a LOCAL mob's death has dropped everything it
+// will drop — spawnDrops, the kill hook's artifacts/gear — with n0 = where in
+// `drops` this death's items start. game3d moves them into a corpse.
+export const hooks = { onKill: null, onCorpse: null };
 
 export function damageEnemy(e, dmg) {
   if (e.iframes>0||e.state==='dead'||e.state==='respawning') return;
+  e._hitByMe = true;                 // a special corpse opens only for those who hit it
   if (e.srv) {                       // server-authoritative mob: send the intent,
     e.iframes=0.3;                   // the server decides hp/death (state syncs back)
     floaters.push({ x:e.x, y:e.y-18, text:'-'+Math.round(dmg), life:0.9 });
@@ -428,9 +436,11 @@ export function damageEnemy(e, dmg) {
   e.hp-=dmg; e.iframes=0.3;
   floaters.push({ x:e.x, y:e.y-18, text:'-'+dmg, life:0.9 });
   if (e.hp<=0) {
+    const n0 = drops.length;
     e.hp=0; e.state='dead'; e.deadTimer=0; spawnDrops(e); snd.enemyDie();
     if (hooks.onKill) hooks.onKill(e);
     if (e.isChamp) champOnKill(e);
+    if (hooks.onCorpse) hooks.onCorpse(e, n0);
     if (e.type==='slime'&&!e.isMini) {
       for (let i=0;i<2;i++) {
         const mini=makeEnemy('slime_mini',Math.floor(e.x/TILE),Math.floor(e.y/TILE));

@@ -57,6 +57,8 @@ import { createComposer } from './render/composer.js';
 import { createLoadingScreen } from './render/loading.js';
 import { VERSION } from './build-info.js';
 import { makeTuftGeometry, makeBladeTexture, makeGrassMaterial } from './render/grass.js';
+import { CORPSE_TTL, CORPSE_MAX, CORPSE_REACH, HARVEST_SECS, HARVESTED_TTL, HARVEST, NEVER_HARVEST,
+         isSpecialKill, canHarvestWith, rollHarvest, FOOD } from './corpse-data.js';
 import { makeConiferCanopy, makeBroadleafCanopy, makeTrunk } from './render/trees.js';
 import { buildNearForest, makeBiomeSampler } from './render/tree-lod.js';
 import { SPECIES } from './render/tree-species.js';
@@ -5558,6 +5560,17 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
   get scene(){ return scene; }, get sky(){ return sky; }, get camera(){ return camera; },
   // Every gate: tile, kind, walk axis. _dev.portals.map(p=>[p.tx,p.ty,p.kind,p.axis])
   get portals(){ return portals; },
+  // Kill the nearest live mob of a type through the REAL damage path, parked a
+  // short step in front of you, so corpses/loot/harvest can be tested without
+  // a fight:  _dev.kill('wolf')   _dev.corpses   _dev.G.mobCorpse
+  kill(type='wolf', dist=70){
+    const e=enemies.filter(m=>m.type===type&&m.state!=='dead'&&m.state!=='respawning'&&!m.srv)
+      .sort((a,b)=>Math.hypot(a.x-player.x,a.y-player.y)-Math.hypot(b.x-player.x,b.y-player.y))[0];
+    if(!e) return 'no live local '+type;
+    e.x=player.x; e.y=player.y-dist; e.iframes=0; damageEnemy(e, 1e6);
+    return e.state;
+  },
+  get corpses(){ return mobCorpses; },
   // Live sky exposure. Forces a PMREM re-bake, so the env map and the visible
   // dome never disagree while you're tuning.
   skyGain:(v)=>sky.setGain(v),
@@ -7499,6 +7512,7 @@ const RECIPES=[
   {id:'larmor',   top:'2 hide → leather armor piece',adv:false,sub:()=>'have: '+inv.hide+' hide  ('+Math.round((typeof armorDR==='function'?armorDR():0)*100)+'% armor)'},
   {id:'barmor',   top:'2 hide + 2 bone → bone piece ★',adv:true,sub:()=>nearbyObject('workbench',3)?'have: '+inv.hide+'h '+(inv.bone||0)+'b  ✓':'need: workbench nearby'},
   {id:'bandage',  top:'2 hide → 1 bandage',         adv:false,sub:()=>'have: '+inv.hide+' hide  bandag: '+inv.bandages},
+  {id:'cook_meat',top:'1 raw meat → 1 cooked meat', adv:true,sub:()=>nearbyObject('campfire',3)?'have: '+(inv.raw_meat||0)+' raw  ✓ fire':'need: campfire nearby'},
   {id:'forge',    top:'6 stone + 4 wood → forge',   adv:false,sub:()=>'have: '+inv.stone+'s  '+inv.wood+'w'},
   {id:'iron_ingot',top:'3 iron ore → 1 iron ingot', adv:true,sub:()=>(nearbyObject('forge',3)||Math.hypot(BLACKSMITH.x-player.x,BLACKSMITH.y-player.y)<TILE*2.5)?'have: '+(inv.iron_ore||0)+' ore':'need: forge nearby'},
   {id:'mithril_ingot',top:'3 mithril ore → 1 mithril ingot', adv:true,sub:()=>(nearbyObject('forge',3)||Math.hypot(BLACKSMITH.x-player.x,BLACKSMITH.y-player.y)<TILE*2.5)?'have: '+(inv.mithril_ore||0)+' ore':'need: forge nearby'},
@@ -7650,6 +7664,7 @@ function canCraft(id){
   if(id==='larmor')    return inv.hide>=2&&hasUpgradeSlot(1);
   if(id==='barmor')    return inv.hide>=2&&(inv.bone||0)>=2&&wb&&hasUpgradeSlot(2);
   if(id==='bandage')   return inv.hide>=2;
+  if(id==='cook_meat') return (inv.raw_meat||0)>=1 && nearbyObject('campfire',3);
   if(id==='forge')     return inv.stone>=6&&inv.wood>=4;
   if(id==='iron_ingot') return (inv.iron_ore||0)>=3&&fg;
   if(id==='mithril_ingot') return (inv.mithril_ore||0)>=3&&fg;
@@ -7697,6 +7712,7 @@ function doCraft(id){
   if(id==='larmor')   {inv.hide-=2;equipArmorPiece(1);}
   if(id==='barmor')   {inv.hide-=2;inv.bone-=2;equipArmorPiece(2);}
   if(id==='bandage')  {inv.hide-=2;inv.bandages+=1;addFloater(player.x,player.y-20,'+1 bandage');}
+  if(id==='cook_meat'){inv.raw_meat-=1;inv.cooked_meat=(inv.cooked_meat||0)+1;addFloater(player.x,player.y-20,'+1 cooked meat');}
   if(id==='forge')     {inv.stone-=6;inv.wood-=4;gainPlaceable('forge');}
   if(id==='iron_ingot'){inv.iron_ore-=3;inv.iron_ingot=(inv.iron_ingot||0)+1;addFloater(player.x,player.y-20,'+1 iron ingot');}
   if(id==='mithril_ingot'){inv.mithril_ore-=3;inv.mithril_ingot=(inv.mithril_ingot||0)+1;addFloater(player.x,player.y-20,'+1 mithril ingot');}
@@ -8555,6 +8571,7 @@ const COMBAT_ACTIONS={
   attack:  {label:'Attack', icon:'⚔', run:attackNearest, can:()=>!!nearestEnemy(player.weapon==='bow'?TILE*8:SWORD_RANGE*1.1)},
   special: {label:'Special',icon:'⚡', run:doSpecial,     can:()=>specialCd<=0&&((player.weapon==='sword'&&player.hasSword&&tacticsLv()>=2)||(player.weapon==='bow'&&player.hasBow&&archeryLv()>=2))},
   potion:  {label:'Potion', icon:'🧪', run:usePotion,     can:()=>inv.potions>0&&player.hp<player.maxHp},
+  eat:     {label:'Eat',    icon:'🍖', run:eatMeat,       can:()=>(inv.cooked_meat||0)>0&&!player.meal&&player.hp<player.maxHp},
   bandage: {label:'Bandage',icon:'✚', run:useBandage,    can:()=>inv.bandages>0&&player.bandageTimer<=0&&player.hp<player.maxHp},
   hide:    {label:'Hide',   icon:'👤', run:doHiding,      can:()=>!skills.hiding.active&&skills.hiding.cooldown<=0},
   wrestle: {label:'Wrestle',icon:'🤼', run:doWrestling,   can:()=>skills.wrestling.cooldown<=0&&!!nearestEnemy(TILE*2.5)},
@@ -8625,7 +8642,7 @@ const HOTBAR_CD={
   hide:    ()=>[skills.hiding.cooldown,30],
   wrestle: ()=>[skills.wrestling.cooldown,15],
 };
-const HOTBAR_BADGE={ potion:()=>inv.potions, bandage:()=>inv.bandages, bow:()=>inv.arrows };
+const HOTBAR_BADGE={ potion:()=>inv.potions, bandage:()=>inv.bandages, bow:()=>inv.arrows, eat:()=>inv.cooked_meat||0 };
 let hotbar=[
   {k:'weapon',id:'axe'},{k:'weapon',id:'sword'},{k:'weapon',id:'bow'},{k:'weapon',id:'pickaxe'},
   {k:'act',id:'bandage'},{k:'act',id:'potion'},{k:'act',id:'special'},null,
@@ -8769,7 +8786,7 @@ function closeShopPanels(){
 // Is any full-screen panel/menu open (suppresses gambits + radial)?
 function uiBlocking(){
   return G.charSelectOpen||G.charCreatorOpen||G.craftOpen||G.tradeOpen||G.bankOpen||G.smithOpen||G.mageOpen||G.farrierOpen||
-    G.skillOpen||G.questOpen||G.editorOpen||G.dollOpen||G.tutorialOpen||G.corpseLootOpen||G.charOpen||G.contractsOpen||G.worldChestOpen||
+    G.skillOpen||G.questOpen||G.editorOpen||G.dollOpen||G.tutorialOpen||G.corpseLootOpen||!!G.mobCorpse||G.charOpen||G.contractsOpen||G.worldChestOpen||
     G.gambitOpen||G.buildMode||G.housePlacementMode||G.houseMenuOpen||G.houseSettingsOpen||G.devGuiOpen||
     G.settingsOpen||G.backpackOpen||!!G.trade||G.chestOpen||
     G.antiqOpen||G.cryptoOpen||G.curatorOpen||G.robberOpen;
@@ -8779,7 +8796,7 @@ function uiBlocking(){
 // modes, where the joystick must stay live for movement.
 function modalOpen(){
   return G.charSelectOpen||G.charCreatorOpen||G.craftOpen||G.tradeOpen||G.bankOpen||G.smithOpen||G.mageOpen||G.farrierOpen||
-    G.skillOpen||G.questOpen||G.editorOpen||G.dollOpen||G.tutorialOpen||G.corpseLootOpen||G.charOpen||G.contractsOpen||G.worldChestOpen||
+    G.skillOpen||G.questOpen||G.editorOpen||G.dollOpen||G.tutorialOpen||G.corpseLootOpen||!!G.mobCorpse||G.charOpen||G.contractsOpen||G.worldChestOpen||
     G.gambitOpen||G.houseMenuOpen||G.houseSettingsOpen||G.devGuiOpen||G.settingsOpen||G.backpackOpen||!!G.trade||!!G.tradeInvite||
     G.antiqOpen||G.cryptoOpen||G.curatorOpen||G.robberOpen;
 }
@@ -8911,6 +8928,11 @@ const TRADE_ITEMS=[
   {id:'bone',   label:'Bone',      buy:6, sell:2, kind:'res', key:'bone',       amt:1,sellAmt:1},
   {id:'bandage',label:'Bandage',   buy:8, sell:3, kind:'res', key:'bandages',   amt:1,sellAmt:1},
   {id:'house_tool',label:'Housing Tool',buy:50,sell:20,kind:'tool',pkey:'hasHouseTool',wpn:'house_tool'},
+  // No `wpn`: buying the knife must not swap what is in your hand. It harvests
+  // from the pack (corpse-data.js canHarvestWith).
+  {id:'knife',  label:'Skinning Knife',buy:12,sell:4, kind:'tool',pkey:'hasKnife'},
+  {id:'raw_meat',label:'Raw Meat',  buy:6, sell:2, kind:'res', key:'raw_meat',   amt:1,sellAmt:1},
+  {id:'cooked_meat',label:'Cooked Meat',buy:10,sell:4,kind:'res',key:'cooked_meat',amt:1,sellAmt:1},
 ];
 const TRADE_H=TRADE_HEADER+TRADE_PAD+TRADE_ITEMS.length*TRADE_ROW_H+TRADE_SECT_H+TRADE_PAD;
 function tradePanelXY(){return panelAt('trade', Math.round(G.canvas.width/2-TRADE_W/2), Math.round(G.canvas.height/2-TRADE_H/2), TRADE_W, TRADE_H);}
@@ -9063,6 +9085,219 @@ function musterGuardsOn(targetId, atx, aty){
                  attackRange:TILE*1.5,attackCooldown:1.0,attackTimer:0.3+i*0.25,
                  iframes:0,lifetime:45,dead:false,huntId:targetId});
   }
+}
+
+// ── Mob corpses: search, loot, harvest ───────────────────────────
+// A killed mob leaves its body. Everything the death would have thrown on the
+// ground goes INTO the body instead, to be searched with [E]; a species with a
+// pelt or meat can then be butchered with a blade. Rules live in corpse-data.js.
+//
+// The body is its OWN object, not the mob: a mob respawns at its spawn point 48 s
+// after death, reusing the same enemy record, and the corpse must not go with it.
+// GLB mobs clone their model and play the Death clip once, holding the last
+// frame; rig mobs (bandits, the coast folk) are laid on their backs.
+const mobCorpses = [];
+let _corpseSeq = 0;
+function _lootLabelOf(d){ return d.type==='arpg_item'&&d.item ? (d.item.rarityName+': '+d.item.name) : itemLabel(d.type); }
+// Take one loot entry — the same outcomes the ground pickup has.
+function takeLootEntry(d){
+  if(d.type==='arpg_item'&&d.item){ player.equipmentItems.push(d.item); addFloater(player.x,player.y-24,d.item.rarityName+': '+d.item.name+'  [G]'); }
+  else if(d.type.startsWith('sigil_')) useSigil(d.type.slice(6));
+  else { invAdd(d.type,1); }
+}
+function _dressCorpseRig(grp, type){
+  const vis=EVIS[type]||EVIS_DEF, est=ESTYLE[type]||null;
+  const esk=(est&&RIG_STYLES[est]&&typeof RIG_STYLES[est].skin==='number')?RIG_STYLES[est].skin:false;
+  configureRig(grp, vis[0], vis[1],vis[2],vis[3],vis[4],vis[5]||0, esk);
+  dressRig(grp, est);
+  applyProp(grp, PROP[type]||null, vis[1],vis[2],vis[3]);
+}
+function _corpseVisual(type, x, z, yaw){
+  const root = new THREE.Group();
+  root.position.set(x, heightAt(x, z), z);
+  root.rotation.y = yaw;
+  // Dark stain under every body: reads as "something died here" from any angle.
+  const stain = new THREE.Mesh(_corpseStainGeo, _corpseStainMat);
+  stain.position.y = 0.6; root.add(stain);
+  let mixer = null, tintMats = [];
+  const mm = MOB_MODELS[type], asset = mm && loadedModels[mm.file];
+  if(SKINNING_OK && asset){
+    const inner = SkeletonUtils.clone(asset.template);
+    const s = mm.h * OBJ_SCALE / asset.natH;
+    inner.scale.setScalar(s); inner.position.y = asset.yOff * s; inner.rotation.y = Math.PI;
+    if(mm.tint) inner.traverse(o=>{ if(o.isMesh){ o.material=o.material.clone(); o.material.color.multiply(new THREE.Color(mm.tint)); tintMats.push(o.material); } });
+    inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false; } });
+    root.add(inner);
+    const death = pickClip(asset.clips, /death|die/i);
+    if(death){
+      mixer = new THREE.AnimationMixer(inner);
+      const a = mixer.clipAction(death); a.setLoop(THREE.LoopOnce); a.clampWhenFinished = true; a.play();
+    } else inner.rotation.z = Math.PI/2;          // no Death clip: roll it onto its side
+  } else {
+    const g = makeRig(); _dressCorpseRig(g, type);
+    g.rotation.x = -Math.PI/2;                    // flat on its back
+    g.position.y = 4;
+    root.add(g);
+  }
+  scene.add(root);
+  return { root, mixer, tintMats };
+}
+const _corpseStainGeo = new THREE.CircleGeometry(TILE*0.42, 14).rotateX(-Math.PI/2);
+const _corpseStainMat = new THREE.MeshBasicMaterial({ color:0x3a0c08, transparent:true, opacity:0.42, depthWrite:false });
+
+function makeMobCorpse({ type, x, y, loot, special, openable, yaw, name=null, srvCid=null }){
+  while(mobCorpses.length >= CORPSE_MAX) removeMobCorpse(mobCorpses[0]);
+  const c = { id: ++_corpseSeq, type, x, y, t0: performance.now()/1000, ttl: CORPSE_TTL,
+              name: name || type.replace(/_/g, ' '),
+              loot: loot||[], special: !!special, openable: openable !== false,
+              searched: false, harvested: false, srvCid,
+              harvestable: !!HARVEST[type] && !NEVER_HARVEST.has(type) };
+  Object.assign(c, _corpseVisual(type, x, y, yaw ?? Math.random()*Math.PI*2));
+  mobCorpses.push(c);
+  return c;
+}
+function removeMobCorpse(c){
+  const i = mobCorpses.indexOf(c); if(i >= 0) mobCorpses.splice(i, 1);
+  scene.remove(c.root);
+  if(c.mixer) c.mixer.stopAllAction();
+  for(const m of c.tintMats) m.dispose();         // tints were per-corpse clones; geometry is shared
+  if(G.mobCorpse === c){ G.mobCorpse = null; G.harvesting = null; }
+}
+// A local mob just died: take what its death dropped back off the ground.
+hooks.onCorpse = (e, n0) => {
+  const got = drops.splice(n0);
+  const special = isSpecialKill(e);
+  const pelt = HARVEST[e.type] && HARVEST[e.type].hide;
+  const loot = [];
+  for(const d of got){
+    if(special && d.type === 'gold'){ drops.push(d); continue; }   // the boss gold shower stays on the ground
+    if(pelt && d.type === 'hide') continue;                         // the pelt is skinned, not looted
+    loot.push(d);
+  }
+  makeMobCorpse({ type:e.type, x:e.x, y:e.y, loot, special, openable: !special || !!e._hitByMe,
+                  yaw: _corpseYawOf(e), name: e.bossName || null });
+};
+// Face the body the way the living mob faced, when its model is at hand.
+function _corpseYawOf(e){
+  const i = enemies.indexOf(e), inst = i >= 0 ? slotModel[i] : null;
+  return inst && inst.obj ? inst.obj.rotation.y : undefined;
+}
+function nearestMobCorpse(){
+  let best = null, bd = CORPSE_REACH*TILE;
+  for(const c of mobCorpses){
+    const d = Math.hypot(c.x - player.x, c.y - player.y);
+    if(d < bd){ bd = d; best = c; }
+  }
+  return best;
+}
+function openMobCorpse(c){
+  if(!c.openable){ addFloater(player.x,player.y-30,'only those who fought it may search this'); return; }
+  G.mobCorpse = c; c.searched = true;
+}
+function takeAllMobCorpse(c){
+  if(!c || !c.loot.length) return;
+  let n = 0; for(const d of c.loot){ takeLootEntry(d); n++; }
+  c.loot.length = 0; snd.pickup();
+  addFloater(player.x,player.y-30,'looted '+n+' item'+(n===1?'':'s'));
+}
+function startHarvest(c){
+  if(!c.harvestable || c.harvested) return;
+  if(!canHarvestWith(player)){ addFloater(player.x,player.y-30,'you need a knife or a blade in hand'); return; }
+  G.harvesting = { c, t: 0 };
+}
+function updateMobCorpses(dt){
+  const now = performance.now()/1000;
+  for(let i = mobCorpses.length - 1; i >= 0; i--){
+    const c = mobCorpses[i];
+    if(c.mixer) c.mixer.update(dt);
+    const age = now - c.t0;
+    // Last three seconds: sink into the ground rather than vanish.
+    if(age > c.ttl - 3) c.root.position.y = heightAt(c.x, c.y) - Math.min(1, (age - (c.ttl - 3)) / 3) * 30;
+    if(age > c.ttl) removeMobCorpse(c);
+  }
+  const h = G.harvesting;
+  if(h){
+    const c = h.c;
+    if(!mobCorpses.includes(c) || Math.hypot(c.x - player.x, c.y - player.y) > CORPSE_REACH*TILE*1.2 || player.dead){
+      G.harvesting = null;
+    } else if((h.t += dt) >= HARVEST_SECS){
+      const got = rollHarvest(c.type) || {};
+      const parts = [];
+      for(const [k, n] of Object.entries(got)) if(n > 0){ inv[k] = (inv[k]||0) + n; parts.push('+'+n+' '+itemLabel(k)); }
+      addFloater(player.x, player.y-34, parts.length ? parts.join('  ') : 'nothing worth taking');
+      snd.pickup();
+      c.harvested = true;
+      // A butchered carcass shrinks a little and does not linger.
+      c.root.scale.setScalar(0.82);
+      c.ttl = Math.min(c.ttl, (now - c.t0) + HARVESTED_TTL);
+      G.harvesting = null;
+    }
+  }
+}
+function mobCorpseXY(){ return panelAt('mobcorpse', Math.round(G.canvas.width/2-130), Math.round(G.canvas.height/2-140), 260, 280); }
+function _mobCorpseButtons(c){
+  const {px,py} = mobCorpseXY(), W = 260, H = 280, PAD = 14;
+  const b = { take:{x:px+PAD, y:py+H-84, w:W-PAD*2, h:30} };
+  if(c.harvestable) b.harvest = {x:px+PAD, y:py+H-46, w:W-PAD*2, h:30};
+  return b;
+}
+function renderMobCorpse(){
+  const c = G.mobCorpse; if(!c) return;
+  if(!mobCorpses.includes(c) || Math.hypot(c.x-player.x, c.y-player.y) > CORPSE_REACH*TILE*1.4){ G.mobCorpse = null; return; }
+  const ctx=G.ctx, W=260, H=280, PAD=14, {px,py}=mobCorpseXY();
+  ctx.fillStyle='rgba(22,14,10,.96)'; ctx.fillRect(px,py,W,H);
+  ctx.strokeStyle=c.special?'#d8a040':'#8a6a4a'; ctx.lineWidth=1.5; ctx.strokeRect(px,py,W,H);
+  ctx.textAlign='center'; ctx.font='bold 13px ui-monospace,Menlo,Consolas,monospace';
+  ctx.fillStyle=c.special?'#f0c060':'#d8b890';
+  ctx.fillText((c.special?'☠ ':'')+c.name.toUpperCase()+'  ·  E to close', px+W/2, py+20);
+  ctx.textAlign='left'; ctx.font='13px ui-monospace,Menlo,Consolas,monospace';
+  // Group identical stackables; gear stays one line each.
+  const rows = []; const counts = {};
+  for(const d of c.loot){
+    if(d.type==='arpg_item') rows.push(_lootLabelOf(d));
+    else counts[d.type] = (counts[d.type]||0) + 1;
+  }
+  for(const [k,n] of Object.entries(counts)) rows.unshift(itemLabel(k)+(n>1?' ×'+n:''));
+  if(!rows.length){ ctx.fillStyle='#8a7a6a'; ctx.textAlign='center'; ctx.fillText(c.srvCid && !c.loot.length ? '(nothing left)' : '(nothing of value)', px+W/2, py+70); ctx.textAlign='left'; }
+  rows.slice(0,6).forEach((t,i)=>{ const ry=py+34+i*24; ctx.fillStyle='rgba(70,48,30,.7)'; ctx.fillRect(px+PAD,ry,W-PAD*2,21); ctx.fillStyle='#ecd8b8'; ctx.fillText(t.slice(0,30),px+PAD+6,ry+15); });
+  if(rows.length>6){ ctx.fillStyle='#a89078'; ctx.fillText('…and '+(rows.length-6)+' more', px+PAD+6, py+34+6*24+14); }
+  const B = _mobCorpseButtons(c);
+  const btn = (r, label, on, col) => { ctx.fillStyle=on?col:'rgba(60,50,40,.8)'; ctx.fillRect(r.x,r.y,r.w,r.h);
+    ctx.fillStyle=on?'#fff4e0':'#8a7a6a'; ctx.font='bold 13px ui-monospace,Menlo,Consolas,monospace'; ctx.textAlign='center';
+    ctx.fillText(label, r.x+r.w/2, r.y+20); ctx.textAlign='left'; ctx.font='13px ui-monospace,Menlo,Consolas,monospace'; };
+  btn(B.take, 'Take All', c.loot.length>0, 'rgba(120,80,30,.95)');
+  if(B.harvest){
+    const h = G.harvesting && G.harvesting.c===c ? G.harvesting : null;
+    const label = c.harvested ? 'Harvested' : h ? 'Harvesting… '+Math.round(h.t/HARVEST_SECS*100)+'%'
+                : canHarvestWith(player) ? 'Harvest (meat / hide)' : 'Harvest — need a knife or blade';
+    btn(B.harvest, label, !c.harvested && !h && canHarvestWith(player), 'rgba(110,40,30,.95)');
+    if(h){ ctx.fillStyle='rgba(240,200,120,.85)'; ctx.fillRect(B.harvest.x, B.harvest.y+B.harvest.h-4, B.harvest.w*Math.min(1,h.t/HARVEST_SECS), 4); }
+  }
+}
+function handleMobCorpseClick(e){
+  const c = G.mobCorpse; if(!c) return false;
+  const B = _mobCorpseButtons(c), hit = r => r && e.clientX>=r.x && e.clientX<=r.x+r.w && e.clientY>=r.y && e.clientY<=r.y+r.h;
+  if(hit(B.take)){ takeAllMobCorpse(c); return true; }
+  if(hit(B.harvest)){ startHarvest(c); return true; }
+  const {px,py}=mobCorpseXY();
+  return e.clientX>=px && e.clientX<=px+260 && e.clientY>=py && e.clientY<=py+280;   // inside the panel: swallow
+}
+
+// ── Food ──
+// Cooked meat heals over time. One meal at a time: eating again refreshes the
+// meal rather than stacking, so it can't be spammed into a potion.
+function eatMeat(){
+  if((inv.cooked_meat||0) <= 0){ addFloater(player.x,player.y-30,'no cooked meat'); return; }
+  inv.cooked_meat--; const f = FOOD.cooked_meat;
+  player.meal = { left: f.secs, rate: f.heal / f.secs };
+  snd.heal(); addFloater(player.x,player.y-30,'🍖 eating… +'+f.heal+' HP over '+f.secs+'s');
+}
+function updateMeal(dt){
+  const m = player.meal; if(!m) return;
+  if(player.dead){ player.meal = null; return; }
+  const step = Math.min(dt, m.left);
+  player.hp = Math.min(player.maxHp, player.hp + m.rate * step);
+  if((m.left -= step) <= 0) player.meal = null;
 }
 
 // ── Corpse loot ───────────────────────────────────────────────────
@@ -10645,6 +10880,10 @@ function drawInteractPrompts(){
       const sp=houseSignPos(h); if(getNearbyHouseDoorIndex()===-1) add(sp.x,sp.z,'[E] house settings',TILE*2.4);
     }
     for(const a of CHAMP_ALTARS)if(a.state==='idle')add(a.x,a.y,'⚔ champion shrine',TILE*4);
+    { const mc=nearestMobCorpse();
+      if(mc) add(mc.x,mc.y, !mc.openable?'☠ not yours to search'
+        : !mc.searched||mc.loot.length ? '[E] search corpse'
+        : mc.harvestable&&!mc.harvested ? '[E] harvest' : '[E] corpse', TILE*CORPSE_REACH, 36); }
     for(const p of portals){
       const coast = COAST_PORTALS[p.tx+','+p.ty];
       const lab = coast ? (coast.to==='coast' ? '⚔ Saltmere — open PvP' : '⛨ Lunar City')
@@ -10874,7 +11113,7 @@ function recomputeDerivedStats(){
 }
 
 function buildSave(){
-  return {px:player.x,py:player.y,hp:player.hp,inv:{...inv},hasAxe:player.hasAxe,hasSword:player.hasSword,hasBow:player.hasBow,hasPickaxe:player.hasPickaxe,hasArmor:player.hasArmor,weapon:player.weapon,swordTier:player.swordTier||1,bowTier:player.bowTier||1,pickaxeTier:player.pickaxeTier||1,autoDefend:G.autoDefend!==false,aggroMode:!!G.aggroMode,armor:{...player.armor},bank:{gold:bank.gold},skillXp:{tactics:skills.tactics.xp,archery:skills.archery.xp,hiding:skills.hiding.xp,healing:skills.healing.xp,wrestling:skills.wrestling.xp},quests:{idx:questState.idx,prog:questState.prog},hasHouseTool:player.hasHouseTool,placedHouses:net.status==='online'?undefined:G.placedHouses,gambits,gambitsOn:!!G.gambitsOn,
+  return {px:player.x,py:player.y,hp:player.hp,inv:{...inv},hasAxe:player.hasAxe,hasSword:player.hasSword,hasBow:player.hasBow,hasPickaxe:player.hasPickaxe,hasArmor:player.hasArmor,weapon:player.weapon,swordTier:player.swordTier||1,bowTier:player.bowTier||1,pickaxeTier:player.pickaxeTier||1,autoDefend:G.autoDefend!==false,aggroMode:!!G.aggroMode,armor:{...player.armor},bank:{gold:bank.gold},skillXp:{tactics:skills.tactics.xp,archery:skills.archery.xp,hiding:skills.hiding.xp,healing:skills.healing.xp,wrestling:skills.wrestling.xp},quests:{idx:questState.idx,prog:questState.prog},hasHouseTool:player.hasHouseTool,hasKnife:!!player.hasKnife,placedHouses:net.status==='online'?undefined:G.placedHouses,gambits,gambitsOn:!!G.gambitsOn,
     // Shared world state -- the server owns this and broadcasts it, so only
     // persist a private copy when we are offline and nothing else will.
     // Saving it while online is what let each browser restore a divergent world.
@@ -10977,7 +11216,7 @@ function loadGame(blob){
     player.stats=s.stats||{str:10,dex:10,int:10,vit:10};
     player.dollGender=player.gender==='female'?'f':'m';
     recomputeDerivedStats();
-    player.hasAxe=s.hasAxe;player.hasSword=s.hasSword;player.hasBow=s.hasBow;player.hasPickaxe=s.hasPickaxe;player.hasArmor=s.hasArmor;player.weapon=s.weapon;bank.gold=s.bank.gold;player.hasHouseTool=s.hasHouseTool||false;
+    player.hasAxe=s.hasAxe;player.hasSword=s.hasSword;player.hasBow=s.hasBow;player.hasPickaxe=s.hasPickaxe;player.hasArmor=s.hasArmor;player.weapon=s.weapon;bank.gold=s.bank.gold;player.hasHouseTool=s.hasHouseTool||false;player.hasKnife=!!s.hasKnife;
     player.hasHorse=!!s.hasHorse;player.onHorse=!!s.onHorse;player.horseDown=!!s.horseDown;player.horseX=s.horseX||0;player.horseY=s.horseY||0;
     player.pickaxeTier=s.pickaxeTier||1;
     if(s.skillXp){skills.tactics.xp=s.skillXp.tactics||0;skills.archery.xp=s.skillXp.archery||0;skills.hiding.xp=s.skillXp.hiding||0;skills.healing.xp=s.skillXp.healing||0;skills.wrestling.xp=s.skillXp.wrestling||0;}
@@ -11251,8 +11490,10 @@ window.addEventListener('keydown',e=>{
       if(G.robberOpen){if(!handleRobberClick(e))G.robberOpen=false;return;}
       if(G.houseMenuOpen){if(!handleHouseMenuClick(e))G.houseMenuOpen=false;return;}
       if(G.houseSettingsOpen){if(!handleHouseSettingsClick(e))G.houseSettingsOpen=false;return;}
-      if(G.corpseLootOpen)G.corpseLootOpen=false;
+      if(G.mobCorpse){G.mobCorpse=null;G.harvesting=null;}
+      else if(G.corpseLootOpen)G.corpseLootOpen=false;
       else if(G.corpse&&Math.hypot(G.corpse.x-player.x,G.corpse.y-player.y)<TILE*2)G.corpseLootOpen=true;
+      else if(nearestMobCorpse())openMobCorpse(nearestMobCorpse());
       else if(G.bankOpen)G.bankOpen=false;
       else if(G.tradeOpen)G.tradeOpen=false;
       else if(G.houseMenuOpen)G.houseMenuOpen=false;
@@ -11739,6 +11980,7 @@ G.canvas.addEventListener('mousedown',e=>{
   if(player.weapon==='house_tool'&&!G.houseMenuOpen&&!G.housePlacementMode){
     if(e.button===0){G.houseMenuOpen=true;return;}
   }
+  if(G.mobCorpse){ if(!handleMobCorpseClick(e)){ G.mobCorpse=null; G.harvesting=null; } return; }
   if(G.corpseLootOpen){
     const W=240,H=220,PAD=14,{px,py}=corpseXY();
     const btnY=py+H-44;
@@ -13096,6 +13338,7 @@ const BAG_ITEMS=[
   {k:'mithril_ore',lab:'Mithril Ore',ic:'🔹'},{k:'mithril_ingot',lab:'Mithril Ingot',ic:'🟦'},
   {k:'runic_ore',lab:'Runic Ore',ic:'🔮'},{k:'runic_ingot',lab:'Runic Ingot',ic:'🟪'},
   {k:'abyssal_ingot',lab:'Abyssal Ingot',ic:'🟩'},
+  {k:'raw_meat',lab:'Raw Meat',ic:'🥩'},{k:'cooked_meat',lab:'Cooked Meat',ic:'🍖'},
   {k:'siege_ram',lab:'Siege Ram',ic:'🐏'},
   // Every placeable is a pack item — drag one to the hotbar, select it, right-click to place.
   ...Object.keys(PLACEABLES).map(k=>({k:PLACEABLES[k].invKey, lab:PLACEABLES[k].label,
@@ -13851,6 +14094,8 @@ function update(dt){
   G.onCoast = player.y >= COAST_Y0*TILE;
   if(G.onCoast && !coastSurface) ensureCoastSurface();
   updateCoastBosses(dt);
+  updateMobCorpses(dt);
+  updateMeal(dt);
   if(G.portalCooldown<=0 && G._ppx!==undefined){
     const hit = portalCrossed(G._ppx, G._ppy);
     if(hit) usePortal(hit.p, hit.side);
@@ -14460,6 +14705,7 @@ function render3D(t){
   if(G.robberOpen)renderRobberPanel();
   if(G.skillOpen)renderSkillPanel();
   if(G.corpseLootOpen)renderCorpseLoot();
+  if(G.mobCorpse)renderMobCorpse();
   if(G.charOpen)renderCharPanel();
   if(G.contractsOpen)renderContractPanel();
   if(G.worldChestOpen)renderWorldChest();
@@ -15582,11 +15828,15 @@ if(MP_ENABLED){
   net.onMobDead=m=>{
     const e=srvMobs.get(m.id);
     if(!e) return;
+    const n0=drops.length;
     if(m.killer===net.selfId){
       spawnDrops(e);                                // loot is yours
       if(hooks.onKill) hooks.onKill(e);             // quest credit
       snd.enemyDie();
     }
+    // Everyone sees the body. Its loot is whatever THIS client's death roll
+    // produced — the killer's, until the server holds shared corpse loot (M6).
+    if(hooks.onCorpse) hooks.onCorpse(e, n0);
   };
   net.onHouses=list=>applyServerHouses(list);       // shared houses
   net.onPlacedObjects=list=>{                       // shared persistent placed items (torches, lanterns, forges, etc.)

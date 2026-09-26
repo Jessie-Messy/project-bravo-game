@@ -127,26 +127,34 @@ DECISIONS (user, 2026-09-26):
   * Harvest has NO skill: it just requires an appropriate weapon — a knife or any bladed
     item (sword, axe, dagger…; NOT bow, pickaxe, bare hands). Add a knife item if none
     exists (shop/craft), since it is the obvious harvesting tool.
-- [ ] M1 mob corpses: a killed mob leaves its body (death pose / last frame, or a lie-down
+- [x] M1 mob corpses: a killed mob leaves its body (death pose / last frame, or a lie-down
       tilt) for CORPSE_TTL (~90 s, then fades); pooled, capped (oldest despawns first);
       respawn timers unchanged. Server mobs (wolf/bandit) die on the server — corpse is a
       client-side record keyed by mob id at the death position
-- [ ] M2 search: [E] on a corpse opens a loot window listing what the kill dropped (gold,
+- [x] M2 search: [E] on a corpse opens a loot window listing what the kill dropped (gold,
       gear, ARPG items, artifacts, sigils…) instead of scattering it; "take all"; bosses
       ALSO keep their gold shower on the ground
-- [ ] M3 harvest: [E]/hold on a searched corpse holding a knife/bladed weapon → progress bar →
+- [x] M3 harvest: [E]/hold on a searched corpse holding a knife/bladed weapon → progress bar →
       yields per species (wolf: meat + hide; bandit: nothing to harvest; crab/serpent: meat,
       shell/scales?; cat: never harvestable). Corpse marked harvested (visual: shrinks/pelt
       removed). No skill — weapon gate only (see DECISIONS)
-- [ ] M4 items: raw_meat, (cooked_meat via campfire cooking → heals), hide already exists;
+- [x] M4 items: raw_meat, (cooked_meat via campfire cooking → heals), hide already exists;
       BAG_ITEMS entries (⚠ HANDOFF gotcha: a new pickup missing from BAG_ITEMS never shows in
       the bag), icons, stack sizes, bank/trade support, save/load
-- [ ] M5 cooking: use raw_meat at a lit campfire/placed fire → cooked_meat (food heal over
+- [x] M5 cooking: use raw_meat at a lit campfire/placed fire → cooked_meat (food heal over
       time); burnt chance at low skill (optional)
+- [x] M-impl notes: js/corpse-data.js (pure tables: HARVEST, SPECIAL_TYPES, isSpecialKill,
+      canHarvestWith, rollHarvest, FOOD); game3d "Mob corpses" section: hooks.onCorpse moves
+      a death's drops into the body (boss gold stays on the ground, pelts held back for
+      skinning); GLB mobs clone + play Death once; rig mobs lie on their backs; [E] search,
+      Take All, Harvest (2.2 s, needs knife or bladed weapon in hand); Skinning Knife sold by
+      the merchant (no weapon swap); raw/cooked meat in bag + trade; cook at a campfire
+      (craft menu); Eat action heals 36 HP over 12 s; _dev.kill(type), _dev.corpses
+- [x] bandits dropped STONE (no spawnDrops entry) → now 3-8 gold, 15% bandage
 - [ ] M6 multiplayer: corpses of SERVER mobs visible to everyone; normal = shared first-come
       loot; special = damagers only, per-damager special roll (see DECISIONS); PvP player
       corpses unchanged
-- [ ] M7 tests: every mob type has a corpse/loot/harvest table (no silent 'undefined' drops),
+- [x] M7 tests (tools/test/corpses.mjs, 95 checks; critic pass still to do): every mob type has a corpse/loot/harvest table (no silent 'undefined' drops),
       BAG_ITEMS covers every new item, save round-trip; critic pass
 
 ## Phase P — cats: wild mobs that can become pets (user, 2026-09-26; interleave with C)
