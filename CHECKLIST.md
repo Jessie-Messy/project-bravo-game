@@ -110,6 +110,32 @@ Local game: `.claude/launch.json` → `bravo-dev` on :8127.
       players, horses
 - [ ] U1b verify in real play at night + with many remotes (_dev.mpLoad) that 10 Hz reads OK
 
+## Phase P — cats: wild mobs that can become pets (user, 2026-09-26; interleave with C)
+Asset: `models_src/Calico_Cat_Pet.glb` (user-supplied) → baked `models/Calico_Cat_Pet.glb`
+0.31 MB, class `character`, 27-bone skin, ONE clip "Armature|Unreal Take" (1 s loop, hips
+translate → almost certainly walk/trot). Authored at ~0.003 units tall → needs runtime scale.
+⚠ Model payload is now 7.96 / 8.00 MB — the next model needs a budget decision (raise the
+cap or KTX2 textures). Ask the user before raising it.
+- [x] P1 asset into models_src + budgets.json (`^Calico_Cat`) + bake; animation/skin intact
+- [ ] P1b confirm the clip visually (headless Blender frames); decide idle = slowed/paused
+      clip + procedural tail/breath, or cut an idle in Blender
+- [ ] P2 wild cat mob: ENEMY_CFG 'cat' (skittish, low HP, flees, never aggressive), MOB_MODELS
+      entry + scale/yaw fit, a few spawns near forest edges / Saltmere; server mobs? (decide:
+      client-only wildlife like the dungeon mobs vs server-authoritative like wolves)
+- [ ] P3 taming: [E] on a wild cat with a food item (check which items exist — fish/meat?),
+      chance-based with feedback; tamed cat despawns from the wild pool and becomes `player.pet`
+      {type, name, hp, maxHp, lvl, xp}; ONE active pet; saved in the save blob
+- [ ] P4 pet AI: follow ~1.5 tiles behind, path around obstacles (boxBlocked), catch up /
+      teleport when > 12 tiles or after a portal/ferry; HUNT: attacks whatever the player
+      attacks or whatever attacks the player; small damage scaling with pet level; kill credit
+      + loot go to the player; flees to the player at low HP, regenerates out of combat;
+      respects region rules (never damages players; PvP untouched)
+- [ ] P5 UI: pet panel (name, HP, level, stance: follow / hunt / stay, dismiss / rename);
+      pet HP bar; floaters
+- [ ] P6 multiplayer: other players see your pet (PlayerState petType/petX/petY or piggyback on
+      the move message) — server validation minimal (cosmetic position)
+- [ ] P7 tests (cfg sane, save/load round-trip, pet never targets players) + critic pass
+
 ## Phase C — graphics critic loop (grass, background trees, buildings)
 - [ ] C1 Critic reviews baseline screenshots → ranked findings list appended below
 - [~] C2 Grass — tufts of 3 (grass.js makeTuftGeometry, TUFT_BLADES), live camera-distance

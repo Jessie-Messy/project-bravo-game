@@ -34,7 +34,7 @@
       "reason": "Player, NPCs and mobs. The things players actually look at, and the only class that earns 1024px.",
       "match": [
         "^Protag", "^Banker$", "^Fletcher$", "^Jester$", "^Wizzard$", "^wizard$", "^Horse$",
-        "^wolf$", "^orc", "^rat$", "^spider", "^yeti$", "^slime$", "^snake$"
+        "^wolf$", "^orc", "^rat$", "^spider", "^yeti$", "^slime$", "^snake$", "^Calico_Cat"
       ],
       "budget": { "maxTexture": 1024, "maxTriangles": 25000, "maxBytes": 2097152 }
     },
