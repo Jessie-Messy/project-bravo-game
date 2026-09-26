@@ -331,7 +331,10 @@ function camBoomFloor(cx, cz){
     const f = s / CAM_BOOM_SAMPLES;
     const gx = player.x + (cx - player.x) * f;
     const gz = player.y + (cz - player.y) * f;
-    let g = heightAt(gx, gz);
+    // Past the map edge the ground keeps climbing (the skirt); heightAt alone
+    // clamps at the edge, which let the boom end sit inside a mountain.
+    const outside = gx < 0 || gz < 0 || gx > MAP_W*TILE || gz > MAP_H*TILE;
+    let g = outside ? outerGroundAt(gx/TILE, gz/TILE) : heightAt(gx, gz);
     // A riverbed is carved below the water plane, so clearing the BED still
     // leaves the camera under the surface — the same shot with a blue tint.
     // Keyed off the tile being water rather than off the height, so dry ground
@@ -1283,6 +1286,10 @@ function riverDepth(tx, ty){
 // terrainFlatAt, which keeps rivers, the city and the dungeon strip level —
 // the water plane and the buildings both depend on that.
 const RIDGE_H = 430;
+// ONE snow line for the in-map ridge (terrain shader), the skirt (vertex
+// colours) and the far range. They used to be 430 / 1050 / 950: a snowy crest
+// ran straight into bare skirt rock at the same height (critic B8-5).
+const SNOW_LO = 820, SNOW_HI = 1000;
 const _ridgeDist = (() => {
   const W_ = MAP_W, H_ = MAP_H, N = W_ * H_, INF = 1e9, E = Math.SQRT2;
   const isR = new Uint8Array(N);
@@ -1309,7 +1316,9 @@ const _ridgeDist = (() => {
     return d;
   };
   // dIn: how deep into the rock (0 off it). dOut: how far from the rock (0 on it).
-  return { dIn: chamfer(i => !isR[i]), dOut: chamfer(i => isR[i] === 1) };
+  // dWater: how far from the nearest river tile, for cutting gorges.
+  return { dIn: chamfer(i => !isR[i]), dOut: chamfer(i => isR[i] === 1),
+           dWater: chamfer(i => map[(i / W_) | 0][i % W_] === T.WATER) };
 })();
 // Value noise + a ridged variant for the crest line. Local and seeded so every
 // client derives the identical wall — like the rest of the height field.
@@ -1326,13 +1335,20 @@ function ridgeLift(tx, ty){
   if(map[ty][tx] === T.RIDGE){
     const d = _ridgeDist.dIn[i];
     // The crest height wanders along the range: saddles and peaks, not a kerb.
-    const hr = RIDGE_H * (0.70 + 0.60*_rn(tx/17 + 3.1, ty/17 + 7.7));
+    // The two separators (above the dungeon, above the coast) stand twice as
+    // tall: they are the walls BETWEEN regions, and at edge-band height you
+    // could see over the one north of Saltmere straight into the dungeon.
+    const sep = (ty >= DUNGEON_Y0 - 10 && ty < DUNGEON_Y0) || (ty >= DUNGEON_Y0 + DUNGEON_H && ty < COAST_Y0) ? 2.0 : 1;
+    const hr = sep * RIDGE_H * (0.70 + 0.60*_rn(tx/17 + 3.1, ty/17 + 7.7));
     const deep = _sstep(3, 14, d);
     // Shoulders and gullies at the scale the 2-tile mesh can still carry, so
     // the band reads as rock rather than a smooth grey dune.
     const crag = 70 * _rr(tx/3.6 + 11, ty/3.6 + 5) * Math.min(1, d/2);
-    return hr * (1 - Math.exp(-(d - 0.4) / 2.3)) + crag
-         + deep * (280*_rr(tx/7.5, ty/7.5) + 160*_rn(tx/23, ty/23));
+    // A river that reaches the rock cuts a gorge instead of running flat into
+    // a wall (critic B8-7): the lift sags toward the water it would have met.
+    const gorge = 0.18 + 0.82 * _sstep(1, 8, _ridgeDist.dWater[i]);
+    return (hr * (1 - Math.exp(-(d - 0.4) / 2.3)) + crag
+         + deep * (280*_rr(tx/7.5, ty/7.5) + 160*_rn(tx/23, ty/23))) * gorge;
   }
   const d = _ridgeDist.dOut[i];
   if(d >= FOOT_R) return 0;
@@ -1414,6 +1430,12 @@ terrMesh.rotation.x = -Math.PI / 2;
 terrMesh.position.set(MAP_W*TILE/2, 0, TERRAIN_MAP_H*TILE/2);
 terrain.displacePlane(terrMesh.geometry, MAP_W*TILE/2, TERRAIN_MAP_H*TILE/2);
 terrMesh.receiveShadow = true;
+// Land never pops in or out, so it takes only the distance haze — not the
+// range fog, which exists to hide objects crossing the render distance. With
+// range fog on the terrain the near ridge came out PALER than the mountains
+// behind it, with a hard contour where this mesh ends (critic B8-3). Terrain,
+// coast, water, skirt and far range now all haze by one rule.
+terrMesh.material.defines = { NO_RANGE_FOG: '' };
 scene.add(terrMesh);
 
 // ── The Saltmere coast's ground ─────────────────────────────────────────────
@@ -1446,6 +1468,20 @@ scene.add(terrMesh);
 // (forest low, rock, snow high), in the same linear rock tone the terrain
 // shader puts on its steep faces, so the two meet without a colour seam.
 const SKIRT_OUT = 72, SKIRT_STEP = 3;
+// Ground height anywhere, in TILE coordinates, including past the map edge.
+// Inside the map this is heightAt; outside it starts from heightAt at the
+// nearest edge point and only climbs. The skirt is built from it and the
+// camera boom asks it, so the camera can never sink into mountains the height
+// field alone does not know about (critic B8-4).
+function outerGroundAt(X, Y){
+  const cx = Math.min(MAP_W - 0.5, Math.max(0.5, X)), cy = Math.min(MAP_H - 0.5, Math.max(0.5, Y));
+  const base = heightAt(cx * TILE, cy * TILE);
+  const de = Math.hypot(X - cx, Y - cy);
+  if(de === 0) return base;
+  return base + 330 * (1 - Math.exp(-de / 6))
+       + _sstep(2, 26, de) * (560 * _rr(X/13, Y/13) + 320 * _rn(X/37 + 2, Y/37 + 9))
+       + _sstep(1, 10, de) * 150 * _rr(X/5 + 3, Y/5 + 1);
+}
 const skirtMesh = (() => {
   const x0 = -SKIRT_OUT, x1 = MAP_W + SKIRT_OUT, y0 = -SKIRT_OUT, y1 = MAP_H + SKIRT_OUT;
   const nx = Math.floor((x1 - x0) / SKIRT_STEP) + 1, ny = Math.floor((y1 - y0) / SKIRT_STEP) + 1;
@@ -1461,15 +1497,8 @@ const skirtMesh = (() => {
   // up through the finer mesh between its vertices as thin dark slivers.
   const hole    = (X, Y) => inMain(X, Y) || inCoast(X, Y);
   const heightOf = (X, Y) => {
-    const cx = Math.min(MAP_W - 0.5, Math.max(0.5, X)), cy = Math.min(MAP_H - 0.5, Math.max(0.5, Y));
-    const base = heightAt(cx * TILE, cy * TILE);
-    const de = Math.hypot(X - cx, Y - cy);
-    if(inMain(X, Y))  return base - 30;
-    if(inCoast(X, Y)) return base - 30;
-    if(de === 0) return base;
-    return base + 330 * (1 - Math.exp(-de / 6))
-         + _sstep(2, 26, de) * (560 * _rr(X/13, Y/13) + 320 * _rn(X/37 + 2, Y/37 + 9))
-         + _sstep(1, 10, de) * 150 * _rr(X/5 + 3, Y/5 + 1);
+    if(inMain(X, Y) || inCoast(X, Y)) return outerGroundAt(X, Y) - 30;
+    return outerGroundAt(X, Y);
   };
   let k = 0;
   for(let j = 0; j < ny; j++) for(let i = 0; i < nx; i++, k += 3){
@@ -1509,7 +1538,7 @@ const skirtMesh = (() => {
     const forest = _sstep(0.70, 0.88, up) * (1 - _sstep(520, 760, h + (n1 - 0.5) * 200));
     r += (FOREST[0]*tone - r) * forest; g += (FOREST[1]*tone - g) * forest; b += (FOREST[2]*tone - b) * forest;
     // Snow only on the true peaks, thinned where it is too steep to lie.
-    const snow = _sstep(1050, 1250, h + (n1 - 0.5) * 260) * _sstep(0.45, 0.7, up);
+    const snow = _sstep(SNOW_LO, SNOW_HI, h + (n1 - 0.5) * 260) * _sstep(0.45, 0.7, up);
     r += (SNOW[0] - r) * snow; g += (SNOW[1] - g) * snow; b += (SNOW[2] - b) * snow;
     col[p] = r; col[p+1] = g; col[p+2] = b;
   }
@@ -1579,9 +1608,9 @@ const farRange = (() => {
     // Three rows: buried base, the snow line, the crest.
     // Snow blends in with height rather than switching on at a threshold — a
     // hard switch capped a whole stretch of skyline in one flat pale band.
-    const sn = _sstep(950, 1400, h);
+    const sn = _sstep(SNOW_LO, SNOW_HI + 300, h);
     const crest = [0.21 + 0.36*sn, 0.22 + 0.39*sn, 0.25 + 0.42*sn];
-    for(const [y, c] of [[-900, [0.10, 0.11, 0.13]], [h * 0.62, [0.16, 0.17, 0.20]], [h, crest]]){
+    for(const [y, c] of [[-900, [0.11, 0.13, 0.17]], [h * 0.62, [0.17, 0.20, 0.26]], [h, crest]]){
       pos.push(x, y, z);
       // Facets: a per-column tone so the silhouette reads as faces catching
       // light at different angles, not one flat cut-out.
@@ -1600,7 +1629,7 @@ const farRange = (() => {
   const mat = new THREE.MeshBasicMaterial({ vertexColors:true, side:THREE.DoubleSide });
   // A lower haze ceiling than the land: at the full 52% this range all but
   // vanished into a pale noon sky, and it only exists to be seen.
-  mat.defines = { NO_RANGE_FOG: '', HAZE_CAP: '0.34' };
+  mat.defines = { NO_RANGE_FOG: '', HAZE_CAP: '0.42' };
   const m = new THREE.Mesh(geo, mat);
   m.frustumCulled = false;          // it moves with the camera
   m.renderOrder = -1;               // behind everything it overlaps anyway; draw it early
@@ -1640,6 +1669,7 @@ function ensureCoastSurface(){
   // Same ground shader as the mainland — slope rock, height tint, snow — or the
   // coast's edge ridge would be a grey-brown ramp with none of the rock on it.
   mesh.material.onBeforeCompile = terrMesh.material.onBeforeCompile;
+  mesh.material.defines = { NO_RANGE_FOG: '' };          // same rule as the mainland
   coastSurface.mesh = mesh;
   scene.add(mesh);
   console.log('[world] Saltmere ground built: ' + cv.width + 'x' + cv.height +
@@ -2449,7 +2479,7 @@ terrMesh.material.onBeforeCompile = (shader) => {
         // (the ordinary relief tops out at ${TERRAIN_AMP}). A cool off-white,
         // never pure white, so it doesn't compete with the clouds; thinned on
         // steep faces where snow can't lie; the noise breaks the snow line.
-        float snowF = smoothstep(430.0, 560.0, vWY + (m - 0.5) * 140.0) * (1.0 - rockF * 0.55);
+        float snowF = smoothstep(${SNOW_LO.toFixed(1)}, ${SNOW_HI.toFixed(1)}, vWY + (m - 0.5) * 260.0) * (1.0 - rockF * 0.55);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.84, 0.87, 0.92), snowF * 0.92);
       }`);
 };
@@ -7424,6 +7454,17 @@ function tileAt(px,py){
 function nearbyObject(type,tileRadius){
   const r2=(tileRadius*TILE)**2;
   return placedObjects.some(o=>o.type===type&&(o.x-player.x)**2+(o.y-player.y)**2<r2);
+}
+// Is any mob or remote player standing on this tile right now?
+function tileOccupied(tx, ty){
+  const x0 = tx*TILE, y0 = ty*TILE, x1 = x0 + TILE, y1 = y0 + TILE, pad = 16;
+  for(const e of enemies){
+    if(e.state==='dead'||e.state==='respawning') continue;
+    if(e.x > x0-pad && e.x < x1+pad && e.y > y0-pad && e.y < y1+pad) return true;
+  }
+  if(net.remotes) for(const [,st] of net.remotes)
+    if(st.x > x0-pad && st.x < x1+pad && st.y > y0-pad && st.y < y1+pad) return true;
+  return false;
 }
 function findClearSpawn(){
   const stx=Math.floor(player.x/TILE),sty=Math.floor(player.y/TILE);
@@ -13634,6 +13675,9 @@ function update(dt){
     const r=respawnAt[y][x]; if(!r){pendingRespawns.delete(key);continue;}
     if(G.gameTime<r.time)continue;
     if(Math.hypot(x*TILE+TILE/2-player.x,y*TILE+TILE/2-player.y)<player.r+TILE/2)continue;
+    // Anyone else standing there too. Ore is solid now, like trees and stone,
+    // so ore regrowing under a mob or another player sealed them in (B8-6).
+    if(tileOccupied(x,y))continue;
     map[y][x]=r.tile;resourceHp[y][x]=r.hp;respawnAt[y][x]=null;
     pendingRespawns.delete(key);
     bakeStaticTile(x,y);minimapUpdateTile(x,y);
@@ -15668,12 +15712,23 @@ function refreshFxList(){
     if(o.userData.fx){ fxGroup.add(o); return; }     // opted in: e.g. the portal vortex
     const mats = Array.isArray(o.material) ? o.material : [o.material];
     for(const m of mats){
-      if(m && m.blending === THREE.AdditiveBlending){ fxGroup.add(o); break; }
+      if(m && m.blending === THREE.AdditiveBlending){
+        // Light doesn't fog: an additive glow ADDS fogColor x haze on top of
+        // itself, so every distant ember and portal pool turned milky by day
+        // once the aerial haze landed (critic B8-8).
+        if(m.fog){ m.fog = false; m.needsUpdate = true; }
+        fxGroup.add(o); break;
+      }
     }
   });
   // depthWrite:false already keeps water out of the depth buffer, but the
   // prepass uses an override material that ignores that.
   fxGroup.add(waterMesh);
+  // Water is land for haze purposes (see terrMesh): distance haze, no range fog.
+  if(waterMesh.material && !(waterMesh.material.defines||{}).NO_RANGE_FOG){
+    waterMesh.material.defines = Object.assign({}, waterMesh.material.defines, { NO_RANGE_FOG: '' });
+    waterMesh.material.needsUpdate = true;
+  }
   return fxGroup.count();
 }
 
