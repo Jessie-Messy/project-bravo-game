@@ -115,25 +115,35 @@ Must land BEFORE P3 (taming needs meat). Today: no meat item, no cooking; mobs t
 straight onto the ground at death (`spawnDrops`, enemies.js ~164 — includes 'hide'); a
 corpse + loot window exists for dead PLAYERS only (game3d "Player corpse" ~6872, "Corpse
 loot" ~9027) — reuse its UI pattern.
+DECISIONS (user, 2026-09-26):
+  * NORMAL mob corpses: open to EVERYONE, one shared (singular) loot set — first come.
+  * SPECIAL corpses (bosses / named / champions): open ONLY to players who dealt damage to
+    it; EACH damager gets their OWN roll for the special drop (if that mob has one).
+    → needs a per-corpse damager set (server mobs: server tracks who hit; client mobs:
+    local player + any remote whose hits we saw — decide authority when building M6).
+  * Bosses KEEP the gold shower on the ground.
+  * Harvest has NO skill: it just requires an appropriate weapon — a knife or any bladed
+    item (sword, axe, dagger…; NOT bow, pickaxe, bare hands). Add a knife item if none
+    exists (shop/craft), since it is the obvious harvesting tool.
 - [ ] M1 mob corpses: a killed mob leaves its body (death pose / last frame, or a lie-down
       tilt) for CORPSE_TTL (~90 s, then fades); pooled, capped (oldest despawns first);
       respawn timers unchanged. Server mobs (wolf/bandit) die on the server — corpse is a
       client-side record keyed by mob id at the death position
 - [ ] M2 search: [E] on a corpse opens a loot window listing what the kill dropped (gold,
       gear, ARPG items, artifacts, sigils…) instead of scattering it; "take all"; bosses
-      keep their showers of gold/ingots on the ground (spectacle), or loot bag — decide
-- [ ] M3 harvest: [E]/hold on a searched corpse with a knife/any blade → progress bar →
+      ALSO keep their gold shower on the ground
+- [ ] M3 harvest: [E]/hold on a searched corpse holding a knife/bladed weapon → progress bar →
       yields per species (wolf: meat + hide; bandit: nothing to harvest; crab/serpent: meat,
       shell/scales?; cat: never harvestable). Corpse marked harvested (visual: shrinks/pelt
-      removed). Harvest skill XP (new skill "Skinning"/"Butchery" or fold into an existing
-      one — decide)
+      removed). No skill — weapon gate only (see DECISIONS)
 - [ ] M4 items: raw_meat, (cooked_meat via campfire cooking → heals), hide already exists;
       BAG_ITEMS entries (⚠ HANDOFF gotcha: a new pickup missing from BAG_ITEMS never shows in
       the bag), icons, stack sizes, bank/trade support, save/load
 - [ ] M5 cooking: use raw_meat at a lit campfire/placed fire → cooked_meat (food heal over
       time); burnt chance at low skill (optional)
-- [ ] M6 multiplayer: corpses of SERVER mobs visible to everyone; loot is per-player (whoever
-      killed/tagged it) or first-come — decide; PvP player corpses unchanged
+- [ ] M6 multiplayer: corpses of SERVER mobs visible to everyone; normal = shared first-come
+      loot; special = damagers only, per-damager special roll (see DECISIONS); PvP player
+      corpses unchanged
 - [ ] M7 tests: every mob type has a corpse/loot/harvest table (no silent 'undefined' drops),
       BAG_ITEMS covers every new item, save round-trip; critic pass
 
