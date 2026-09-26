@@ -5,6 +5,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave, netCallGuards,
   netHousePlace, netHouseUpdate, netHouseRemove,
   netDropAdd, netDropTake, netCorpseFill, netCorpseTake, netCorpseHarvest, netTradeReq, netTradeAccept, netTradeOffer, netTradeConfirm, netTradeCancel,
@@ -2516,6 +2517,24 @@ function makeMesh(geo, mat, count) {
 // Generous headroom so the map editor can paint far more obstacles at
 // runtime than the map started with, without overflowing the buffers.
 const wallMesh  = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({map:wallTex, normalMap:wallNrm, roughness:0.99, metalness:0.0}), nWall+4000);
+// Brick courses in WORLD space. Per-box UVs restarted the pattern on every
+// tile, so a long wall read as a row of separate blocks with seams between
+// them (critic C-9). Mapped from world position, courses run straight across.
+wallMesh.material.onBeforeCompile = (sh) => {
+  sh.vertexShader = sh.vertexShader.replace('#include <uv_vertex>', `#include <uv_vertex>
+    {
+      vec4 _wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
+      vec3 _wn = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+      vec2 _u = abs(_wn.x) > 0.5 ? _wp.zy : (abs(_wn.z) > 0.5 ? _wp.xy : _wp.xz);
+      #ifdef USE_MAP
+        vMapUv = _u / vec2(${TILE.toFixed(1)}, ${(TILE*2).toFixed(1)});
+      #endif
+      #ifdef USE_NORMALMAP
+        vNormalMapUv = _u / vec2(${TILE.toFixed(1)}, ${(TILE*2).toFixed(1)});
+      #endif
+    }`);
+};
+wallMesh.material.customProgramCacheKey = () => 'wall-worlduv-v1';
 // Stacked-skirt canopy and flared trunk instead of a bare cone on a cylinder.
 // Both merge down to ONE geometry each, so this is the same two draw calls the
 // primitives cost — the tier count is free.
@@ -3102,16 +3121,215 @@ function setPlaceInst(mesh, idx, cx, y, cz) {
   _m4.compose(_pos, _qId, _sc1); mesh.setMatrixAt(idx, _m4);
 }
 
+// ── What each wall tile IS ───────────────────────────────────────
+// Every WALL tile was the same 1-tile stone box, so the city was a maze of
+// grey blocks with no roofs. Connected groups of wall tell us what they are:
+//   BUILDING  a small group (the 5x5 houses, the bank, Saltmere's huts)
+//   FORT      a big one (the curtain wall, the keep)
+//   TOWER     fort tiles in a solid 3x3 block (the curtain's corners)
+// Measured once, on the map as generated + edited. Walls built later (the
+// player's own) are PLAIN and keep the old look.
+const WK_PLAIN = 0, WK_FORT = 1, WK_BUILDING = 2, WK_TOWER = 3;
+const wallKind = new Uint8Array(MAP_W * MAP_H);
+const BUILDINGS = [];       // { x0, y0, x1, y1 } inclusive tile bounds
+(function classifyWalls(){
+  const isW = (x, y) => map[y] && (map[y][x] === T.WALL || map[y][x] === T.STAINED_GLASS);
+  const seen = new Uint8Array(MAP_W * MAP_H);
+  for(let y = 0; y < MAP_H; y++) for(let x = 0; x < MAP_W; x++){
+    if(!isW(x, y) || seen[y*MAP_W+x]) continue;
+    const q = [[x, y]], tiles = []; seen[y*MAP_W+x] = 1;
+    let x0 = x, x1 = x, y0 = y, y1 = y;
+    while(q.length){
+      const [cx, cy] = q.pop(); tiles.push(cx, cy);
+      if(cx < x0) x0 = cx; if(cx > x1) x1 = cx; if(cy < y0) y0 = cy; if(cy > y1) y1 = cy;
+      for(const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const nx = cx+dx, ny = cy+dy;
+        if(isW(nx, ny) && !seen[ny*MAP_W+nx]){ seen[ny*MAP_W+nx] = 1; q.push([nx, ny]); }
+      }
+    }
+    const w = x1-x0+1, h = y1-y0+1;
+    const kind = (Math.max(w, h) <= 10 && Math.min(w, h) >= 2) ? WK_BUILDING
+               : (Math.max(w, h) > 12 ? WK_FORT : WK_PLAIN);
+    for(let i = 0; i < tiles.length; i += 2) wallKind[tiles[i+1]*MAP_W + tiles[i]] = kind;
+    if(kind === WK_BUILDING) BUILDINGS.push({ x0, y0, x1, y1 });
+  }
+  // Towers: fort tiles whose whole 3x3 neighbourhood is wall — the corner
+  // blocks. The 2-thick keep never qualifies.
+  const towers = [];
+  for(let y = 1; y < MAP_H-1; y++) for(let x = 1; x < MAP_W-1; x++){
+    if(wallKind[y*MAP_W+x] !== WK_FORT) continue;
+    let all = true;
+    for(let dy = -1; dy <= 1 && all; dy++) for(let dx = -1; dx <= 1; dx++) if(!isW(x+dx, y+dy)){ all = false; break; }
+    if(all) towers.push([x, y]);
+  }
+  for(const [x, y] of towers) for(let dy = -1; dy <= 1; dy++) for(let dx = -1; dx <= 1; dx++) wallKind[(y+dy)*MAP_W + x+dx] = WK_TOWER;
+  classifyWalls.towers = towers;
+})();
+const TOWER_CENTRES = [];
+for(let y = 1; y < MAP_H-1; y++) for(let x = 1; x < MAP_W-1; x++){
+  if(wallKind[y*MAP_W+x] !== WK_TOWER) continue;
+  let all = true;
+  for(let dy = -1; dy <= 1 && all; dy++) for(let dx = -1; dx <= 1; dx++) if(wallKind[(y+dy)*MAP_W+x+dx] !== WK_TOWER){ all = false; break; }
+  if(all) TOWER_CENTRES.push([x, y]);
+}
+const BLDG_H = WALL_H * 0.82, TOWER_H = WALL_H * 1.38;
+
+// Crenellations: two merlons per fort tile that faces open ground.
+const merlonMesh = makeMesh(new THREE.BoxGeometry(1,1,1), wallMesh.material, 12000);
+scene.add(merlonMesh);
+
+// ── The buildings ──
+// Built once: they are few, and the city never moves. Walls are a second
+// instanced box set in plaster and timber over a stone footing; each building
+// gets its own roof mesh so a roof can hide while you are inside (the shop-
+// keepers stand indoors). Doors get a lintel, and the windows glow at night.
+const houseTex = makeCanvasTex(128, 128, (x, w, h) => {
+  // stone footing, bottom quarter
+  x.fillStyle = '#6f675c'; x.fillRect(0, h*0.74, w, h*0.26);
+  x.fillStyle = 'rgba(0,0,0,.18)';
+  for(let r = 0; r < 2; r++) for(let c = 0; c < 4; c++) x.fillRect(c*32 + (r%2)*16, h*0.76 + r*16, 2, 14);
+  x.fillRect(0, h*0.88, w, 2);
+  // plaster
+  const g = x.createLinearGradient(0, 0, 0, h*0.74);
+  g.addColorStop(0, '#e2d6bb'); g.addColorStop(1, '#cfc09f');
+  x.fillStyle = g; x.fillRect(0, 0, w, h*0.74);
+  // timber: posts at the edges, a rail, a brace
+  x.fillStyle = '#4a3322';
+  x.fillRect(0, 0, 10, h*0.74); x.fillRect(w-10, 0, 10, h*0.74);
+  x.fillRect(0, 0, w, 8); x.fillRect(0, h*0.40, w, 8); x.fillRect(0, h*0.70, w, 7);
+  x.save(); x.translate(w/2, h*0.22); x.rotate(-0.62); x.fillRect(-40, -4, 80, 8); x.restore();
+});
+const houseWallMat = new THREE.MeshStandardMaterial({ map: houseTex, roughness: 0.94, metalness: 0 });
+const roofTex = makeCanvasTex(128, 128, (x, w, h) => {
+  x.fillStyle = '#5a3326'; x.fillRect(0, 0, w, h);
+  for(let r = 0; r < 8; r++){
+    x.fillStyle = r % 2 ? '#6a3b2c' : '#61372a'; x.fillRect(0, r*16, w, 14);
+    x.fillStyle = 'rgba(0,0,0,.35)'; x.fillRect(0, r*16 + 14, w, 2);
+    for(let c = 0; c < 8; c++) x.fillRect(c*16 + (r%2)*8, r*16, 1.5, 14);
+  }
+});
+roofTex.wrapS = roofTex.wrapT = THREE.RepeatWrapping;
+const roofMat = new THREE.MeshStandardMaterial({ map: roofTex, roughness: 0.82, metalness: 0, side: THREE.DoubleSide });
+const _windowMat = new THREE.MeshStandardMaterial({ color: 0x1c1712, emissive: 0xffb057, emissiveIntensity: 0, roughness: 0.6 });
+const buildingRoofs = [];                 // { mesh, b }
+const houseWallMesh = (() => {
+  let n = 0; for(let i = 0; i < wallKind.length; i++) if(wallKind[i] === WK_BUILDING) n++;
+  const m = makeMesh(new THREE.BoxGeometry(1,1,1), houseWallMat, Math.max(1, n));
+  let i = 0;
+  for(let ty = 0; ty < MAP_H; ty++) for(let tx = 0; tx < MAP_W; tx++){
+    if(wallKind[ty*MAP_W+tx] !== WK_BUILDING) continue;
+    const cx = tx*TILE+TILE/2, cz = ty*TILE+TILE/2;
+    _pos.set(cx, heightAt(cx, cz) + BLDG_H/2, cz); _sc1.set(TILE, BLDG_H, TILE);
+    _m4.compose(_pos, new THREE.Quaternion(), _sc1); m.setMatrixAt(i++, _m4);
+  }
+  markInst(m, i); m.computeBoundingSphere();
+  scene.add(m);
+  return m;
+})();
+(function buildRoofsAndTrim(){
+  const trim = [], wins = [];
+  const box = (x, y, z, sx, sy, sz) => { const g = new THREE.BoxGeometry(sx, sy, sz); g.translate(x, y, z); return g; };
+  for(const b of BUILDINGS){
+    const X0 = b.x0*TILE, X1 = (b.x1+1)*TILE, Z0 = b.y0*TILE, Z1 = (b.y1+1)*TILE;
+    const cx = (X0+X1)/2, cz = (Z0+Z1)/2;
+    const base = heightAt(cx, cz) + BLDG_H;
+    const alongX = (X1-X0) >= (Z1-Z0);                 // ridge runs along the longer side
+    const half = (alongX ? (Z1-Z0) : (X1-X0)) / 2 + TILE*0.3, len = (alongX ? (X1-X0) : (Z1-Z0)) / 2 + TILE*0.3;
+    const rise = half * 0.72;
+    // Two slopes + two gable ends, in local space (ridge along +X), then turned.
+    const pos = [
+      -len, 0, -half,  len, 0, -half,  len, rise, 0,  -len, rise, 0,     // north slope
+      -len, 0,  half, -len, rise, 0,   len, rise, 0,   len, 0,  half,    // south slope
+    ];
+    const uv = [0,0, len/TILE,0, len/TILE,half/TILE, 0,half/TILE,  0,0, 0,half/TILE, len/TILE,half/TILE, len/TILE,0];
+    const idx = [0,1,2, 0,2,3, 4,5,6, 4,6,7];
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setIndex(idx); g.computeVertexNormals();
+    const roof = new THREE.Mesh(g, roofMat);
+    roof.position.set(cx, base, cz); if(!alongX) roof.rotation.y = Math.PI/2;
+    roof.castShadow = true; roof.receiveShadow = true;
+    // Gable ends in plaster, and a chimney on every other building.
+    const gable = new THREE.BufferGeometry();
+    const gl = len - TILE*0.3;
+    gable.setAttribute('position', new THREE.Float32BufferAttribute([
+      -gl, 0, -half+TILE*0.3,  -gl, 0, half-TILE*0.3,  -gl, rise*0.8, 0,
+       gl, 0,  half-TILE*0.3,   gl, 0, -half+TILE*0.3,   gl, rise*0.8, 0 ], 3));
+    gable.computeVertexNormals();
+    roof.add(new THREE.Mesh(gable, new THREE.MeshStandardMaterial({ color: 0xd4c7a8, roughness: 0.95, side: THREE.DoubleSide })));
+    if(BUILDINGS.indexOf(b) % 2 === 0){
+      const ch = new THREE.Mesh(new THREE.BoxGeometry(TILE*0.5, rise*0.9, TILE*0.5), houseWallMat);
+      ch.position.set(len*0.45, rise*0.55, -half*0.35); ch.castShadow = true; roof.add(ch);
+    }
+    scene.add(roof); buildingRoofs.push({ mesh: roof, b });
+    // Door lintels (gaps in the building's outline) and windows (outer faces).
+    for(let tx = b.x0; tx <= b.x1; tx++) for(let ty = b.y0; ty <= b.y1; ty++){
+      const edge = tx === b.x0 || tx === b.x1 || ty === b.y0 || ty === b.y1; if(!edge) continue;
+      const k = wallKind[ty*MAP_W+tx], wx = tx*TILE+TILE/2, wz = ty*TILE+TILE/2, gy = heightAt(wx, wz);
+      if(k !== WK_BUILDING){                      // a gap: the doorway
+        trim.push(box(wx, gy + BLDG_H*0.86, wz, TILE, BLDG_H*0.28, TILE));
+        continue;
+      }
+      const corner = (tx === b.x0 || tx === b.x1) && (ty === b.y0 || ty === b.y1);
+      if(corner || (tx + ty) % 2) continue;
+      const out = ty === b.y0 ? [0,-1] : ty === b.y1 ? [0,1] : tx === b.x0 ? [-1,0] : [1,0];
+      const ww = out[0] ? 2 : TILE*0.36, wd = out[0] ? TILE*0.36 : 2;
+      wins.push(box(wx + out[0]*TILE*0.51, gy + BLDG_H*0.55, wz + out[1]*TILE*0.51, ww, TILE*0.44, wd));
+    }
+  }
+  if(trim.length){ const m = new THREE.Mesh(mergeGeometries(trim), houseWallMat); m.castShadow = true; scene.add(m); }
+  if(wins.length){ scene.add(new THREE.Mesh(mergeGeometries(wins), _windowMat)); }
+  // Tower caps: a conical slate roof on each corner tower.
+  for(const [tx, ty] of TOWER_CENTRES){
+    const wx = tx*TILE+TILE/2, wz = ty*TILE+TILE/2;
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(TILE*1.95, TILE*2.6, 12), roofMat);
+    cone.position.set(wx, heightAt(wx, wz) + TOWER_H + TILE*1.3, wz); cone.castShadow = true;
+    scene.add(cone);
+  }
+})();
+// Per frame: the roof over you lifts away; windows light up after dusk.
+function updateBuildings(){
+  const ptx = Math.floor(player.x/TILE), pty = Math.floor(player.y/TILE);
+  for(const r of buildingRoofs){ const b = r.b;
+    r.mesh.visible = !(ptx >= b.x0 && ptx <= b.x1 && pty >= b.y0 && pty <= b.y1); }
+  _windowMat.emissiveIntensity = Math.max(0, 1 - _envDayF*1.6) * 1.8;
+}
+
 function rebuildWalls() {
   let i=0; const cap=wallMesh.instanceMatrix.count, b=_obsBounds();
+  let mi=0; const mcap=merlonMesh.instanceMatrix.count;
+  const _isW=(x,y)=>map[y]&&(map[y][x]===T.WALL||map[y][x]===T.STAINED_GLASS);
   const q=new THREE.Quaternion(), eul=new THREE.Euler();
   for(let ty=b.ty0;ty<=b.ty1&&i<cap;ty++) for(let tx=b.tx0;tx<=b.tx1&&i<cap;tx++) {
     if(map[ty][tx]!==T.WALL) continue;
+    const wk = wallKind[ty*MAP_W+tx];
+    if(wk===WK_BUILDING) continue;                 // drawn by houseWallMesh
+    const cx=tx*TILE+TILE/2, cz=ty*TILE+TILE/2, gy=heightAt(cx,cz);
+    if(wk===WK_FORT||wk===WK_TOWER){
+      // Masonry is laid straight: no per-tile tilt or height jitter, which
+      // opened seams and stepped the top (critic C-9). A full tile wide.
+      const h = wk===WK_TOWER ? TOWER_H : WALL_H;
+      _pos.set(cx, gy + h/2, cz); _sc1.set(TILE, h, TILE); q.identity();
+      _m4.compose(_pos, q, _sc1); wallMesh.setMatrixAt(i, _m4);
+      wallInstTile[i]=ty*MAP_W+tx; i++;
+      // Merlons on tiles that face open ground; along the wall's own run.
+      const open = !_isW(tx+1,ty)||!_isW(tx-1,ty)||!_isW(tx,ty+1)||!_isW(tx,ty-1);
+      if(open && mi < mcap-1){
+        const alongX = _isW(tx+1,ty)||_isW(tx-1,ty);
+        for(const s of [-0.25, 0.25]){
+          _pos.set(cx + (alongX?s*TILE:0), gy + h + 11, cz + (alongX?0:s*TILE));
+          _sc1.set(alongX?TILE*0.3:TILE*0.62, 22, alongX?TILE*0.62:TILE*0.3);
+          _m4.compose(_pos, q, _sc1); merlonMesh.setMatrixAt(mi++, _m4);
+        }
+      }
+      continue;
+    }
     const n1=_terrNoise(tx*13, ty*17), n2=_terrNoise(tx*29, ty*5);
     const varH = WALL_H + (n1 - 0.5) * 5;
     eul.set((n1-0.5)*0.03, (n2-0.5)*0.08, (n2-0.5)*0.03);
     q.setFromEuler(eul);
-    _pos.set(tx*TILE+TILE/2 + (n1-0.5)*2, heightAt(tx*TILE+TILE/2, ty*TILE+TILE/2) + varH/2, ty*TILE+TILE/2 + (n2-0.5)*2);
+    _pos.set(cx + (n1-0.5)*2, gy + varH/2, cz + (n2-0.5)*2);
     _sc1.set(TILE*0.98, varH, TILE*0.98);
     _m4.compose(_pos, q, _sc1); wallMesh.setMatrixAt(i, _m4);
     wallInstTile[i]=ty*MAP_W+tx;
@@ -3119,6 +3337,7 @@ function rebuildWalls() {
   }
   wallInstTile.length=i;
   markInst(wallMesh,i);
+  markInst(merlonMesh,mi);
   wallMesh.computeBoundingSphere();   // raycast early-outs on this; stale = missed clicks
 }
 // ── Tree placement ────────────────────────────────────────────────
@@ -14835,6 +15054,7 @@ function render3D(t){
   // frame's camera makes shadow edges lag visibly when you run.
   fitSunShadow();
   updateFarRange();
+  updateBuildings();
   const rdt = Math.min(Math.max(t-_lastRenderT, 0), 0.1); _lastRenderT = t;
   if(rndr) rndr.render(rdt); else renderer.render(scene,camera);
   const ctx=G.ctx;ctx.clearRect(0,0,G.canvas.width,G.canvas.height);

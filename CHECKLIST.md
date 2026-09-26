@@ -223,14 +223,19 @@ cap or KTX2 textures). Ask the user before raising it.
       5x5 HOLLOW rooms (WALL border, PATH inside, 1 door gap) with shopkeepers INSIDE; bank
       9x7 hollow at 306-314 x 359-365; Saltmere huts 3x2 ("WWW"/"W=W").
       Plan:
-      [ ] C4a boot-time WALL component pass on the static map → per-tile flag: 0 plain (incl.
+      [x] C4a boot-time WALL component pass on the static map → per-tile flag: 0 plain (incl.
           later player-placed walls), 1 fortification (bbox > 12), 2 building (bbox <= 10)
-      [ ] C4b buildings: second instanced mesh with a plaster + timber-frame canvas texture
+      [x] C4b buildings: second instanced mesh with a plaster + timber-frame canvas texture
           and stone footing; merged gable roofs (shingle texture, overhang, gable ends,
           chimney on some); lintel over each door gap; roof HIDDEN while the player is inside
           its bbox (NPCs stand inside); warm emissive windows at night
-      [ ] C4c fortifications: zero the per-tile jitter; merlons + coping + plinth (instanced);
+      [x] C4c fortifications: zero the per-tile jitter; merlons + coping + plinth (instanced);
           world-space UVs so brick courses run across tiles; corner towers taller + conical roof
+      [x] C4-impl: game3d "What each wall tile IS" (wallKind, BUILDINGS, TOWER_CENTRES, BLDG_H,
+          TOWER_H), houseWallMesh + per-building roof meshes (hidden while you are inside),
+          lintels, night windows (_windowMat), merlonMesh in rebuildWalls, world-space UVs on
+          wallMesh (customProgramCacheKey 'wall-worlduv-v1'), updateBuildings() per frame
+      [ ] C4e critic pass on buildings (shots .shots/b1_*.jpg)
       [ ] C4d tests: every buildHouse/bank/hut classified as building; outer + keep = fort
 
 ### Critic findings (append here)
@@ -252,7 +257,7 @@ Round 1 (baseline shots `.shots/base_*.jpg`), ranked worst first:
       rings; add wrap lighting + outward normals; raise albedo ~#3d6a2a
 - [ ] [critic] C-8 Black slabs on the horizon (horizon_field, vista, grass_close) — unfogged
       far wall/bridge boxes? Identify and fix
-- [ ] [critic] C-9 City walls: per-tile random tilt/yaw/offset/height opens seams and a stepped
+- [x] [critic] C-9 City walls: per-tile random tilt/yaw/offset/height opens seams and a stepped
       top — zero it for T.WALL; world-space UVs so brick courses continue; merlons +
       coping + plinth; interior building kit (gable timber-frame, stone hall, tower)
 - [ ] [critic] C-10 Water edge: white foam wash ghosts blades (edge_west); hard seam y≈485
