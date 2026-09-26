@@ -99,6 +99,14 @@ levels, saved as `player.pet`. Pet frame bottom-left (click = stance, ✕ = rele
 players see it via PlayerState `pet/petX/petY` (server accepts positions near the owner only).
 ⚠ Model payload is 7.96/8.00 MB — the next model needs a budget decision from the owner.
 
+**Buildings (C4).** `wallKind` classifies every WALL tile at boot by its connected group:
+BUILDING (small groups: the 5x5 houses, bank, Saltmere huts → `BUILDINGS`), FORT (large: curtain
+wall, keep), TOWER (solid 3x3 corners). Buildings are drawn once by `houseWallMesh` (plaster/timber
+canvas texture on a stone footing, `BLDG_H`) with a roof Mesh each (hidden while the player stands
+inside — shopkeepers are indoors), door lintels and night-lit windows (`_windowMat`, driven in
+`updateBuildings`). Forts: no jitter, `merlonMesh` crenellations in `rebuildWalls`, world-space
+brick UVs on `wallMesh`; towers `TOWER_H` with cone roofs. Player-built walls stay PLAIN.
+
 **Dev tooling.** `_dev.frames(n)` runs update+render synchronously (a hidden tab throttles
 rAF, so console teleports never reached the canvas). `tools/devserver.mjs` accepts
 `POST /__shot?name=` with header `X-Bravo-Shot: 1` and writes `.shots/<name>.jpg`
