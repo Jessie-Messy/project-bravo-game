@@ -218,7 +218,8 @@ cap or KTX2 textures). Ask the user before raising it.
 - [~] C2 Grass — tufts of 3 (grass.js makeTuftGeometry, TUFT_BLADES), live camera-distance
       fade (uFadeNear/Far), per-tuft hue jitter, boundary tiles 62% height, ground GRASS colour
       [66,101,38]. Done: C-2, C-3, C-4, C-5, C-12. Re-shoot + critic still to do
-- [ ] C3 Background / far trees
+- [~] C3 Background / far trees — TRUNKH 0.42→0.30 of TREE_H (canopy 0.70), far trunk tint 0xb8aa98.
+      Still to do: C-7 canopy shading (wrap lighting, leaf texture outline rings, albedo lift)
 - [ ] C4 Buildings
 - [ ] C5 Re-shoot the same camera spots, critic A/B, iterate until no major findings
 
@@ -260,7 +261,7 @@ Round 1 (baseline shots `.shots/base_*.jpg`), ranked worst first:
       x-bounds check (row wrap). Reject tx outside 0..MAP_W-1
 - [x] [critic] C-5 Blades look like "a bed of knives": width 0.22→~0.12, per-blade hue jitter,
       bend normals toward terrain normal (tufts of 3 crossed strips = fewer instances)
-- [ ] [critic] C-6 Far trees are lollipops: TRUNKH 0.42→~0.26 of TREE_H, per-instance
+- [x] [critic] C-6 Far trees are lollipops: TRUNKH 0.42→~0.26 of TREE_H, per-instance
       height 0.75–1.3 / yaw / lean, greyer trunks #4b3d31, canopy colour jitter
 - [ ] [critic] C-7 Canopy shading flat & dark (#1d3f1a); leaf texture has fish-scale outline
       rings; add wrap lighting + outward normals; raise albedo ~#3d6a2a
@@ -277,6 +278,15 @@ Mountain guidance (critic): 3 rings (foothills #6f8575 haze .35, mid #8d9fae .55
 into horizon colour, rendered before terrain, ~3 draws. Edge: raise heightAt over a 6–10 tile
 band to a ridge, band blocking, low-res skirt beyond the map so no sky shows under it, conifers
 on the band's lower half, slope-based rock blend.
+
+## NEXT UP (in order, as of 2026-09-26 afternoon)
+1. C-7 canopy shading; C4e critic pass on buildings (.shots/b1_*.jpg) — then a round-2
+   graphics critic on the whole tour (window.TOUR in the page; see HANDOFF dev tooling)
+2. [critic] camera boom inside tree canopies — fade canopies near the camera
+3. C-8 black slabs on the horizon (identify), C-10 water edge foam wash, C-11 contact AO
+4. cat idle frame; U1b 10 Hz far-anim check; B9 low-tier perf check
+5. Phase D: version bump v0.20.0, HANDOFF deploy note, ASK THE USER before deploying (server
+   changes: corpses/portalArrivals/pet schema need a server deploy + world-data rebuild)
 
 ## Phase D — ship
 - [ ] D1 `npm test` + `npm run verify` green, budgets respected

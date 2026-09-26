@@ -1779,8 +1779,11 @@ const TREE_H    = CHAR_H * 2;        // trees stand twice as tall as the hero �
 // half (168u), comfortably above head height. Player-placed walls share this,
 // so a wall you build is actually a wall.
 const WALL_H   = TILE * 1.75 * OBJ_SCALE;
-const TRUNKH   = TREE_H * 0.42;      // trunk portion of the tree
-const TOPH     = TREE_H * 0.58;      // canopy portion (trunk + canopy = TREE_H)
+// Canopy-heavy on purpose. At 42% trunk the far trees read as lollipops — a
+// long dark stick with a ball on top (critic C-6). The total stays TREE_H so
+// the near and far LODs still match and trees don't pop at the swap.
+const TRUNKH   = TREE_H * 0.30;      // trunk portion of the tree
+const TOPH     = TREE_H * 0.70;      // canopy portion (trunk + canopy = TREE_H)
 const STONE_R  = TILE * 0.28 * OBJ_SCALE;
 // Dungeon walls were TILE*0.9*OBJ_SCALE = 86u — below the 126u character, so you
 // looked straight over them and a cave read as floor pattern rather than rock.
@@ -2540,7 +2543,9 @@ wallMesh.material.customProgramCacheKey = () => 'wall-worlduv-v1';
 // primitives cost — the tier count is free.
 const _canopyGeo = makeConiferCanopy(THREE, { height:TOPH, radius:TILE*0.72, tiers:4, seed:20260801 });
 const _trunkGeo  = makeTrunk(THREE, { height:TRUNKH, top:9, bottom:12, seed:4242 });
-const trunkMesh = makeMesh(_trunkGeo,  new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0}), nTree+4000);
+// Tinted toward grey-brown: the bare bark read as near-black maroon at range,
+// the darkest thing in every vista (critic C-6).
+const trunkMesh = makeMesh(_trunkGeo,  new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0, color:0xb8aa98}), nTree+4000);
 const _canopyMat = new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0});
 const topMesh   = makeMesh(_canopyGeo, _canopyMat, nTree+4000);
 // A broadleaf crown for the species that are not conifers. SHARES the material
