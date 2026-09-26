@@ -296,7 +296,7 @@ export function champSpawnTick(dt) {
             const em = enemies[i];
             if (em.x >= DUNGEON_X0 * TILE && em.x <= (DUNGEON_X0 + DUNGEON_W) * TILE &&
                 em.y >= DUNGEON_Y0 * TILE && em.y <= (DUNGEON_Y0 + DUNGEON_H) * TILE &&
-                !em.isChamp && !em.floorBoss) {
+                !em.isChamp && !em.floorBoss && !em.tame) {   // never your pet
               enemies.splice(i, 1);
             }
           }
@@ -428,7 +428,15 @@ export function damagePlayer(dmg, attacker) {
 // `drops` this death's items start. game3d moves them into a corpse.
 export const hooks = { onKill: null, onCorpse: null };
 
+// Something you may fight. Your pet and passive wildlife are NOT, and every
+// damage path and every target picker asks this. Before it existed the sword
+// arc, arrows, aggro auto-swing, guards and gambits all went for the pet — and
+// since a pet comes back after fainting, that was an endless XP/loot farm.
+export function isHostile(e) {
+  return !!e && !e.tame && !(ENEMY_CFG[e.type] && ENEMY_CFG[e.type].passive);
+}
 export function damageEnemy(e, dmg) {
+  if (!isHostile(e)) return;
   if (e.iframes>0||e.state==='dead'||e.state==='respawning') return;
   e._hitByMe = true;                 // a special corpse opens only for those who hit it
   if (hooks.onHitEnemy) hooks.onHitEnemy(e);

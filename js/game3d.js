@@ -44,7 +44,7 @@ import { CHAMP_ALTARS, DUNGEON_PORTAL_A, DUNGEON_PORTAL_B,
   COAST_VILLAGE, COAST_HOUSE_PLOTS, COAST_DOCK_TILES, FERRY_MAINLAND,
   COAST_NPCS, COAST_SAFE_ZONE, COAST_BOSS_SPAWNS, portalKind, CITY_ARRIVAL } from './world.js';
 import { updateEnemy, champSpawnTick, damageEnemy, damagePlayer,
-  spawnRandomEnemy, boxBlocked, pointColliders, populateWorld, populateDungeon, hooks,
+  spawnRandomEnemy, boxBlocked, pointColliders, populateWorld, populateDungeon, hooks, isHostile,
   makeEnemy, ENEMY_CFG, extraBlocking, spawnDrops, BOSS_ABILITIES,
   bossForceCast, bossResolveNow, bossPickForTest, WADE,
 } from './enemies.js';
@@ -6466,9 +6466,15 @@ window.addEventListener('keydown',e=>{
 
 // One model instance per enemy pool slot (built lazily, rebuilt on type change)
 const slotModel = [];
+// Everything SkeletonUtils.clone allocated for one model: the mixer's actions
+// and the skeleton's bone texture. Geometry and materials are shared.
+function _disposeModel(inst){
+  scene.remove(inst.obj); inst.mixer.stopAllAction();
+  inst.obj.traverse(o => { if(o.isSkinnedMesh && o.skeleton) o.skeleton.dispose(); });
+}
 function buildSlotModel(i, type){
   const old = slotModel[i];
-  if (old) { scene.remove(old.obj); old.mixer.stopAllAction(); }
+  if (old) _disposeModel(old);
   const inst = buildMobModel(type);
   slotModel[i]=inst; return inst;
 }
@@ -8798,7 +8804,7 @@ function usePotion(){
 function nearestEnemy(range){
   let best=range||1e9, tgt=null;
   for(const e of enemies){
-    if(e.state==='dead'||e.state==='respawning')continue;
+    if(e.state==='dead'||e.state==='respawning'||!isHostile(e))continue;
     const d=Math.hypot(e.x-player.x,e.y-player.y);
     if(d<best){best=d;tgt=e;}
   }
@@ -9268,7 +9274,7 @@ function callGuards(){
     return;
   }
   if(!inCity()){addFloater(player.x,player.y-30,'not in city!');return;}
-  const threats=enemies.filter(e=>e.state!=='dead'&&e.state!=='respawning'&&Math.hypot(e.x-player.x,e.y-player.y)<TILE*12);
+  const threats=enemies.filter(e=>e.state!=='dead'&&e.state!=='respawning'&&isHostile(e)&&Math.hypot(e.x-player.x,e.y-player.y)<TILE*12);
   if(!threats.length){addFloater(player.x,player.y-30,'no threat nearby!');return;}
   G.guardCallCooldown=GUARD_CALL_COOLDOWN;
   // Guards muster next to whoever called them — they used to spawn at a fixed
@@ -9310,7 +9316,7 @@ function updateGuard(g,dt){
     return;
   }
   let target=null,best=TILE*16;
-  for(const e of enemies){if(e.state==='dead'||e.state==='respawning')continue;const d=Math.hypot(e.x-g.x,e.y-g.y);if(d<best){best=d;target=e;}}
+  for(const e of enemies){if(e.state==='dead'||e.state==='respawning'||!isHostile(e))continue;const d=Math.hypot(e.x-g.x,e.y-g.y);if(d<best){best=d;target=e;}}
   if(target){
     const dx=target.x-g.x,dy=target.y-g.y,dist=Math.hypot(dx,dy);
     if(dist>g.attackRange*0.8){const nx=g.x+(dx/dist)*g.speed*dt;if(!boxBlocked(nx,g.y,g.r))g.x=nx;const ny=g.y+(dy/dist)*g.speed*dt;if(!boxBlocked(g.x,ny,g.r))g.y=ny;}
@@ -9567,7 +9573,8 @@ function handleMobCorpseClick(e){
 // also marks the mob as hit by you, so special corpses open for you).
 const PET_TRUST = 3, PET_FOLLOW = TILE*1.6, PET_LEASH = TILE*14, PET_ASSIST = TILE*9;
 const PET_STANCES = ['hunt', 'follow', 'stay'];
-hooks.luresWildlife = e => e.type === 'cat' && !e.tame && ((inv.raw_meat||0) > 0 || (inv.cooked_meat||0) > 0);
+const _hasMeat = () => (inv.raw_meat||0) > 0 || (inv.cooked_meat||0) > 0;
+hooks.luresWildlife = e => e.type === 'cat' && !e.tame && !player.pet && _hasMeat();
 let petMob = null;                 // the live enemy record of your pet
 let _petTarget = null;
 hooks.onHitEnemy = e => { if(petMob && e !== petMob && !e.tame) _petTarget = e; };
@@ -9603,18 +9610,31 @@ function adoptPet(e){
 // Bring the saved pet back beside the player (load, or after it fainted).
 function summonPet(){
   if(!player.pet) return;
-  if(petMob && enemies.includes(petMob) && petMob.state!=='dead' && petMob.state!=='respawning') return;
-  const e = makeEnemy(player.pet.type, Math.floor(player.x/TILE), Math.floor(player.y/TILE));
-  if(!e) return;
-  e.x = player.x + 30; e.y = player.y + 20; e.spawnX = e.x; e.spawnY = e.y;
+  if(petMob && enemies.includes(petMob)) return;
+  // Built directly, not through makeEnemy: that searches for GRASS and so
+  // returned nothing in the dungeon or a cave, and the pet never came back.
+  const cfg = ENEMY_CFG[player.pet.type]; if(!cfg) return;
+  const at = _petSpot();
+  const e = { type: player.pet.type, x: at.x, y: at.y, spawnX: at.x, spawnY: at.y,
+    hp: cfg.maxHp, maxHp: cfg.maxHp, r: cfg.r, speed: cfg.speed, damage: 0, attackRange: 0, aggroRange: 0,
+    attackCooldown: 1, attackTimer: 0, iframes: 0, state: 'idle', deadTimer: 0, respawnTimer: 0, stunTimer: 0,
+    wanderAngle: 0, wanderTimer: 0, rangedTimer: 0, abilityTimer: 0, fleeing: false, isMini: false, piperPhase: 0 };
   enemies.push(e); adoptPet(e);
+}
+// Somewhere open beside the player — never inside a wall or the river.
+function _petSpot(){
+  for(const [dx, dz] of [[30,20],[-30,20],[30,-20],[-30,-20],[0,36],[36,0],[-36,0],[0,-36]]){
+    const x = player.x + dx, y = player.y + dz;
+    if(!boxBlocked(x, y, 8, false)) return { x, y };
+  }
+  return { x: player.x, y: player.y };
 }
 function releasePet(){
   if(!petMob) { player.pet = null; return; }
   petMob.tame = false; petMob._trust = 0; petMob.speed = ENEMY_CFG.cat.speed;
   petMob.maxHp = ENEMY_CFG.cat.maxHp; petMob.hp = Math.min(petMob.hp, petMob.maxHp);
   addFloater(petMob.x, petMob.y-30, player.pet.name+' wanders off');
-  petMob = null; player.pet = null; _petTarget = null;
+  petMob = null; player.pet = null; _petTarget = null; _petFaint = 0;
 }
 function _petMove(e, tx, ty, speed, dt){
   const dx = tx - e.x, dy = ty - e.y, d = Math.hypot(dx, dy) || 1, s = speed*dt;
@@ -9628,17 +9648,25 @@ function updatePet(dt){
   const e = petMob;
   // A pet does not die. It faints, and turns up at your side a little later.
   if(e.state === 'dead' || e.state === 'respawning'){
-    if(_petFaint === 0){ _petFaint = 20; addFloater(player.x,player.y-40,p.name+' fainted!'); }
+    if(_petFaint === 0){ _petFaint = 20; p.hp = 0; addFloater(player.x,player.y-40,p.name+' fainted!'); }
     _petFaint -= dt;
-    if(_petFaint <= 0){ _petFaint = 0; enemies.splice(enemies.indexOf(e),1); petMob = null; p.hp = Math.round(petStats(p).maxHp*0.5); summonPet(); }
+    if(_petFaint <= 0){
+      // Revived IN PLACE. Splicing it out shifted every later enemy's slot
+      // model (slotModel is keyed by index), rebuilding and leaking models.
+      _petFaint = 0; const at = _petSpot();
+      e.x = at.x; e.y = at.y; e.state = 'idle'; e.deadTimer = 0; e.iframes = 0;
+      e.hp = p.hp = Math.round(petStats(p).maxHp*0.5);
+    }
     return;
   }
+  // An owner who is dead or a ghost does not have a pet fighting for them.
+  if(player.dead || player.ghost) _petTarget = null;
   p.hp = e.hp;
   if(e.iframes > 0) e.iframes -= dt;
   e.attackTimer = Math.max(0, (e.attackTimer||0) - dt);
   const pd = Math.hypot(player.x - e.x, player.y - e.y);
   // Lost it (portal, ferry, a long run): it finds its own way back.
-  if(pd > PET_LEASH){ e.x = player.x + 30; e.y = player.y + 20; _petTarget = null; return; }
+  if(pd > PET_LEASH){ const at = _petSpot(); e.x = at.x; e.y = at.y; _petTarget = null; return; }
   // What to fight: whatever you hit, or whatever is coming for you.
   if(p.stance === 'hunt'){
     if(_petTarget && (_petTarget.state==='dead'||_petTarget.state==='respawning'||_petTarget.tame||
@@ -9683,7 +9711,7 @@ function drawPetFrame(){
   ctx.fillStyle = 'rgba(20,14,8,.78)'; ctx.fillRect(r.x, r.y, r.w, r.h);
   ctx.strokeStyle = '#b08a50'; ctx.lineWidth = 1; ctx.strokeRect(r.x, r.y, r.w, r.h);
   ctx.font = 'bold 12px ui-monospace,Menlo,Consolas,monospace'; ctx.textAlign = 'left'; ctx.fillStyle = '#f0d8a8';
-  ctx.fillText('🐈 '+p.name+'  L'+p.lvl+'  · '+(petMob.state==='dead'?'fainted':p.stance), r.x+6, r.y+15);
+  ctx.fillText('🐈 '+p.name+'  L'+p.lvl+'  · '+((petMob.state==='dead'||petMob.state==='respawning')?'fainted':p.stance), r.x+6, r.y+15);
   const f = Math.max(0, Math.min(1, (petMob.hp||0)/st.maxHp));
   ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(r.x+6, r.y+22, r.w-40, 10);
   ctx.fillStyle = f > 0.5 ? '#6fcf4a' : f > 0.25 ? '#d8c040' : '#d04a30'; ctx.fillRect(r.x+6, r.y+22, (r.w-40)*f, 10);
@@ -11917,7 +11945,7 @@ window.addEventListener('keydown',e=>{
       else if(G.tradeOpen)G.tradeOpen=false;
       else if(G.houseMenuOpen)G.houseMenuOpen=false;
       else if(G.houseSettingsOpen)G.houseSettingsOpen=false;
-      else if(nearestWildCat())feedWildCat(nearestWildCat());
+      else if(!player.pet&&_hasMeat()&&nearestWildCat())feedWildCat(nearestWildCat());
       else if(nearestMobCorpse())openMobCorpse(nearestMobCorpse());
       else{
         let used=false;
@@ -14562,7 +14590,7 @@ function update(dt){
       if(Math.hypot(a.x-st.x,a.y-st.y)<19){netPvp(rid,'bow');hit=true;break;}}
     if(hit||a.dist>(a.maxDist||TILE*14))projectiles.splice(i,1);}
   syncServerMobs(dt);   // server-authoritative mobs mirror into `enemies`
-  for(const e of enemies){ if(!e.srv) updateEnemy(e,dt); } champSpawnTick(dt);
+  for(const e of enemies){ if(!e.srv && !e.tame) updateEnemy(e,dt); } champSpawnTick(dt);
   sweepBurnouts(dt);
   for(let i=eProjList.length-1;i>=0;i--){const p=eProjList[i];p.life-=dt;if(p.life<=0){eProjList.splice(i,1);continue;}p.x+=p.vx*dt;p.y+=p.vy*dt;if(boxBlocked(p.x,p.y,p.r)){eProjList.splice(i,1);continue;}if(!player.dead&&Math.hypot(p.x-player.x,p.y-player.y)<player.r+p.r){damagePlayer(p.dmg);eProjList.splice(i,1);}}
   if(G.guardCallCooldown>0)G.guardCallCooldown=Math.max(0,G.guardCallCooldown-dt);
@@ -16029,7 +16057,7 @@ function syncRemotePlayers(t,dt){
       if(v.rig)scene.remove(v.rig);
       if(v.model)scene.remove(v.model.obj);
       if(v.horse)scene.remove(v.horse.obj);
-      if(v.pet)scene.remove(v.pet.obj);
+      if(v.pet)_disposeModel(v.pet);
       remoteVis.delete(id); continue;
     }
     const st=net.remotes.get(id);
@@ -16094,7 +16122,7 @@ function syncRemotePlayers(t,dt){
       if(mv > 0.3) turnToward(pm.obj, Math.atan2(-(pm.px-ox), -(pm.pz-oz)), dt, 'mob');
       setModelAnim(pm, mv > 0.3 ? 'walk' : 'idle');
       if(_animate) pm.mixer.update(dt); else farMixerStep(pm, pm.mixer, dt);
-    } else if(v.pet){ scene.remove(v.pet.obj); v.pet = null; }
+    } else if(v.pet){ _disposeModel(v.pet); v.pet = null; }
     if(v.model){}else if(v.rig){
       v.rig.visible=visible;   // `visible` already carries the render-distance cull
       v.rig.position.set(v.rx,heightAt(v.rx,v.rz),v.rz);
@@ -16199,7 +16227,7 @@ function startNet(){
     onHorse:!!player.onHorse, hidden:!!(skills.hiding&&skills.hiding.active),
     horseDown:!!(player.hasHorse&&player.horseDown), horseX:player.horseX||0, horseY:player.horseY||0,
     hp:player.hp|0, maxHp:player.maxHp|0,
-    pet: (player.pet && petMob && petMob.state!=='dead') ? player.pet.type : '',
+    pet: (player.pet && petMob && petMob.state!=='dead' && petMob.state!=='respawning') ? player.pet.type : '',
     petX: petMob ? petMob.x : 0, petY: petMob ? petMob.y : 0 }));
 }
 if(MP_ENABLED){
@@ -16270,6 +16298,7 @@ if(MP_ENABLED){
     const e=srvMobs.get(m.id);
     if(!e) return;
     const n0=drops.length;
+    if(m.killer===net.selfId && e===_petTarget && player.pet){ petGainXp(player.pet, 12); _petTarget=null; }
     const nearMe = Math.hypot(e.x-player.x, e.y-player.y) < TILE*30;
     if(m.killer===net.selfId){
       spawnDrops(e);                                // loot is yours

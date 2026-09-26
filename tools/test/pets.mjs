@@ -66,6 +66,20 @@ check('a new character has no pet', S.player.pet === undefined || S.player.pet =
   check('the pet never attacks another tame mob or wildlife', body.includes('o.tame') && body.includes('.passive'));
   check('the pet hits through damageEnemy (kill credit, corpses)', body.includes('damageEnemy(t, st.dmg)'));
 }
+// ── The pet is not an enemy (critic P8) ──────────────────────────────
+check('a tame record is not hostile', !E.isHostile({ type: 'cat', tame: true }) && !E.isHostile({ type: 'wolf', tame: true }));
+check('a wild cat is not hostile', !E.isHostile({ type: 'cat' }));
+check('a wolf is hostile', E.isHostile({ type: 'wolf' }));
+check('damageEnemy refuses non-hostiles first', /export function damageEnemy\(e, dmg\) \{\s*if \(!isHostile\(e\)\) return;/.test(enemies));
+check('target pickers skip non-hostiles', /function nearestEnemy[^]*?!isHostile\(e\)\)continue;/.test(game) && /isHostile\(e\)&&Math\.hypot\(e\.x-player\.x,e\.y-player\.y\)<TILE\*12/.test(game));
+check('the mob AI never ticks the pet', game.includes('if(!e.srv && !e.tame) updateEnemy(e,dt);'));
+{
+  const a2 = game.indexOf('function summonPet()'), b2 = game.indexOf('\n}', a2);
+  check('the pet is summoned without a grass search (dungeon/caves)', a2 > 0 && !game.slice(a2, b2).includes('makeEnemy('));
+  const f = game.indexOf('function updatePet(dt)'), g = game.indexOf('\nfunction petGainXp', f);
+  check('a fainted pet is revived in place, never spliced (slotModel indices)', f > 0 && !game.slice(f, g).includes('enemies.splice'));
+}
+check('a dungeon shrine never clears your pet', enemies.includes('!em.isChamp && !em.floorBoss && !em.tame'));
 check('only one pet at a time', /if\(player\.pet\)\{ addFloater\(player\.x,player\.y-30,'you already have a pet'\)/.test(game));
 
 console.log('\n' + checked + ' checks, ' + fail + ' failure' + (fail === 1 ? '' : 's'));

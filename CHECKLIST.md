@@ -202,7 +202,16 @@ cap or KTX2 textures). Ask the user before raising it.
       buildMobModel; verified with 2 players — the watcher saw the pet at the owner's pet spot): other players see your pet (PlayerState petType/petX/petY or piggyback on
       the move message) — server validation minimal (cosmetic position)
 - [x] P7 tests (tools/test/pets.mjs, 26 checks)
-- [ ] P8 critic pass on Phase P (cfg sane, save/load round-trip, pet never targets players) + critic pass
+- [x] P8 critic pass on Phase P — fixed: the player's own sword arcs/arrows/aggro swings hit the
+      pet (an endless XP/loot farm via faint+return) → isHostile() gates damageEnemy and every
+      target picker (nearestEnemy, guards, guard threat check); the mob AI also ticked the pet
+      (double attack rate); summon used makeEnemy's grass search (no pet in dungeon/caves); a
+      shrine could splice the pet; faint spliced the record (shifted slotModel indices) → now
+      revived in place; remote players saw a fainted pet standing still; wild cats lured toward
+      pet owners and E-feed stole [E]; no pet XP from server-mob kills; remote/slot model
+      skeletons leaked (_disposeModel). Wild cats are now immune (wildlife, not a target).
+  - [ ] [critic-low] cat idle = walk clip frame 0 (may be mid-stride) — pick a better held frame
+  - [ ] [critic-low] server accepts pet:'cat' without the owner having one (cosmetic) (cfg sane, save/load round-trip, pet never targets players) + critic pass
 
 ## Phase C — graphics critic loop (grass, background trees, buildings)
 - [ ] C1 Critic reviews baseline screenshots → ranked findings list appended below
