@@ -151,7 +151,9 @@ DECISIONS (user, 2026-09-26):
       the merchant (no weapon swap); raw/cooked meat in bag + trade; cook at a campfire
       (craft menu); Eat action heals 36 HP over 12 s; _dev.kill(type), _dev.corpses
 - [x] server DROP_TYPES lacked mithril/runic/abyssal (untradeable between players) + meat added
-- [ ] M8 two-client check: second player sees the body, first-come take, harvest refused to the
+- [x] M8 two-client check (2 tabs vs local server: 2nd player saw the body, harvested first
+      (+3 meat +1 hide), 1st player's copy flipped to harvested). Fix from it: bodies landed
+      ~2 tiles apart per client → mob_dead now carries the server's x/y. second player sees the body, first-come take, harvest refused to the
       second claimant ("someone got to it first"); a joiner mid-corpse gets corpse_new
 - [ ] M9 critic pass on Phase M
 - [x] bandits dropped STONE (no spawnDrops entry) → now 3-8 gold, 15% bandage

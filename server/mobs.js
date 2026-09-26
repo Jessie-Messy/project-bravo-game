@@ -170,7 +170,10 @@ class MobSim {
       // The body outlives the mob (which respawns in 48 s). The room owns it;
       // its loot arrives from the killer's client (corpse_fill).
       const cid = this.room.makeCorpse ? this.room.makeCorpse(m, client.sessionId) : null;
-      this.room.broadcast('mob_dead', { id: '' + msg.id, killer: client.sessionId, cid });
+      // x/y: where the SERVER says it fell. Each client's copy of the mob is an
+      // interpolation a little behind, so bodies landed tiles apart on different
+      // screens — and the take/harvest reach check uses the server's position.
+      this.room.broadcast('mob_dead', { id: '' + msg.id, killer: client.sessionId, cid, x: Math.round(m.x), y: Math.round(m.y) });
     }
   }
 }

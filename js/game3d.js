@@ -15850,6 +15850,9 @@ if(MP_ENABLED){
     const c = mobCorpses[mobCorpses.length-1];
     if(c && m.cid){
       c.srvCid = m.cid;
+      if(typeof m.x === 'number'){                   // the server's spot, same on every screen
+        c.x = m.x; c.y = m.y; c.root.position.set(m.x, heightAt(m.x, m.y), m.y);
+      }
       if(m.killer===net.selfId) netCorpseFill(m.cid, c.loot.map(d=>d.item?{t:d.type,item:d.item}:{t:d.type}));
       c.loot = [];
     }
