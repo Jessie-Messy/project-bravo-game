@@ -56,7 +56,7 @@ import { buildArachnidClips } from './render/spider-gait.js';
 import { createComposer } from './render/composer.js';
 import { createLoadingScreen } from './render/loading.js';
 import { VERSION } from './build-info.js';
-import { makeBladeGeometry, makeBladeTexture, makeGrassMaterial } from './render/grass.js';
+import { makeTuftGeometry, makeBladeTexture, makeGrassMaterial } from './render/grass.js';
 import { makeConiferCanopy, makeBroadleafCanopy, makeTrunk } from './render/trees.js';
 import { buildNearForest, makeBiomeSampler } from './render/tree-lod.js';
 import { SPECIES } from './render/tree-species.js';
@@ -785,7 +785,10 @@ for(const [type,vals] of Object.entries(worldEdits.mobs))
 
 // ── Terrain texture (1 px per tile → canvas texture) ─────────────
 const TILE_COLORS = {
-  [T.GRASS]:        [79,122,58],  [T.PATH]:   [156,123,79], [T.WATER]:        [18,42,82],
+  // Pulled toward the blades' root colour (#3f5a24..#6f9438). At the old
+  // [79,122,58] the ground between tufts rendered a pale mint and read as a
+  // second material under the grass (critic C-3).
+  [T.GRASS]:        [66,101,38],  [T.PATH]:   [156,123,79], [T.WATER]:        [18,42,82],
   [T.TREE]:         [30,75,25],   [T.STONE]:  [111,106,99], [T.WALL]:         [138,127,110],
   [T.BRIDGE]:       [122,80,48],  [T.CAVE_FLOOR]:[26,20,18],[T.CAVE_WALL]:    [13,12,11],
   [T.CAVE_ENTRANCE]:[96,78,52],   [T.TELEPORT]:[120,80,200],  [T.STAINED_GLASS]:[142,34,48],
@@ -2106,7 +2109,10 @@ const GRASS_MAX = 260000;
 // of movement, so the second figure is a stutter you can feel while running.
 const GRASS_BUDGET = 130000;
 
-const grassGeo = makeBladeGeometry(THREE, { height: 1, width: 0.22, curve: 0.24 });
+// Tufts of three (see grass.js). TUFT_BLADES divides the per-tile counts so the
+// triangle budget is unchanged from the single-blade version.
+const TUFT_BLADES = 2.4;
+const grassGeo = makeTuftGeometry(THREE, { height: 1, width: 0.13, curve: 0.24 });
 const _grassMat = makeGrassMaterial(THREE, { map: makeBladeTexture(THREE), windAmount: 4.0 });
 const grassMesh = new THREE.InstancedMesh(grassGeo, _grassMat.material, GRASS_MAX);
 grassMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(GRASS_MAX*3), 3);
@@ -2233,7 +2239,7 @@ function rebuildGrass(){
       // line. Squared for a softer knee.
       const rimT = Math.max(0, (dr - 0.86)) / 0.14;
       const rimH = 1 - rimT * rimT;
-      const n = Math.max(0, Math.round(perTile * band * densityScale));
+      const n = Math.max(0, Math.round(perTile * band * densityScale / TUFT_BLADES));
       // The height field is per TILE and bilinear, so the four corners of this
       // tile determine every blade inside it. Sampling them once here replaces
       // one heightAt() call per blade with one lerp — see the header note on
@@ -2271,7 +2277,9 @@ function rebuildGrass(){
         if(_grassWarpEdge && gCls === 1 && !_bladeOnGrass(gx, gz)){ _gStat.warpRejected++; continue; }
         // Height variety is what stops a field reading as mown turf. The cubic
         // bias keeps most blades short with a few tall ones standing proud.
-        const hv = (0.62 + rr*rr*rr*1.05) * patchH * Math.max(0.05, rimH);
+        // Boundary tiles (class 1) grow shorter, so a meadow thins into the
+        // path or the sand instead of stopping at full height (critic C-12).
+        const hv = (0.62 + rr*rr*rr*1.05) * patchH * Math.max(0.05, rimH) * (gCls === 1 ? 0.62 : 1);
         const s  = TILE*0.26*hv;
         // A blade only ever spins about Y and scales uniformly, so the whole
         // TRS matrix is these four numbers. Matrix4.compose() solves the general
@@ -2293,13 +2301,19 @@ function rebuildGrass(){
         // Tint follows the same low-frequency idea as the terrain macro noise,
         // so patches of grass agree with the ground they stand in instead of
         // floating over it as a separate green.
-        const c = i*3;
-        _gCArr[c] = cr; _gCArr[c+1] = cg; _gCArr[c+2] = cb;
+        // Per-tuft jitter on top of the per-tile patch colour: a field where
+        // every blade in a tile is the same shade reads as a carpet.
+        const c = i*3, jv = 0.9 + r3[0]*0.2, jh = (r3[1]-0.5)*0.08;
+        _gCArr[c] = cr*jv*(1+jh); _gCArr[c+1] = cg*jv; _gCArr[c+2] = cb*jv*(1-jh);
         i++;
       }
     }
   }
   grassMesh.count = i;
+  // The fade band sits inside the instance window, so blades are already gone
+  // by the time the window's edge is reached.
+  _grassMat.uniforms.uFadeNear.value = radius*TILE*0.50;
+  _grassMat.uniforms.uFadeFar.value  = radius*TILE*0.88;
   grassMesh.instanceMatrix.needsUpdate = true;
   if(grassMesh.instanceColor) grassMesh.instanceColor.needsUpdate = true;
   _grassTx = ptx; _grassTy = pty; _grassDirty = false;
@@ -5480,6 +5494,9 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
   // levers with no console handle, so framing couldn't be scripted at all.
   cam(o){
     if(o){
+      // Preset first: it snaps pitch/zoom, and a stored first-person mode
+      // otherwise silently ignores both (the camera sits in the head).
+      if(o.mode!==undefined){ const mi=CAM_MODES.findIndex(m=>m.id===o.mode); if(mi>=0) setCamMode(mi,false); }
       if(o.angle!==undefined) camAngle=o.angle;
       if(o.pitch!==undefined) camPitch=Math.max(0.06, Math.min(1.54, o.pitch));
       if(o.zoom !==undefined) camZoom =Math.max(0.30, Math.min(3.00, o.zoom));
@@ -14029,11 +14046,15 @@ function syncEntities(t){
   const NPC_LOOK2 = (TILE*6)*(TILE*6);
   // Fog fades by camera distance, so push it *past* the far (north) edge of
   // vision — then it never fades anything on-screen, only the far background.
-  const _camFar = Math.hypot(Math.cos(camPitch)*CAM_R*camZoom + RD, Math.sin(camPitch)*CAM_R*camZoom);
-  // Starts well inside the render distance and ends a little past it, so things
-  // fade out rather than popping at RD. It used to start at 1.05x — past
-  // everything on screen, so it never faded anything at all (critic C-1).
-  scene.fog.near = _camFar*0.55; scene.fog.far = _camFar*1.5;
+  // Measured from the camera, so the boom has to be paid for first: the player
+  // is already `boom` away. The fog then starts halfway to the render-distance
+  // edge and is complete a little past it, so things fade out instead of
+  // popping at RD. It used to start at 1.05x the far edge — past everything on
+  // screen, so it never faded anything (critic C-1); keying it to a fraction of
+  // the WHOLE distance instead washed the ground under a high camera milky.
+  const _boom = CAM_R*camZoom;
+  scene.fog.near = _boom + RD*0.55;
+  scene.fog.far  = Math.hypot(Math.cos(camPitch)*_boom + RD*1.35, Math.sin(camPitch)*_boom);
   let ei=0;
   for(const e of enemies){
     if(ei>=enemyPool.length)break;const si=ei,grp=enemyPool[ei++];

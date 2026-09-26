@@ -60,6 +60,43 @@ export function makeBladeGeometry(THREE, { height = 1, width = 0.13, curve = 0.2
   return g;
 }
 
+// A TUFT: three blades from one root, fanned at 120 degrees with their own
+// lean, height and offset. One wide blade per instance read as "a bed of
+// knives" (critic C-5) — a field of identical flat spikes. Real grass grows in
+// clumps, and three narrow blades per instance at a third of the instance count
+// cost about the same triangles while looking like turf.
+export function makeTuftGeometry(THREE, { height = 1, width = 0.13, curve = 0.24 } = {}) {
+  const parts = [];
+  const spec = [
+    // [yaw, height, lean, dx, dz]
+    [0.00, 1.00, curve,        0.00,  0.00],
+    [2.09, 0.82, curve * 1.35, 0.07, -0.04],
+    [4.19, 0.68, curve * 0.8, -0.06,  0.05],
+  ];
+  for (const [yaw, h, lean, dx, dz] of spec) {
+    const g = makeBladeGeometry(THREE, { height: height * h, width, curve: lean });
+    g.rotateY(yaw);
+    g.translate(dx, 0, dz);
+    parts.push(g);
+  }
+  // Manual merge (no addon import here): same attributes on every part.
+  const pos = [], uv = [], norm = [], idx = [];
+  let base = 0;
+  for (const g of parts) {
+    pos.push(...g.attributes.position.array);
+    uv.push(...g.attributes.uv.array);
+    norm.push(...g.attributes.normal.array);
+    for (const i of g.index.array) idx.push(i + base);
+    base += g.attributes.position.count;
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  out.setAttribute('uv',       new THREE.Float32BufferAttribute(uv, 2));
+  out.setAttribute('normal',   new THREE.Float32BufferAttribute(norm, 3));
+  out.setIndex(idx);
+  return out;
+}
+
 // A soft vertical gradient, darker at the root. Doing this with a texture
 // rather than in the shader means it costs one tiny fetch and stays visible in
 // the shadow/depth paths that don't run our patched code.
@@ -88,6 +125,12 @@ export function makeGrassMaterial(THREE, { map, windAmount = 1.0 } = {}) {
     uWindDir:  { value: new THREE.Vector2(0.86, 0.51).normalize() },
     uWindAmt:  { value: windAmount },
     uGustFreq: { value: 0.0016 },
+    // Blades shrink to nothing between these camera distances. The instance
+    // window has an edge; without a fade that edge is a visible line of
+    // full-height grass against bare ground (critic C-2). Measured from the
+    // LIVE camera in the shader, so it never goes stale between rebuilds.
+    uFadeNear: { value: 1e9 },
+    uFadeFar:  { value: 2e9 },
   };
 
   const mat = new THREE.MeshStandardMaterial({
@@ -107,6 +150,8 @@ export function makeGrassMaterial(THREE, { map, windAmount = 1.0 } = {}) {
         uniform vec2  uWindDir;
         uniform float uWindAmt;
         uniform float uGustFreq;
+        uniform float uFadeNear;
+        uniform float uFadeFar;
         varying float vBladeH;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vBladeH = uv.y;`)
@@ -115,6 +160,11 @@ export function makeGrassMaterial(THREE, { map, windAmount = 1.0 } = {}) {
       .replace('#include <project_vertex>', `
         vec4 mvPosition = vec4( transformed, 1.0 );
         #ifdef USE_INSTANCING
+          {
+            vec2 root = ( instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xz;
+            float fade = 1.0 - smoothstep( uFadeNear, uFadeFar, distance( root, cameraPosition.xz ) );
+            mvPosition.xyz *= fade;          // shrink toward the root, not into the ground
+          }
           mvPosition = instanceMatrix * mvPosition;
         #endif
         {
@@ -149,7 +199,7 @@ export function makeGrassMaterial(THREE, { map, windAmount = 1.0 } = {}) {
 
   // Two materials with identical parameters but different patches must not
   // share a compiled program.
-  mat.customProgramCacheKey = () => 'grass-wind-v1';
+  mat.customProgramCacheKey = () => 'grass-wind-v2';
 
   return { material: mat, uniforms };
 }

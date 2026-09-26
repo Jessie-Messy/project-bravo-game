@@ -74,31 +74,43 @@ Local game: `.claude/launch.json` → `bravo-dev` on :8127.
 - [x] B4b Global aerial perspective: fog_fragment override adds a capped exponential haze
       (HAZE_CAP define, NO_RANGE_FOG for the skirt/range); range fog 0.55–1.5 × camFar
 - [x] B5 Coast: bay closed by the separator ridge; W/E/S bands + foothills
-- [ ] B6 Camera clamp / edge behaviour sanity check at all four corners (walk into the wall)
+- [x] B6 Walked into every wall with live key input: stops at the band edge on all sides
+      (note: a GHOST — dead player — walks through, by the existing ghost design)
 - [x] B7 Tests: every ridge-zone tile is RIDGE; outermost ring solid WITH edits applied;
       spawns on grass; nothing placed in the ridge
 - [ ] B8 Critic pass on Phase B → append findings
-- [ ] B9 Perf: measure draw calls / frame time with skirt + range (ultra + low)
+- [x] B9 Perf: skirt ~50k tris, +0.4 ms/frame on the long vista, ~0 at iso (desktop ultra)
+      [ ] still to check on the LOW tier / mobile
 
 ## Phase C — graphics critic loop (grass, background trees, buildings)
 - [ ] C1 Critic reviews baseline screenshots → ranked findings list appended below
-- [ ] C2 Grass
+- [~] C2 Grass — tufts of 3 (grass.js makeTuftGeometry, TUFT_BLADES), live camera-distance
+      fade (uFadeNear/Far), per-tuft hue jitter, boundary tiles 62% height, ground GRASS colour
+      [66,101,38]. Done: C-2, C-3, C-4, C-5, C-12. Re-shoot + critic still to do
 - [ ] C3 Background / far trees
 - [ ] C4 Buildings
 - [ ] C5 Re-shoot the same camera spots, critic A/B, iterate until no major findings
 
+- [x] Fog keyed past the camera boom (near = boom + 0.55 RD) — a high camera washed the
+      ground milky when fog was a fraction of the whole camera distance
+- [x] `_dev.cam({mode:'iso'|'third'|'far'|'top'|'shoulder'|'first'})` pins the preset —
+      a stored first-person mode silently ignored pitch/zoom in the shot tour
+- NEXT: C4 buildings (city = bare WALL boxes, no roofs). Plan: read rebuildWalls; find the
+      small enclosed WALL rectangles = buildings → roofed house kit (gable/hip roofs, timber
+      frame, doors, windows) + merlons/coping/plinth on curtain walls + world-space brick UVs
+
 ### Critic findings (append here)
 Round 1 (baseline shots `.shots/base_*.jpg`), ranked worst first:
-- [ ] [critic] C-1 Aerial perspective is OFF: `fog.near = _camFar*1.05` (~game3d 13417) puts fog
+- [x] [critic] C-1 Aerial perspective is OFF: `fog.near = _camFar*1.05` (~game3d 13417) puts fog
       past everything on screen. Try near≈0.35·camFar, far≈1.3·camFar; cap at 0.85 on silhouettes
-- [ ] [critic] C-2 Hard line where grass instancing ends (vista_north y≈490, vista diagonal,
+- [x] [critic] C-2 Hard line where grass instancing ends (vista_north y≈490, vista diagonal,
       iso cliff). Fade blade height by LIVE camera distance in the vertex shader; widen
       GRASS_MARGIN 0.16→~0.35; taper boundary-tile blades
-- [ ] [critic] C-3 Ground between blades is pale mint (#86b486) vs blades #3f5a24–#a8c25c —
+- [x] [critic] C-3 Ground between blades is pale mint (#86b486) vs blades #3f5a24–#a8c25c —
       pull terrain grass albedo to blade-root colour (~#506d2c–#5e7c34)
-- [ ] [critic] C-4 Grass drawn over the void past the map edge: `_grassClassAt` has no
+- [x] [critic] C-4 Grass drawn over the void past the map edge: `_grassClassAt` has no
       x-bounds check (row wrap). Reject tx outside 0..MAP_W-1
-- [ ] [critic] C-5 Blades look like "a bed of knives": width 0.22→~0.12, per-blade hue jitter,
+- [x] [critic] C-5 Blades look like "a bed of knives": width 0.22→~0.12, per-blade hue jitter,
       bend normals toward terrain normal (tufts of 3 crossed strips = fewer instances)
 - [ ] [critic] C-6 Far trees are lollipops: TRUNKH 0.42→~0.26 of TREE_H, per-instance
       height 0.75–1.3 / yaw / lean, greyer trunks #4b3d31, canopy colour jitter
@@ -111,7 +123,7 @@ Round 1 (baseline shots `.shots/base_*.jpg`), ranked worst first:
       coping + plinth; interior building kit (gable timber-frame, stone hall, tower)
 - [ ] [critic] C-10 Water edge: white foam wash ghosts blades (edge_west); hard seam y≈485
 - [ ] [critic] C-11 Contact darkening under trees/walls (AO in the terrain splat)
-- [ ] [critic] C-12 Grass on biome boundaries keeps full height (ragged cliffs)
+- [x] [critic] C-12 Grass on biome boundaries keeps full height (ragged cliffs)
 Mountain guidance (critic): 3 rings (foothills #6f8575 haze .35, mid #8d9fae .55, far
 #a9b9c9 .75 w/ snow #dde5ee above 70%), peaks 1–6° above horizon never >8°, base 25% fades
 into horizon colour, rendered before terrain, ~3 draws. Edge: raise heightAt over a 6–10 tile
