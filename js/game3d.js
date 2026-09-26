@@ -220,6 +220,20 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a2a14);
 scene.fog = new THREE.Fog(0x1a2a14, 4000, 9000);
 
+// ── Canopies step aside for the camera ────────────────────────────
+// The orbit camera's boom often ends inside a tree, and the frame filled with
+// a wall of leaves (critic, dungeonA/forest shots). A material that defines
+// CAM_FADE dithers its pixels out as they come within CAM_FADE_FAR of the
+// camera — a screen-door fade, so no transparency sorting is involved.
+THREE.ShaderChunk.alphatest_fragment = `
+#ifdef CAM_FADE
+  {
+    float _cf = smoothstep( 40.0, 110.0, length( vViewPosition ) );
+    if ( fract( dot( gl_FragCoord.xy, vec2( 0.7548776662, 0.5698402910 ) ) ) > _cf ) discard;
+  }
+#endif
+` + THREE.ShaderChunk.alphatest_fragment;
+
 // ── Aerial perspective ────────────────────────────────────────────
 // Linear range fog alone did two bad things. Tuned to hide the render-distance
 // edge, it started past everything on screen, so distant land stayed fully
@@ -2552,6 +2566,7 @@ const _trunkGeo  = makeTrunk(THREE, { height:TRUNKH, top:9, bottom:12, seed:4242
 // the darkest thing in every vista (critic C-6).
 const trunkMesh = makeMesh(_trunkGeo,  new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0, color:0xb8aa98}), nTree+4000);
 const _canopyMat = new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0});
+_canopyMat.defines = Object.assign({}, _canopyMat.defines, { CAM_FADE: '' });   // see alphatest_fragment
 const topMesh   = makeMesh(_canopyGeo, _canopyMat, nTree+4000);
 // A broadleaf crown for the species that are not conifers. SHARES the material
 // with the cone above on purpose: the canopy wind patch and the leaf texture

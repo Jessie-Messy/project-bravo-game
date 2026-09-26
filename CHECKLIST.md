@@ -53,7 +53,7 @@ Local game: `.claude/launch.json` → `bravo-dev` on :8127.
 - [x] A-fix: gates beside a cave wall slide half a tile away from it (dungeon mouth B)
 - [x] A-fix: bake prune() strips unreferenced UVs → vortex uses object-space position
 - [x] A-fix: Blender exported a white COLOR_0 → set 'Col' as the active colour attribute
-- [ ] [critic] camera boom ends inside tree canopies (dungeonA, forest) — fade canopies near the camera
+- [x] [critic] camera boom ends inside tree canopies — CAM_FADE screen-door dither 40–110u
 - [ ] [critic-low] minimap 3x3 gate dots erased by updateMiniPx on neighbour edits
 - [ ] [critic-low] rideFerry sends no netTp → same desync class as the gate bug (pre-existing)
 - [ ] [critic-low] remote players glide across the map on any teleport (no snap threshold)
@@ -283,7 +283,7 @@ on the band's lower half, slope-based rock blend.
 ## NEXT UP (in order, as of 2026-09-26 afternoon)
 1. C4e critic pass on buildings (.shots/b1_*.jpg) — then a round-2
    graphics critic on the whole tour (window.TOUR in the page; see HANDOFF dev tooling)
-2. [critic] camera boom inside tree canopies — fade canopies near the camera
+2. [x] camera boom inside canopies: CAM_FADE dither in alphatest_fragment (canopy + near leaf mats)
 3. C-8 black slabs on the horizon (identify), C-10 water edge foam wash, C-11 contact AO
 4. cat idle frame; U1b 10 Hz far-anim check; B9 low-tier perf check
 5. Phase D: version bump v0.20.0, HANDOFF deploy note, ASK THE USER before deploying (server

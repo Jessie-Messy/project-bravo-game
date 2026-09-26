@@ -76,6 +76,9 @@ export function buildNearForest(THREE, opts) {
       // a cutout: without alphaTest they draw as opaque squares.
       alphaTest: 0.45, side: THREE.DoubleSide,
     });
+    // Dithers out near the camera (game3d.js alphatest_fragment, CAM_FADE),
+    // so a camera boom ending inside a tree shows the player, not leaves.
+    leafMat.defines = Object.assign({}, leafMat.defines, { CAM_FADE: '' });
 
     applyWind(THREE, leafMat, windUniform, targetHeight, 'leaf-' + sp.id);
     // Branches sway too, just far less — a canopy that moves while the limbs
