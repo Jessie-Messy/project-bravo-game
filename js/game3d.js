@@ -4688,6 +4688,13 @@ const MOB_MODELS = {
   slime:         {file:'slime.glb',     h:24, tint:0x55ee66},
   slime_mini:    {file:'slime.glb',     h:14, tint:0x88ff88},
   silver_serp:   {file:'snake.glb',     h:18, tint:0xdde2ea},
+  // The one clip this model ships is a walk cycle; `clips` maps it by name
+  // (the generic /walk|run/ patterns don't match "Armature|Unreal Take").
+  // ⚠ h is 52, not the ~13 its real size suggests: this rig's bind pose measures
+  // about 4x taller than it stands once the clip poses it, so at 13 the cat
+  // rendered 8 units tall — lost in the grass. 52 lands it ~32 tall, a quarter
+  // of the player, which reads as a cat. (Measured with _dev.modelOf.)
+  cat:           {file:'Calico_Cat_Pet.glb', h:52, clips:{ walk:/unreal take/i, idle:/unreal take/i }, idleScale:0},
 };
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
@@ -5571,6 +5578,8 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
     return e.state;
   },
   get corpses(){ return mobCorpses; },
+  // The rendered model instance for a mob (GLB mobs), for inspecting fit/pose.
+  modelOf(e){ const i=enemies.indexOf(e); return i>=0 ? slotModel[i] : null; },
   // One real hit on a given mob (server mobs send the intent to the server).
   hit(e, dmg=30){ e.iframes=0; damageEnemy(e, dmg); return e.hp; },
   // Live sky exposure. Forces a PMREM re-bake, so the env map and the visible
@@ -6253,11 +6262,19 @@ function buildSlotModel(i, type){
   const obj = new THREE.Group(); obj.add(inner); scene.add(obj);
   const mixer = new THREE.AnimationMixer(inner);
   const mk = c => c ? mixer.clipAction(c) : null;
+  const cm = mm.clips || {};
   const actions = {
-    idle:   mk(pickClip(asset.clips, /(^|\|)idle$/i) || pickClip(asset.clips, /(^|\|)idle(_2)?$/i) || pickClip(asset.clips, /idle/i)),
-    walk:   mk(pickClip(asset.clips, /gallop|run/i) || pickClip(asset.clips, /walk/i)),
-    attack: mk(pickClip(asset.clips, /attack|punch|bite/i)),
+    idle:   mk(cm.idle ? pickClip(asset.clips, cm.idle) : (pickClip(asset.clips, /(^|\|)idle$/i) || pickClip(asset.clips, /(^|\|)idle(_2)?$/i) || pickClip(asset.clips, /idle/i))),
+    walk:   mk(cm.walk ? pickClip(asset.clips, cm.walk) : (pickClip(asset.clips, /gallop|run/i) || pickClip(asset.clips, /walk/i))),
+    attack: mk(cm.attack ? pickClip(asset.clips, cm.attack) : pickClip(asset.clips, /attack|punch|bite/i)),
   };
+  // One clip serving both walk and idle would be the SAME action (clipAction
+  // caches per clip), so fading between them did nothing. The idle gets its own
+  // copy of the clip, slowed (or held) by idleScale.
+  if (actions.idle && actions.idle === actions.walk) {
+    actions.idle = mixer.clipAction(actions.walk.getClip().clone());
+  }
+  if (actions.idle && mm.idleScale !== undefined) actions.idle.timeScale = mm.idleScale;
   if (actions.attack) { actions.attack.setLoop(THREE.LoopOnce); actions.attack.clampWhenFinished=false; }
   // A new Group starts at yaw 0, which is not where the mob is facing. That was
   // invisible while turning snapped in ~25ms; with an angular-velocity ceiling it
@@ -9148,7 +9165,16 @@ const _corpseStainGeo = new THREE.CircleGeometry(TILE*0.42, 14).rotateX(-Math.PI
 const _corpseStainMat = new THREE.MeshBasicMaterial({ color:0x3a0c08, transparent:true, opacity:0.42, depthWrite:false });
 
 function makeMobCorpse({ type, x, y, loot, special, openable, yaw, name=null, srvCid=null }){
-  while(mobCorpses.length >= CORPSE_MAX) removeMobCorpse(mobCorpses[0]);
+  // Over the cap, the oldest EMPTY body goes first. If every body still holds
+  // something, the oldest ordinary one tips its loot onto the ground rather
+  // than taking it with it — a champion run kills dozens, and eviction used to
+  // delete their drops (critic M9-2). Special bodies are never evicted.
+  while(mobCorpses.length >= CORPSE_MAX){
+    const v = mobCorpses.find(c => !c.loot.length) || mobCorpses.find(c => !c.special);
+    if(!v) break;
+    if(v.loot.length && !v.srvCid) for(const d of v.loot) drops.push(Object.assign({}, d, { x:v.x+(Math.random()-0.5)*30, y:v.y+(Math.random()-0.5)*30, lifetime:120 }));
+    removeMobCorpse(v);
+  }
   const c = { id: ++_corpseSeq, type, x, y, t0: performance.now()/1000, ttl: CORPSE_TTL,
               name: name || type.replace(/_/g, ' '),
               loot: loot||[], special: !!special, openable: openable !== false,
@@ -9163,6 +9189,9 @@ function removeMobCorpse(c){
   scene.remove(c.root);
   if(c.mixer) c.mixer.stopAllAction();
   for(const m of c.tintMats) m.dispose();         // tints were per-corpse clones; geometry is shared
+  // SkeletonUtils.clone makes a new Skeleton, and three allocates a bone
+  // texture per skeleton — without this every GLB corpse leaked one.
+  c.root.traverse(o => { if(o.isSkinnedMesh && o.skeleton) o.skeleton.dispose(); });
   if(G.mobCorpse === c){ G.mobCorpse = null; G.harvesting = null; }
 }
 // A local mob just died: take what its death dropped back off the ground.
@@ -9187,6 +9216,9 @@ function _corpseYawOf(e){
 function nearestMobCorpse(){
   let best = null, bd = CORPSE_REACH*TILE;
   for(const c of mobCorpses){
+    // A body with nothing left to do must not take [E] from the NPC it lies
+    // beside (critic M9-6): searched, empty, and harvested or unharvestable.
+    if(c.searched && !c.loot.length && (c.harvested || !c.harvestable)) continue;
     const d = Math.hypot(c.x - player.x, c.y - player.y);
     if(d < bd){ bd = d; best = c; }
   }
@@ -9198,8 +9230,10 @@ function openMobCorpse(c){
 }
 function takeAllMobCorpse(c){
   if(!c || !c.loot.length) return;
-  // A server mob's body: the server hands the loot out, once, to whoever asks first.
-  if(c.srvCid && net.status==='online'){ netCorpseTake(c.srvCid); return; }
+  // A server mob's body: the server hands the loot out, once, to whoever asks
+  // first. Disconnected, it is not ours to hand out — taking it locally would
+  // duplicate what online players can still take (critic M9-4).
+  if(c.srvCid){ if(net.status==='online') netCorpseTake(c.srvCid); else addFloater(player.x,player.y-30,'reconnecting…'); return; }
   let n = 0; for(const d of c.loot){ takeLootEntry(d); n++; }
   c.loot.length = 0; snd.pickup();
   addFloater(player.x,player.y-30,'looted '+n+' item'+(n===1?'':'s'));
@@ -9227,7 +9261,7 @@ function updateMobCorpses(dt){
     } else if((h.t += dt) >= HARVEST_SECS){
       G.harvesting = null;
       // A server mob's body is butchered once, whoever claims it first.
-      if(c.srvCid && net.status==='online') netCorpseHarvest(c.srvCid);
+      if(c.srvCid){ if(net.status==='online') netCorpseHarvest(c.srvCid); else addFloater(player.x,player.y-30,'reconnecting…'); }
       else finishHarvest(c);
     }
   }
@@ -9241,7 +9275,9 @@ function finishHarvest(c){
   c.harvested = true;
   // A butchered carcass shrinks a little and does not linger.
   c.root.scale.setScalar(0.82);
-  c.ttl = Math.min(c.ttl, (performance.now()/1000 - c.t0) + HARVESTED_TTL);
+  // Only a picked-clean carcass hurries off; one still holding loot keeps its
+  // full time (critic M9-3).
+  if(!c.loot.length) c.ttl = Math.min(c.ttl, (performance.now()/1000 - c.t0) + HARVESTED_TTL);
 }
 function mobCorpseXY(){ return panelAt('mobcorpse', Math.round(G.canvas.width/2-130), Math.round(G.canvas.height/2-140), 260, 280); }
 function _mobCorpseButtons(c){
@@ -9252,7 +9288,7 @@ function _mobCorpseButtons(c){
 }
 function renderMobCorpse(){
   const c = G.mobCorpse; if(!c) return;
-  if(!mobCorpses.includes(c) || Math.hypot(c.x-player.x, c.y-player.y) > CORPSE_REACH*TILE*1.4){ G.mobCorpse = null; return; }
+  if(player.dead || !mobCorpses.includes(c) || Math.hypot(c.x-player.x, c.y-player.y) > CORPSE_REACH*TILE*1.4){ G.mobCorpse = null; G.harvesting = null; return; }
   const ctx=G.ctx, W=260, H=280, PAD=14, {px,py}=mobCorpseXY();
   ctx.fillStyle='rgba(22,14,10,.96)'; ctx.fillRect(px,py,W,H);
   ctx.strokeStyle=c.special?'#d8a040':'#8a6a4a'; ctx.lineWidth=1.5; ctx.strokeRect(px,py,W,H);
@@ -9290,6 +9326,151 @@ function handleMobCorpseClick(e){
   if(hit(B.harvest)){ startHarvest(c); return true; }
   const {px,py}=mobCorpseXY();
   return e.clientX>=px && e.clientX<=px+260 && e.clientY>=py && e.clientY<=py+280;   // inside the panel: swallow
+}
+
+// ── Pets ──────────────────────────────────────────────────────────
+// A wild cat can become yours. It bolts from anyone who comes close — unless
+// you carry meat, when it gets curious and pads toward you instead. Feed it
+// ([E] beside it) until it trusts you: raw meat earns 1 trust, cooked 2; three
+// makes it your pet. One pet at a time, saved with the character.
+//
+// A pet is an ordinary enemy record with `tame` set, so it renders, animates
+// and dies through the same code as every mob; updateEnemy skips tame ones and
+// updatePet drives it instead. It never targets players — region and PvP rules
+// are untouched — and its kills are yours (it hits through damageEnemy, which
+// also marks the mob as hit by you, so special corpses open for you).
+const PET_TRUST = 3, PET_FOLLOW = TILE*1.6, PET_LEASH = TILE*14, PET_ASSIST = TILE*9;
+const PET_STANCES = ['hunt', 'follow', 'stay'];
+hooks.luresWildlife = e => e.type === 'cat' && !e.tame && ((inv.raw_meat||0) > 0 || (inv.cooked_meat||0) > 0);
+let petMob = null;                 // the live enemy record of your pet
+let _petTarget = null;
+hooks.onHitEnemy = e => { if(petMob && e !== petMob && !e.tame) _petTarget = e; };
+function petStats(p){ return { maxHp: 30 + 8*(p.lvl-1), dmg: 5 + 2*(p.lvl-1) }; }
+function nearestWildCat(){
+  let best = null, bd = TILE*1.7;
+  for(const e of enemies){
+    if(e.type!=='cat'||e.tame||e.state==='dead'||e.state==='respawning') continue;
+    const d = Math.hypot(e.x-player.x, e.y-player.y); if(d < bd){ bd = d; best = e; }
+  }
+  return best;
+}
+function feedWildCat(e){
+  if(player.pet){ addFloater(player.x,player.y-30,'you already have a pet'); return; }
+  const cooked = (inv.cooked_meat||0) > 0;
+  if(!cooked && (inv.raw_meat||0) <= 0){ addFloater(player.x,player.y-30,'it wants meat'); return; }
+  if(cooked) inv.cooked_meat--; else inv.raw_meat--;
+  e._trust = (e._trust||0) + (cooked ? 2 : 1);
+  snd.pickup();
+  if(e._trust < PET_TRUST){ addFloater(e.x, e.y-30, '🐾 it eats… trust '+e._trust+'/'+PET_TRUST); return; }
+  player.pet = { type:'cat', name:'Calico', lvl:1, xp:0, hp:0, stance:'hunt' };
+  player.pet.hp = petStats(player.pet).maxHp;
+  adoptPet(e);
+  addFloater(e.x, e.y-36, '❤ Calico is your pet!');
+  grantAchiev && grantAchiev('first_pet');
+}
+function adoptPet(e){
+  const p = player.pet, st = petStats(p);
+  e.tame = true; e.maxHp = st.maxHp; e.hp = Math.min(p.hp || st.maxHp, st.maxHp);
+  e.state = 'idle'; e._bolt = 0; e.speed = 190;
+  petMob = e;
+}
+// Bring the saved pet back beside the player (load, or after it fainted).
+function summonPet(){
+  if(!player.pet) return;
+  if(petMob && enemies.includes(petMob) && petMob.state!=='dead' && petMob.state!=='respawning') return;
+  const e = makeEnemy(player.pet.type, Math.floor(player.x/TILE), Math.floor(player.y/TILE));
+  if(!e) return;
+  e.x = player.x + 30; e.y = player.y + 20; e.spawnX = e.x; e.spawnY = e.y;
+  enemies.push(e); adoptPet(e);
+}
+function releasePet(){
+  if(!petMob) { player.pet = null; return; }
+  petMob.tame = false; petMob._trust = 0; petMob.speed = ENEMY_CFG.cat.speed;
+  petMob.maxHp = ENEMY_CFG.cat.maxHp; petMob.hp = Math.min(petMob.hp, petMob.maxHp);
+  addFloater(petMob.x, petMob.y-30, player.pet.name+' wanders off');
+  petMob = null; player.pet = null; _petTarget = null;
+}
+function _petMove(e, tx, ty, speed, dt){
+  const dx = tx - e.x, dy = ty - e.y, d = Math.hypot(dx, dy) || 1, s = speed*dt;
+  const nx = e.x + dx/d*s; if(!boxBlocked(nx, e.y, e.r)) e.x = nx;
+  const ny = e.y + dy/d*s; if(!boxBlocked(e.x, ny, e.r)) e.y = ny;
+}
+let _petFaint = 0;
+function updatePet(dt){
+  const p = player.pet; if(!p) return;
+  if(!petMob || !enemies.includes(petMob)){ summonPet(); return; }
+  const e = petMob;
+  // A pet does not die. It faints, and turns up at your side a little later.
+  if(e.state === 'dead' || e.state === 'respawning'){
+    if(_petFaint === 0){ _petFaint = 20; addFloater(player.x,player.y-40,p.name+' fainted!'); }
+    _petFaint -= dt;
+    if(_petFaint <= 0){ _petFaint = 0; enemies.splice(enemies.indexOf(e),1); petMob = null; p.hp = Math.round(petStats(p).maxHp*0.5); summonPet(); }
+    return;
+  }
+  p.hp = e.hp;
+  if(e.iframes > 0) e.iframes -= dt;
+  e.attackTimer = Math.max(0, (e.attackTimer||0) - dt);
+  const pd = Math.hypot(player.x - e.x, player.y - e.y);
+  // Lost it (portal, ferry, a long run): it finds its own way back.
+  if(pd > PET_LEASH){ e.x = player.x + 30; e.y = player.y + 20; _petTarget = null; return; }
+  // What to fight: whatever you hit, or whatever is coming for you.
+  if(p.stance === 'hunt'){
+    if(_petTarget && (_petTarget.state==='dead'||_petTarget.state==='respawning'||_petTarget.tame||
+       Math.hypot(_petTarget.x-player.x, _petTarget.y-player.y) > PET_ASSIST)) _petTarget = null;
+    if(!_petTarget){
+      for(const o of enemies){
+        if(o===e||o.tame||o.state!=='aggro'||(ENEMY_CFG[o.type]&&ENEMY_CFG[o.type].passive)) continue;
+        if(Math.hypot(o.x-player.x, o.y-player.y) < TILE*4){ _petTarget = o; break; }
+      }
+    }
+  } else _petTarget = null;
+  const st = petStats(p);
+  if(_petTarget){
+    const t = _petTarget, td = Math.hypot(t.x - e.x, t.y - e.y);
+    if(td > TILE*0.9) _petMove(e, t.x, t.y, e.speed, dt);
+    else if(e.attackTimer <= 0){
+      e.attackTimer = 1.0;
+      const hpBefore = t.hp;
+      t.iframes = 0; damageEnemy(t, st.dmg);
+      // The target swings back at whoever is biting it, now and then.
+      if(Math.random() < 0.35 && t.damage){ e.hp -= Math.max(1, Math.round(t.damage*0.5)); floaters.push({x:e.x,y:e.y-20,text:'-'+Math.round(t.damage*0.5),life:0.8}); if(e.hp<=0){ e.hp=0; e.state='dead'; e.deadTimer=0; } }
+      if(t.state==='dead' && hpBefore > 0){ _petTarget = null; petGainXp(p, 12); }
+    }
+    return;
+  }
+  // No fight: follow (or stay), and heal slowly.
+  e.hp = Math.min(st.maxHp, e.hp + dt*0.8);
+  if(p.stance !== 'stay' && pd > PET_FOLLOW) _petMove(e, player.x, player.y, pd > TILE*5 ? e.speed*1.35 : e.speed*0.8, dt);
+}
+function petGainXp(p, n){
+  p.xp += n;
+  const need = 50 * p.lvl;
+  if(p.xp >= need){ p.xp -= need; p.lvl++; const st = petStats(p); if(petMob){ petMob.maxHp = st.maxHp; petMob.hp = st.maxHp; }
+    addFloater(player.x, player.y-50, '🐾 '+p.name+' reached level '+p.lvl+'!'); snd.heal(); }
+}
+// The pet frame: bottom-left, above the quest tracker. Click it to change
+// stance (hunt → follow → stay); the ✕ releases the pet back to the wild.
+function _petFrameRect(){ return { x: 8, y: G.canvas.height - 128, w: 190, h: 40 }; }
+function drawPetFrame(){
+  const p = player.pet; if(!p || !petMob) return;
+  const ctx = G.ctx, r = _petFrameRect(), st = petStats(p);
+  ctx.fillStyle = 'rgba(20,14,8,.78)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.strokeStyle = '#b08a50'; ctx.lineWidth = 1; ctx.strokeRect(r.x, r.y, r.w, r.h);
+  ctx.font = 'bold 12px ui-monospace,Menlo,Consolas,monospace'; ctx.textAlign = 'left'; ctx.fillStyle = '#f0d8a8';
+  ctx.fillText('🐈 '+p.name+'  L'+p.lvl+'  · '+(petMob.state==='dead'?'fainted':p.stance), r.x+6, r.y+15);
+  const f = Math.max(0, Math.min(1, (petMob.hp||0)/st.maxHp));
+  ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(r.x+6, r.y+22, r.w-40, 10);
+  ctx.fillStyle = f > 0.5 ? '#6fcf4a' : f > 0.25 ? '#d8c040' : '#d04a30'; ctx.fillRect(r.x+6, r.y+22, (r.w-40)*f, 10);
+  ctx.fillStyle = '#c08060'; ctx.fillText('✕', r.x+r.w-20, r.y+32);
+}
+function petFrameClick(e){
+  const p = player.pet; if(!p || !petMob) return false;
+  const r = _petFrameRect();
+  if(e.clientX < r.x || e.clientX > r.x+r.w || e.clientY < r.y || e.clientY > r.y+r.h) return false;
+  if(e.clientX > r.x+r.w-26){ releasePet(); return true; }
+  p.stance = PET_STANCES[(PET_STANCES.indexOf(p.stance)+1) % PET_STANCES.length];
+  addFloater(petMob.x, petMob.y-30, p.name+': '+p.stance);
+  return true;
 }
 
 // ── Food ──
@@ -10889,6 +11070,7 @@ function drawInteractPrompts(){
       const sp=houseSignPos(h); if(getNearbyHouseDoorIndex()===-1) add(sp.x,sp.z,'[E] house settings',TILE*2.4);
     }
     for(const a of CHAMP_ALTARS)if(a.state==='idle')add(a.x,a.y,'⚔ champion shrine',TILE*4);
+    { const wc=nearestWildCat(); if(wc&&!player.pet&&((inv.raw_meat||0)>0||(inv.cooked_meat||0)>0)) add(wc.x,wc.y,'[E] feed the cat ('+(wc._trust||0)+'/'+PET_TRUST+')',TILE*1.7,40); }
     { const mc=nearestMobCorpse();
       if(mc) add(mc.x,mc.y, !mc.openable?'☠ not yours to search'
         : !mc.searched||mc.loot.length ? '[E] search corpse'
@@ -11122,7 +11304,7 @@ function recomputeDerivedStats(){
 }
 
 function buildSave(){
-  return {px:player.x,py:player.y,hp:player.hp,inv:{...inv},hasAxe:player.hasAxe,hasSword:player.hasSword,hasBow:player.hasBow,hasPickaxe:player.hasPickaxe,hasArmor:player.hasArmor,weapon:player.weapon,swordTier:player.swordTier||1,bowTier:player.bowTier||1,pickaxeTier:player.pickaxeTier||1,autoDefend:G.autoDefend!==false,aggroMode:!!G.aggroMode,armor:{...player.armor},bank:{gold:bank.gold},skillXp:{tactics:skills.tactics.xp,archery:skills.archery.xp,hiding:skills.hiding.xp,healing:skills.healing.xp,wrestling:skills.wrestling.xp},quests:{idx:questState.idx,prog:questState.prog},hasHouseTool:player.hasHouseTool,hasKnife:!!player.hasKnife,placedHouses:net.status==='online'?undefined:G.placedHouses,gambits,gambitsOn:!!G.gambitsOn,
+  return {px:player.x,py:player.y,hp:player.hp,inv:{...inv},hasAxe:player.hasAxe,hasSword:player.hasSword,hasBow:player.hasBow,hasPickaxe:player.hasPickaxe,hasArmor:player.hasArmor,weapon:player.weapon,swordTier:player.swordTier||1,bowTier:player.bowTier||1,pickaxeTier:player.pickaxeTier||1,autoDefend:G.autoDefend!==false,aggroMode:!!G.aggroMode,armor:{...player.armor},bank:{gold:bank.gold},skillXp:{tactics:skills.tactics.xp,archery:skills.archery.xp,hiding:skills.hiding.xp,healing:skills.healing.xp,wrestling:skills.wrestling.xp},quests:{idx:questState.idx,prog:questState.prog},hasHouseTool:player.hasHouseTool,hasKnife:!!player.hasKnife,pet:player.pet?{...player.pet}:null,placedHouses:net.status==='online'?undefined:G.placedHouses,gambits,gambitsOn:!!G.gambitsOn,
     // Shared world state -- the server owns this and broadcasts it, so only
     // persist a private copy when we are offline and nothing else will.
     // Saving it while online is what let each browser restore a divergent world.
@@ -11226,6 +11408,7 @@ function loadGame(blob){
     player.dollGender=player.gender==='female'?'f':'m';
     recomputeDerivedStats();
     player.hasAxe=s.hasAxe;player.hasSword=s.hasSword;player.hasBow=s.hasBow;player.hasPickaxe=s.hasPickaxe;player.hasArmor=s.hasArmor;player.weapon=s.weapon;bank.gold=s.bank.gold;player.hasHouseTool=s.hasHouseTool||false;player.hasKnife=!!s.hasKnife;
+    player.pet = (s.pet && typeof s.pet==='object' && s.pet.type) ? {...s.pet} : null;   // summoned on the next update
     player.hasHorse=!!s.hasHorse;player.onHorse=!!s.onHorse;player.horseDown=!!s.horseDown;player.horseX=s.horseX||0;player.horseY=s.horseY||0;
     player.pickaxeTier=s.pickaxeTier||1;
     if(s.skillXp){skills.tactics.xp=s.skillXp.tactics||0;skills.archery.xp=s.skillXp.archery||0;skills.hiding.xp=s.skillXp.hiding||0;skills.healing.xp=s.skillXp.healing||0;skills.wrestling.xp=s.skillXp.wrestling||0;}
@@ -11400,6 +11583,7 @@ window.addEventListener('keydown',e=>{
     G.devGuiOpen=false;
     G.backpackOpen=false;
     G.chestOpen=false;
+    G.mobCorpse=null;G.harvesting=null;
     if(G.trade){netTradeCancel();closeTrade(false);}
     G.tradeInvite=null;
     if(G.housePlacementMode){
@@ -11502,11 +11686,12 @@ window.addEventListener('keydown',e=>{
       if(G.mobCorpse){G.mobCorpse=null;G.harvesting=null;}
       else if(G.corpseLootOpen)G.corpseLootOpen=false;
       else if(G.corpse&&Math.hypot(G.corpse.x-player.x,G.corpse.y-player.y)<TILE*2)G.corpseLootOpen=true;
-      else if(nearestMobCorpse())openMobCorpse(nearestMobCorpse());
       else if(G.bankOpen)G.bankOpen=false;
       else if(G.tradeOpen)G.tradeOpen=false;
       else if(G.houseMenuOpen)G.houseMenuOpen=false;
       else if(G.houseSettingsOpen)G.houseSettingsOpen=false;
+      else if(nearestWildCat())feedWildCat(nearestWildCat());
+      else if(nearestMobCorpse())openMobCorpse(nearestMobCorpse());
       else{
         let used=false;
         for(const wh of WORLD_HEALERS){
@@ -11989,6 +12174,7 @@ G.canvas.addEventListener('mousedown',e=>{
   if(player.weapon==='house_tool'&&!G.houseMenuOpen&&!G.housePlacementMode){
     if(e.button===0){G.houseMenuOpen=true;return;}
   }
+  if(petFrameClick(e)) return;
   if(G.mobCorpse){ if(!handleMobCorpseClick(e)){ G.mobCorpse=null; G.harvesting=null; } return; }
   if(G.corpseLootOpen){
     const W=240,H=220,PAD=14,{px,py}=corpseXY();
@@ -14105,6 +14291,7 @@ function update(dt){
   updateCoastBosses(dt);
   updateMobCorpses(dt);
   updateMeal(dt);
+  updatePet(dt);
   if(G.portalCooldown<=0 && G._ppx!==undefined){
     const hit = portalCrossed(G._ppx, G._ppy);
     if(hit) usePortal(hit.p, hit.side);
@@ -14715,6 +14902,7 @@ function render3D(t){
   if(G.skillOpen)renderSkillPanel();
   if(G.corpseLootOpen)renderCorpseLoot();
   if(G.mobCorpse)renderMobCorpse();
+  drawPetFrame();
   if(G.charOpen)renderCharPanel();
   if(G.contractsOpen)renderContractPanel();
   if(G.worldChestOpen)renderWorldChest();
@@ -15838,6 +16026,7 @@ if(MP_ENABLED){
     const e=srvMobs.get(m.id);
     if(!e) return;
     const n0=drops.length;
+    const nearMe = Math.hypot(e.x-player.x, e.y-player.y) < TILE*30;
     if(m.killer===net.selfId){
       spawnDrops(e);                                // loot is yours
       if(hooks.onKill) hooks.onKill(e);             // quest credit
@@ -15846,6 +16035,10 @@ if(MP_ENABLED){
     // Everyone sees the body. The KILLER's death roll is its loot: posted to the
     // server once, which then shares it first-come with everyone (owner's rule
     // for ordinary mobs). Until the server's copy arrives the body reads empty.
+    // Only bodies near enough to matter get a visual; a wolf killed across the
+    // map would otherwise clone a skinned model on every client and crowd
+    // nearby loot out of the cap. The killer always gets one (it is their loot).
+    if(!nearMe && m.killer!==net.selfId){ drops.splice(n0); return; }
     if(hooks.onCorpse) hooks.onCorpse(e, n0);
     const c = mobCorpses[mobCorpses.length-1];
     if(c && m.cid){
@@ -15864,10 +16057,15 @@ if(MP_ENABLED){
     let n=0; for(const d of fromWire(m.items)){ takeLootEntry(d); n++; }
     if(n){ snd.pickup(); addFloater(player.x,player.y-30,'looted '+n+' item'+(n===1?'':'s')); }
   };
-  net.onCorpseHarvested = m => { const c=corpseBySrv(m.cid); if(c) c.harvested = true; };
+  net.onCorpseHarvested = m => {                 // same carcass on every screen
+    const c=corpseBySrv(m.cid); if(!c) return;
+    c.harvested = true; c.root.scale.setScalar(0.82);
+    if(!c.loot.length) c.ttl = Math.min(c.ttl, (performance.now()/1000 - c.t0) + HARVESTED_TTL);
+  };
   net.onCorpseHarv = m => {
     const c = corpseBySrv(m.cid);
     if(m.ok && c) finishHarvest(c);
+    else if(m.ok){ const got = rollHarvest(m.type) || {}; for(const [k,n] of Object.entries(got)) inv[k]=(inv[k]||0)+n; }   // body gone locally, harvest still ours
     else addFloater(player.x,player.y-30,'someone got to it first');
   };
   net.onCorpseNew = m => {                       // bodies that were already there when we joined

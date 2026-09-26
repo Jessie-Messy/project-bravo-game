@@ -155,7 +155,16 @@ DECISIONS (user, 2026-09-26):
       (+3 meat +1 hide), 1st player's copy flipped to harvested). Fix from it: bodies landed
       ~2 tiles apart per client → mob_dead now carries the server's x/y. second player sees the body, first-come take, harvest refused to the
       second claimant ("someone got to it first"); a joiner mid-corpse gets corpse_new
-- [ ] M9 critic pass on Phase M
+- [x] M9 critic pass on Phase M — fixed: server dropped gems from corpse loot; eviction deleted
+      unlooted bodies (now empties first, spills loot, never special; server deaths >30 tiles
+      get no body); harvest shortened a loot-holding body's life; offline could take a server
+      body's loot locally (dupe); ARPG items from corpse_fill passed through unchecked into
+      other players' saves (now rebuilt from a whitelist, server cleanItem); E on a spent body
+      stole the key from NPCs and opened over the bank; Escape didn't close the panel; ghosts
+      could loot; clone skeletons leaked; harvest not mirrored on other screens; _hitByMe
+      survived respawn.
+  - [ ] [critic-low] makeRig materials of bandit corpses not disposed (check makeRig sharing)
+  - [ ] [critic-low] knife nearly pointless: players start with the axe (a blade) — design call
 - [x] bandits dropped STONE (no spawnDrops entry) → now 3-8 gold, 15% bandage
 - [x] M6 multiplayer (verified online against the local dev server: kill → server corpse c1 →
       killer posts loot → server echoes → Take All via server → harvest claim ok): corpses of SERVER mobs visible to everyone; normal = shared first-come

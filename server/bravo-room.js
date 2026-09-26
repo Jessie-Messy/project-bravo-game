@@ -516,7 +516,8 @@ class BravoRoom extends Room {
     // drops it from trades and ground drops. mithril, runic and abyssal were
     // missing — they could not be traded between players at all.
     const DROP_TYPES = new Set(['wood','stone','planks','arrows','hide','bone','gold','skull','bandages','potions','iron_ore','iron_ingot','steel_ingot','siege_ram','torch','lantern',
-      'mithril_ore','mithril_ingot','runic_ore','runic_ingot','abyssal_ingot','raw_meat','cooked_meat']);
+      'mithril_ore','mithril_ingot','runic_ore','runic_ingot','abyssal_ingot','raw_meat','cooked_meat',
+      'ruby','sapphire','emerald','diamond']);
     this.onMessage('drop_add', (client, m) => {
       const p = this.state.players.get(client.sessionId);
       if (!p || p.dead || typeof m !== 'object' || m === null) return;
@@ -553,6 +554,34 @@ class BravoRoom extends Room {
     this.corpseSeq = 1;
     const CORPSE_MS = 90000, CORPSE_REACH = TILE * 3;
     const LOOT_TYPE = t => DROP_TYPES.has(t) || /^(loot_[a-z_]{1,20}|sigil_[a-z]{1,12}|arpg_item)$/.test(t);
+    // ⚠ An ARPG item from corpse_fill is handed to OTHER players and saved into
+    // their characters, so it is rebuilt here field by field from a whitelist
+    // with bounded values — never passed through. A cheating killer could
+    // otherwise plant NaN stats, negative HP or a '__proto__' slot in someone
+    // else's save. Anything that does not fit is dropped.
+    const str = (v, n, re) => (typeof v === 'string' && v.length <= n && (!re || re.test(v))) ? v : null;
+    const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v)) ? Math.max(lo, Math.min(hi, Math.round(v))) : null;
+    const RARITY = new Set(['common','uncommon','rare','epic','legendary']);
+    const cleanItem = it => {
+      if (!it || typeof it !== 'object') return null;
+      const slot = it.slot === 'weapon' || it.slot === 'armor' ? it.slot : null;
+      const rarity = RARITY.has(it.rarity) ? it.rarity : null;
+      const out = {
+        id: str(it.id, 40, /^[\w-]+$/), slot, baseKey: str(it.baseKey, 12, /^[a-z]+$/), rarity,
+        rarityName: str(it.rarityName, 16), color: str(it.color, 9, /^#[0-9a-f]{3,8}$/i),
+        levelReq: num(it.levelReq, 1, 50), name: str(it.name, 48) || '', sockets: [], affixes: [],
+        statReq: {}, baseStat: {},
+      };
+      if (!out.id || !slot || !out.baseKey || !rarity || !out.rarityName || !out.color || out.levelReq === null) return null;
+      for (const k of ['str','dex','int','vit']) { const v = it.statReq && num(it.statReq[k], 1, 60); if (v !== null && v !== undefined) out.statReq[k] = v; }
+      for (const k of ['dmg','def']) { const v = it.baseStat && num(it.baseStat[k], 0, 200); if (v !== null && v !== undefined) out.baseStat[k] = v; }
+      if (Array.isArray(it.affixes)) for (const a of it.affixes.slice(0, 6)) {
+        const c = a && { key: str(a.key, 20, /^[a-z_]+$/), stat: str(a.stat, 16, /^[a-zA-Z_]+$/), val: num(a.val, 0, 200),
+                         name: str(a.name, 20) || '', unit: str(a.unit, 4) || '' };
+        if (c && c.key && c.stat && c.val !== null) out.affixes.push(c);
+      }
+      return out;
+    };
     this.makeCorpse = (m, killer) => {
       const cid = 'c' + (this.corpseSeq++);
       this.corpses.set(cid, { type: '' + m.type, x: m.x, y: m.y, killer, items: null, harvested: false,
@@ -567,10 +596,7 @@ class BravoRoom extends Room {
         if (!it || typeof it !== 'object') continue;
         const t = '' + it.t; if (!LOOT_TYPE(t)) continue;
         const e = { t };
-        if (t === 'arpg_item') {
-          try { if (!it.item || JSON.stringify(it.item).length > 1500) continue; } catch (_) { continue; }
-          e.item = it.item;
-        }
+        if (t === 'arpg_item') { e.item = cleanItem(it.item); if (!e.item) continue; }
         items.push(e);
       }
       c.items = items;
@@ -579,7 +605,7 @@ class BravoRoom extends Room {
     this.onMessage('corpse_take', (client, m) => {
       const cid = '' + (m && m.cid), c = this.corpses.get(cid);
       const p = this.state.players.get(client.sessionId);
-      if (!c || !p || p.dead || !c.items || !c.items.length) return;
+      if (!c || !p || p.dead || p.ghost || !c.items || !c.items.length) return;
       if (Math.hypot(c.x - p.x, c.y - p.y) > CORPSE_REACH) return;
       const got = c.items; c.items = [];
       client.send('corpse_got', { cid, items: got });           // only the taker gains it
@@ -588,10 +614,10 @@ class BravoRoom extends Room {
     this.onMessage('corpse_harvest', (client, m) => {
       const cid = '' + (m && m.cid), c = this.corpses.get(cid);
       const p = this.state.players.get(client.sessionId);
-      if (!c || !p || p.dead) return;
+      if (!c || !p || p.dead || p.ghost) return;
       const ok = !c.harvested && Math.hypot(c.x - p.x, c.y - p.y) <= CORPSE_REACH;
       if (ok) { c.harvested = true; this.broadcast('corpse_harvested', { cid }); }
-      client.send('corpse_harv', { cid, ok });
+      client.send('corpse_harv', { cid, ok, type: c.type });
     });
 
     // ── Player trading (server-brokered escrow) ──

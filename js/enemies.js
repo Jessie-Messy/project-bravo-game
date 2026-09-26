@@ -5,7 +5,7 @@ import { TILE, MAP_W, MAP_H, T, BLOCKING,
   DUNGEON_X0, DUNGEON_Y0, DUNGEON_W, DUNGEON_H,
 } from './constants.js';
 import { G, map, player, enemies, drops, floaters, hitFlash, eProjList, skills, inv } from './state.js';
-import { CHAMP_ALTARS, WOLF_SPAWNS, BANDIT_SPAWNS, CAVE_MOBS, COAST_MOBS } from './world.js';
+import { CHAMP_ALTARS, WOLF_SPAWNS, BANDIT_SPAWNS, CAVE_MOBS, COAST_MOBS, CAT_SPAWNS, coastCatSpawns } from './world.js';
 import { snd } from './audio.js';
 
 // ── Enemy config ───────────────────────────────────────────────────
@@ -33,6 +33,11 @@ export const ENEMY_CFG = {
   // ground types — CAVE_FLOOR for cave dwellers, GRASS for everything else —
   // so a crab meant for the beach could not be placed at all: it would search
   // outward for GRASS and either land inland or fail. These say where they live.
+  // Wildlife, not a monster: never aggressive, bolts from anyone who comes
+  // close — unless they carry meat, when it gets curious instead (taming,
+  // game3d "Pets"). `passive` routes it out of the combat AI entirely.
+  cat:         { maxHp:14,  speed:175, damage:0,  attackRange:0,         aggroRange:0,        attackCooldown:9,   r:8,
+                 passive:true, skittish:TILE*3.5 },
   shore_crab:  { maxHp:46,  speed:58,  damage:9,  attackRange:TILE*0.9, aggroRange:TILE*3,  attackCooldown:1.5, r:12,
                  spawnTiles:[T.SAND, T.SHALLOWS] },
   reef_serpent:{ maxHp:62,  speed:150, damage:13, attackRange:TILE*1.1, aggroRange:TILE*5,  attackCooldown:1.2, r:12,
@@ -426,6 +431,7 @@ export const hooks = { onKill: null, onCorpse: null };
 export function damageEnemy(e, dmg) {
   if (e.iframes>0||e.state==='dead'||e.state==='respawning') return;
   e._hitByMe = true;                 // a special corpse opens only for those who hit it
+  if (hooks.onHitEnemy) hooks.onHitEnemy(e);
   if (e.srv) {                       // server-authoritative mob: send the intent,
     e.iframes=0.3;                   // the server decides hp/death (state syncs back)
     floaters.push({ x:e.x, y:e.y-18, text:'-'+Math.round(dmg), life:0.9 });
@@ -567,7 +573,8 @@ export function updateEnemy(e, dt) {
   if (e.state==='dead') { e.deadTimer+=dt; if(e.deadTimer>=3){e.state='respawning';e.respawnTimer=ENEMY_RESPAWN_DELAY;} return; }
   if (e.state==='respawning') {
     e.respawnTimer-=dt;
-    if(e.respawnTimer<=0){e.x=e.spawnX;e.y=e.spawnY;e.hp=e.maxHp;e.iframes=0;e.attackTimer=e.attackCooldown;e.state='idle';e.wanderTimer=1+Math.random()*2;e.fleeing=false;e.piperPhase=0;}
+    if(e.respawnTimer<=0){e.x=e.spawnX;e.y=e.spawnY;e.hp=e.maxHp;e.iframes=0;e.attackTimer=e.attackCooldown;e.state='idle';e.wanderTimer=1+Math.random()*2;e.fleeing=false;e.piperPhase=0;
+      e._hitByMe=false;}   // a new life: who hit the LAST one is not who hit this one
     return;
   }
   if(e.stunTimer>0){
@@ -604,6 +611,33 @@ export function updateEnemy(e, dt) {
         if(a){ _bossStartCast(e,a); return; }
       }
     }
+  }
+
+  // ── Wildlife ──
+  // Never enters combat. A tamed one is driven by the pet code (e.tame), not here.
+  const pcfg = ENEMY_CFG[e.type];
+  if(pcfg && pcfg.passive){
+    if(e.tame) return;
+    const lure = hooks.luresWildlife ? hooks.luresWildlife(e) : false;
+    if(playerVisible && !lure && dist < (pcfg.skittish||0)) e._bolt = 1.4;   // too close: bolt
+    if(e._bolt > 0){
+      e._bolt -= dt;
+      const nx=e.x-(pdx/dist)*e.speed*dt; if(!boxBlocked(nx,e.y,e.r))e.x=nx;
+      const ny=e.y-(pdy/dist)*e.speed*dt; if(!boxBlocked(e.x,ny,e.r))e.y=ny;
+      return;
+    }
+    if(lure && dist > TILE*1.2 && dist < TILE*8){          // curious: pad toward the food
+      const s=e.speed*0.3*dt;
+      const nx=e.x+(pdx/dist)*s; if(!boxBlocked(nx,e.y,e.r))e.x=nx;
+      const ny=e.y+(pdy/dist)*s; if(!boxBlocked(e.x,ny,e.r))e.y=ny;
+      return;
+    }
+    if(e.wanderTimer<=0){ e.wanderAngle=Math.random()*Math.PI*2; e.wanderTimer=3+Math.random()*4; e._sit = Math.random()<0.5; }
+    if(e._sit) return;                                       // half the time it just sits
+    const ws=e.speed*0.18*dt;
+    const nx=e.x+Math.cos(e.wanderAngle)*ws; if(!boxBlocked(nx,e.y,e.r))e.x=nx; else e.wanderTimer=0;
+    const ny=e.y+Math.sin(e.wanderAngle)*ws; if(!boxBlocked(e.x,ny,e.r))e.y=ny; else e.wanderTimer=0;
+    return;
   }
 
   if(e.type==='bandit'&&!e.fleeing&&e.hp/e.maxHp<0.3) e.fleeing=true;
@@ -706,6 +740,9 @@ export function populateWorld() {
   // scatter puts most of them in the water.
   for (const [tx,ty,type] of COAST_MOBS) {
     const e=makeEnemy(type,tx,ty); if(e) enemies.push(e);
+  }
+  for (const [tx,ty] of [...CAT_SPAWNS, ...coastCatSpawns()]) {
+    const e=makeEnemy('cat',tx,ty); if(e) enemies.push(e);
   }
 }
 

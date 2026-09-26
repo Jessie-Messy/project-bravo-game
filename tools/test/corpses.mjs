@@ -90,10 +90,19 @@ for (const t of CD.SPECIAL_TYPES) check(`special type ${t} is a real mob`, !!E.E
   check('server: only the killer may fill, and only once', room.includes('c.items !== null || c.killer !== client.sessionId'));
   check('server: taking empties the shared loot for everyone', room.includes('const got = c.items; c.items = [];') && room.includes("this.broadcast('corpse_items', { cid, items: [] });"));
   check('server: a body is harvested once', room.includes('const ok = !c.harvested'));
+  check('server: ARPG items from corpse_fill are rebuilt, never passed through', room.includes('e.item = cleanItem(it.item)') && !room.includes('e.item = it.item'));
+  check('server: ghosts cannot loot', /p\.dead \|\| p\.ghost \|\| !c\.items/.test(room));
   const dt = room.slice(room.indexOf('const DROP_TYPES'), room.indexOf('const DROP_TYPES') + 600);
-  for (const k of ['raw_meat', 'cooked_meat', 'mithril_ingot', 'runic_ingot', 'abyssal_ingot'])
+  // Every resource a death can emit must survive the server's whitelist, or it
+  // is silently dropped from the shared corpse (gems were, M9-1).
+  for (const k of ['raw_meat', 'cooked_meat', 'mithril_ingot', 'runic_ingot', 'abyssal_ingot', 'ruby', 'sapphire', 'emerald', 'diamond',
+                   'gold', 'hide', 'bone', 'bandages', 'stone', 'skull', 'steel_ingot'])
     check(`server DROP_TYPES allows ${k}`, dt.includes("'" + k + "'"));
 }
+check('eviction spills loot instead of deleting it', game.includes('mobCorpses.find(c => !c.loot.length) || mobCorpses.find(c => !c.special)'));
+check('harvest keeps a body that still holds loot', game.includes('if(!c.loot.length) c.ttl = Math.min(c.ttl, (performance.now()/1000 - c.t0) + HARVESTED_TTL);'));
+check('offline never hands out a server body loot', game.includes("if(c.srvCid){ if(net.status==='online') netCorpseTake(c.srvCid); else"));
+check('Escape closes the corpse panel', /G\.mobCorpse=null;G\.harvesting=null;\s*\n\s*if\(G\.trade\)/.test(game));
 check('boss gold stays on the ground', /if\(special && d\.type === 'gold'\)\{ drops\.push\(d\)/.test(game));
 check('a pelt is skinned, not looted', /if\(pelt && d\.type === 'hide'\) continue;/.test(game));
 
