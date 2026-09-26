@@ -88,6 +88,17 @@ hide. Raw meat cooks at a campfire (craft menu); cooked meat is the `eat` action
 - Distant characters animate at 10 Hz (`farMixerStep`) instead of freezing mid-stride.
 - `_dev.kill(type)`, `_dev.hit(e, dmg)`, `_dev.corpses`. Tests: `tools/test/corpses.mjs`.
 
+**Cats and pets (Phase P).** User-supplied `Calico_Cat_Pet.glb` (baked 0.31 MB; one walk clip,
+idle = a paused copy; `MOB_MODELS.cat` h:52 because the rig's bind pose measures ~4x its posed
+height). Eight client-side wild cats (`CAT_SPAWNS` + `coastCatSpawns()`), `ENEMY_CFG.cat.passive`:
+they never fight, bolt from players, and grow curious toward anyone carrying meat
+(`hooks.luresWildlife`). [E] feeds: raw +1 trust, cooked +2, 3 tames. The pet is an enemy
+record with `tame` (updateEnemy skips it; `updatePet` drives it): hunt/follow/stay, assists what
+you hit (`hooks.onHitEnemy`) or what aggroes you, never targets players, faints for 20 s,
+levels, saved as `player.pet`. Pet frame bottom-left (click = stance, ✕ = release). Other
+players see it via PlayerState `pet/petX/petY` (server accepts positions near the owner only).
+⚠ Model payload is 7.96/8.00 MB — the next model needs a budget decision from the owner.
+
 **Dev tooling.** `_dev.frames(n)` runs update+render synchronously (a hidden tab throttles
 rAF, so console teleports never reached the canvas). `tools/devserver.mjs` accepts
 `POST /__shot?name=` with header `X-Bravo-Shot: 1` and writes `.shots/<name>.jpg`
