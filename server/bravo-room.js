@@ -122,6 +122,12 @@ defineTypes(PlayerState, {
   horseDown: 'boolean',   // their horse stands in the world at horseX/Y
   horseX:  'number',
   horseY:  'number',
+  // A tamed pet at the owner's side. Cosmetic for everyone else — the pet's
+  // fighting is the owner's client, like their own swings. Position is
+  // accepted only near the owner.
+  pet:     'string',
+  petX:    'number',
+  petY:    'number',
 });
 
 class MobState extends Schema {}
@@ -169,6 +175,10 @@ class BravoRoom extends Room {
       }
       if (typeof m.dir === 'number' && isFinite(m.dir)) p.dir = m.dir;
       if (typeof m.weapon === 'string' && m.weapon.length <= 12) p.weapon = m.weapon;
+      if (typeof m.pet === 'string') p.pet = m.pet === 'cat' ? 'cat' : '';
+      if (p.pet && isFinite(+m.petX) && isFinite(+m.petY) && Math.hypot(+m.petX - p.x, +m.petY - p.y) < TILE * 20) {
+        p.petX = +m.petX; p.petY = +m.petY;
+      }
       const wasDead = p.dead;
       p.dead    = !!m.dead;
       p.ghost   = !!m.ghost;

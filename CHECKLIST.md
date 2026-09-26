@@ -198,9 +198,11 @@ cap or KTX2 textures). Ask the user before raising it.
       respects region rules (never damages players; PvP untouched)
 - [x] P5 UI (pet frame bottom-left: click = stance, ✕ = release; rename not done): pet panel (name, HP, level, stance: follow / hunt / stay, dismiss / rename);
       pet HP bar; floaters
-- [ ] P6 multiplayer: other players see your pet (PlayerState petType/petX/petY or piggyback on
+- [x] P6 multiplayer (PlayerState pet/petX/petY, validated near the owner; remote pets built by
+      buildMobModel; verified with 2 players — the watcher saw the pet at the owner's pet spot): other players see your pet (PlayerState petType/petX/petY or piggyback on
       the move message) — server validation minimal (cosmetic position)
-- [x] P7 tests (tools/test/pets.mjs, 26 checks; critic pass still to do) (cfg sane, save/load round-trip, pet never targets players) + critic pass
+- [x] P7 tests (tools/test/pets.mjs, 26 checks)
+- [ ] P8 critic pass on Phase P (cfg sane, save/load round-trip, pet never targets players) + critic pass
 
 ## Phase C — graphics critic loop (grass, background trees, buildings)
 - [ ] C1 Critic reviews baseline screenshots → ranked findings list appended below

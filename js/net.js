@@ -173,7 +173,8 @@ export function netTick(dt) {
   sendAcc = 0;
   const s = getSelf();
   const key = s.x.toFixed(1) + ',' + s.y.toFixed(1) + ',' + s.dir.toFixed(2) + ',' +
-    s.weapon + ',' + s.dead + ',' + s.ghost + ',' + s.onHorse + ',' + s.hidden + ',' + s.hp;
+    s.weapon + ',' + s.dead + ',' + s.ghost + ',' + s.onHorse + ',' + s.hidden + ',' + s.hp + ',' +
+    (s.pet || '') + ',' + (s.petX || 0).toFixed(0) + ',' + (s.petY || 0).toFixed(0);
   if (key === lastSent) return;
   lastSent = key;
   net.room.send('move', s);

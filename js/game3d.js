@@ -6250,6 +6250,13 @@ const slotModel = [];
 function buildSlotModel(i, type){
   const old = slotModel[i];
   if (old) { scene.remove(old.obj); old.mixer.stopAllAction(); }
+  const inst = buildMobModel(type);
+  slotModel[i]=inst; return inst;
+}
+// One animated model instance of a mob type, not tied to an enemy slot — the
+// enemy pool, other players' pets and anything else that needs "a wolf" or
+// "a cat" on screen all build it the same way.
+function buildMobModel(type){
   const mm = MOB_MODELS[type], asset = loadedModels[mm.file];
   const inner = SkeletonUtils.clone(asset.template);
   const s = mm.h * OBJ_SCALE / asset.natH;
@@ -6281,7 +6288,7 @@ function buildSlotModel(i, type){
   // becomes a visible spin every time a mob spawns, respawns or is re-slotted.
   // `fresh` makes the first frame snap instead of turn.
   const inst = { type, obj, mixer, actions, cur:null, atkUntil:0, lx:null, lz:null, fresh:true };
-  slotModel[i]=inst; return inst;
+  return inst;
 }
 function setModelAnim(inst, name){
   if (inst.cur===name || !inst.actions[name]) return;
@@ -15802,6 +15809,7 @@ function syncRemotePlayers(t,dt){
       if(v.rig)scene.remove(v.rig);
       if(v.model)scene.remove(v.model.obj);
       if(v.horse)scene.remove(v.horse.obj);
+      if(v.pet)scene.remove(v.pet.obj);
       remoteVis.delete(id); continue;
     }
     const st=net.remotes.get(id);
@@ -15854,6 +15862,19 @@ function syncRemotePlayers(t,dt){
         if(_animate) v.horse.mixer.update(dt*0.35); else farMixerStep(v.horse, v.horse.mixer, dt*0.35);
       }
     }
+    // Their pet: a cat model trotting after them where the server says it is.
+    if(st.pet && MOB_MODELS[st.pet] && loadedModels[MOB_MODELS[st.pet].file]){
+      if(!v.pet){ v.pet = buildMobModel(st.pet); v.pet.px = st.petX; v.pet.pz = st.petY; }
+      const pm = v.pet, k = Math.min(1, dt*8);
+      const ox = pm.px, oz = pm.pz;
+      pm.px += (st.petX - pm.px)*k; pm.pz += (st.petY - pm.pz)*k;
+      pm.obj.visible = visible;
+      pm.obj.position.set(pm.px, heightAt(pm.px, pm.pz), pm.pz);
+      const mv = Math.hypot(pm.px-ox, pm.pz-oz);
+      if(mv > 0.3) turnToward(pm.obj, Math.atan2(-(pm.px-ox), -(pm.pz-oz)), dt, 'mob');
+      setModelAnim(pm, mv > 0.3 ? 'walk' : 'idle');
+      if(_animate) pm.mixer.update(dt); else farMixerStep(pm, pm.mixer, dt);
+    } else if(v.pet){ scene.remove(v.pet.obj); v.pet = null; }
     if(v.model){}else if(v.rig){
       v.rig.visible=visible;   // `visible` already carries the render-distance cull
       v.rig.position.set(v.rx,heightAt(v.rx,v.rz),v.rz);
@@ -15957,7 +15978,9 @@ function startNet(){
     weapon: player.weapon||'sword', dead:!!player.dead, ghost:!!player.ghost,
     onHorse:!!player.onHorse, hidden:!!(skills.hiding&&skills.hiding.active),
     horseDown:!!(player.hasHorse&&player.horseDown), horseX:player.horseX||0, horseY:player.horseY||0,
-    hp:player.hp|0, maxHp:player.maxHp|0 }));
+    hp:player.hp|0, maxHp:player.maxHp|0,
+    pet: (player.pet && petMob && petMob.state!=='dead') ? player.pet.type : '',
+    petX: petMob ? petMob.x : 0, petY: petMob ? petMob.y : 0 }));
 }
 if(MP_ENABLED){
   net.onChat=m=>{
