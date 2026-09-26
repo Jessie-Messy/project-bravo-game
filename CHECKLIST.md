@@ -180,24 +180,27 @@ translate → almost certainly walk/trot). Authored at ~0.003 units tall → nee
 ⚠ Model payload is now 7.96 / 8.00 MB — the next model needs a budget decision (raise the
 cap or KTX2 textures). Ask the user before raising it.
 - [x] P1 asset into models_src + budgets.json (`^Calico_Cat`) + bake; animation/skin intact
-- [ ] P1b confirm the clip visually (headless Blender frames); decide idle = slowed/paused
+- [x] P1b clip confirmed in-engine: a walk cycle (idle = paused copy; model h:52 — the rig's
+      bind pose measures ~4x taller than it stands). Was: (headless Blender frames); decide idle = slowed/paused
       clip + procedural tail/breath, or cut an idle in Blender
-- [ ] P2 wild cat mob: ENEMY_CFG 'cat' (skittish, low HP, flees, never aggressive), MOB_MODELS
+- [x] P2 wild cat mob (8 spawns: city gates/fields + Saltmere; passive, bolts at 3.5 tiles,
+      curious toward anyone carrying meat) — client-side wildlife: ENEMY_CFG 'cat' (skittish, low HP, flees, never aggressive), MOB_MODELS
       entry + scale/yaw fit, a few spawns near forest edges / Saltmere; server mobs? (decide:
       client-only wildlife like the dungeon mobs vs server-authoritative like wolves)
-- [ ] P3 taming (needs M4 meat): [E] on a wild cat holding raw/cooked meat,
+- [x] P3 taming ([E] feed: raw +1 / cooked +2 trust, 3 = tamed; achievement first_pet): [E] on a wild cat holding raw/cooked meat,
       chance-based with feedback; tamed cat despawns from the wild pool and becomes `player.pet`
       {type, name, hp, maxHp, lvl, xp}; ONE active pet; saved in the save blob
-- [ ] P4 pet AI: follow ~1.5 tiles behind, path around obstacles (boxBlocked), catch up /
+- [x] P4 pet AI (hunt/follow/stay; assists what you hit or what aggroes you; faints 20 s at
+      0 HP and returns; levels: +8 HP +2 dmg; leash teleport 14 tiles): follow ~1.5 tiles behind, path around obstacles (boxBlocked), catch up /
       teleport when > 12 tiles or after a portal/ferry; HUNT: attacks whatever the player
       attacks or whatever attacks the player; small damage scaling with pet level; kill credit
       + loot go to the player; flees to the player at low HP, regenerates out of combat;
       respects region rules (never damages players; PvP untouched)
-- [ ] P5 UI: pet panel (name, HP, level, stance: follow / hunt / stay, dismiss / rename);
+- [x] P5 UI (pet frame bottom-left: click = stance, ✕ = release; rename not done): pet panel (name, HP, level, stance: follow / hunt / stay, dismiss / rename);
       pet HP bar; floaters
 - [ ] P6 multiplayer: other players see your pet (PlayerState petType/petX/petY or piggyback on
       the move message) — server validation minimal (cosmetic position)
-- [ ] P7 tests (cfg sane, save/load round-trip, pet never targets players) + critic pass
+- [x] P7 tests (tools/test/pets.mjs, 26 checks; critic pass still to do) (cfg sane, save/load round-trip, pet never targets players) + critic pass
 
 ## Phase C — graphics critic loop (grass, background trees, buildings)
 - [ ] C1 Critic reviews baseline screenshots → ranked findings list appended below

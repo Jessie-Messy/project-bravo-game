@@ -953,6 +953,17 @@ export const BANDIT_SPAWNS = [
   [30,120],[469,400],[250,280],[400,460],[160,320],[350,30],
 ];
 
+// Wild cats: strays round Lunar City's gates and fields, and Saltmere's docks.
+// makeEnemy searches out to 6 tiles for grass, so these are "near here" points.
+// Saltmere's are placed relative to the village, which the generator moved.
+export const CAT_SPAWNS = [
+  [310, 326], [274, 362], [346, 362], [310, 398], [255, 300], [360, 410],
+];
+export function coastCatSpawns() {
+  const V = COAST_VILLAGE;
+  return [[V.x - 3, V.y + (V.h >> 1)], [V.x + V.w + 3, V.y + 4]];
+}
+
 // Dungeon portal positions
 export const DUNGEON_PORTAL_A   = { x: 190, y: 231 };
 export const DUNGEON_PORTAL_B   = { x:  81, y: 162 };

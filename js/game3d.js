@@ -9366,7 +9366,7 @@ function feedWildCat(e){
   player.pet.hp = petStats(player.pet).maxHp;
   adoptPet(e);
   addFloater(e.x, e.y-36, '❤ Calico is your pet!');
-  grantAchiev && grantAchiev('first_pet');
+  grantAchiev('first_pet');
 }
 function adoptPet(e){
   const p = player.pet, st = petStats(p);
@@ -9508,6 +9508,7 @@ const ACHIEVEMENTS = [
   {id:'centurion',   title:'Centurion',           desc:'Slay 100 enemies.'},
   {id:'warlord',     title:'Warlord',             desc:'Slay 500 enemies.'},
   {id:'champ_slay',  title:'Champion Slayer',     desc:'Defeat a dungeon champion.'},
+  {id:'first_pet',   title:'A Friend for Life',   desc:'Tame a wild cat with meat.'},
   {id:'gravebinder', title:'Gravebinder Felled',  desc:'Slay The Gravebinder on Floor 3.'},
   {id:'molloch_dead',title:'Molloch Slain',        desc:'Slay Ratking Molloch on Floor 5.'},
   // Progression
