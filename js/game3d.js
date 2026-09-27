@@ -3249,12 +3249,12 @@ const _mkTex = (w, h, draw) => { const t = makeCanvasTex(w, h, draw); t.wrapS = 
 // Coursed rubble: irregular blocks with real vertical joints, so it reads as
 // stone and not as planks (round 1's long, joint-less courses did).
 const _stoneTexB = _mkTex(128, 128, (x, w, h) => {
-  x.fillStyle = '#6f675c'; x.fillRect(0, 0, w, h);
+  x.fillStyle = '#948b7e'; x.fillRect(0, 0, w, h);
   let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   for(let r = 0; r < 4; r++){ const y = r * 32; let bx = -Math.floor(rnd() * 30);
-    while(bx < w){ const bw = 22 + Math.floor(rnd() * 26), l = 175 + Math.floor(rnd() * 60), tint = Math.floor(rnd() * 10);
+    while(bx < w){ const bw = 22 + Math.floor(rnd() * 26), l = 175 + Math.floor(rnd() * 60), tint = Math.floor(rnd() * 10), dh = Math.floor(rnd() * 8) - 4;
       const draw = (ox) => {
-        x.fillStyle = `rgb(${l},${l - 4 - tint},${l - 12 - tint})`; x.beginPath(); x.roundRect(ox + 2, y + 2, bw - 3, 28, 4); x.fill();
+        x.fillStyle = `rgb(${l},${l - 4 - tint},${l - 12 - tint})`; x.beginPath(); x.roundRect(ox + 2, y + 2 + Math.max(0, dh), bw - 3, 28 - Math.abs(dh), 1); x.fill();
         x.fillStyle = 'rgba(255,255,255,.18)'; x.fillRect(ox + 4, y + 3, bw - 7, 3);            // lit top edge
         x.fillStyle = 'rgba(0,0,0,.22)'; x.fillRect(ox + 4, y + 26, bw - 7, 3); };              // shaded bottom
       draw(bx); if(bx + bw > w) draw(bx - w); bx += bw; } }
@@ -3292,6 +3292,20 @@ const _thatchTex = _mkTex(64, 64, (x, w, h) => {
   x.fillStyle = '#b8ad96'; x.fillRect(0, 0, w, h);
   for(let i = 0; i < 700; i++){ const l = 130 + Math.random() * 110 | 0;
     x.fillStyle = `rgb(${l},${l - 8},${l - 26})`; x.fillRect(Math.random() * w, Math.random() * h, 1, 4 + Math.random() * 8); }
+  // course bands: each layer of reed overhangs the one below it
+  for(let r = 0; r < 4; r++){ const y = r * 16;
+    const g = x.createLinearGradient(0, y, 0, y + 16); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.8, 'rgba(0,0,0,.10)'); g.addColorStop(1, 'rgba(30,20,5,.38)');
+    x.fillStyle = g; x.fillRect(0, y, w, 16); }
+});
+// Slate: flat rectangular slates in offset courses (they had the clay tile's
+// rounded scallops before, which read as fish scales in grey).
+const _slateTex = _mkTex(128, 128, (x, w, h) => {
+  x.fillStyle = '#3a3d42'; x.fillRect(0, 0, w, h);
+  for(let r = 0; r < 8; r++) for(let c = -1; c < 6; c++){
+    const l = 170 + ((c * 31 + r * 47) % 50), off = (r % 2) * 12;
+    x.fillStyle = `rgb(${l},${l + 2},${l + 8})`; x.fillRect(c * 24 + off + 1, r * 16 + 1, 22, 14);
+    x.fillStyle = 'rgba(0,0,0,.25)'; x.fillRect(c * 24 + off + 1, r * 16 + 13, 22, 2); }
+  grain(x, w, h, 10, 0.08);
 });
 const _shadowTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64;
   const x = c.getContext('2d'), g = x.createLinearGradient(0, 0, 64, 0);
@@ -3306,14 +3320,24 @@ const _shadowTex = (() => { const c = document.createElement('canvas'); c.width 
 // it has faded (0..1). The fade is a screen-door dither, so the roof dissolves
 // over a quarter second instead of popping. Walls carry id -1, never hidden.
 const _hideBid = { value: -2 }, _hideT = { value: 0 };
-function _bidHide(mat, key){
-  mat.onBeforeCompile = (sh) => {
+// While you are inside, that building's roof and upper storey dissolve and its
+// ground-storey walls are cut down to waist height (critic r3: a 164-deep
+// stone well hid the player completely). The cut sweeps down with the fade.
+// cutOff lifts each material's cut plane a hair, so the flattened timber sits
+// on top of the flattened wall instead of z-fighting with it.
+function _bldPatch(sh, cutOff, depth){
     sh.uniforms.uHideBid = _hideBid; sh.uniforms.uHideT = _hideT;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aBid;
+        attribute float aCut;
+        attribute float aBase;
         uniform float uHideBid;
+        uniform float uHideT;
         varying float vHid;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        if (aBid < -0.5 && abs(aCut - uHideBid) < 0.5 && uHideT > 0.0)
+          transformed.y = min(transformed.y, aBase + mix(600.0, 70.0, uHideT) + ${cutOff.toFixed(2)});`)
       .replace('#include <project_vertex>', `#include <project_vertex>
         vHid = abs(aBid - uHideBid) < 0.5 ? 1.0 : 0.0;`);
     sh.fragmentShader = sh.fragmentShader
@@ -3322,22 +3346,34 @@ function _bidHide(mat, key){
         varying float vHid;`)
       .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
         if (vHid > 0.5) {
-          // the same R2 screen-door dither the canopies fade with (CAM_FADE)
-          if ( fract( dot( gl_FragCoord.xy, vec2( 0.7548776662, 0.5698402910 ) ) ) < uHideT ) discard;
+          ${depth
+            ? 'if (uHideT > 0.5) discard;'
+            // the same R2 screen-door dither the canopies fade with (CAM_FADE)
+            : 'if ( fract( dot( gl_FragCoord.xy, vec2( 0.7548776662, 0.5698402910 ) ) ) < uHideT ) discard;'}
         }`);
-  };
+}
+function _bidHide(mat, key, cutOff = 0){
+  mat.onBeforeCompile = (sh) => _bldPatch(sh, cutOff, false);
   mat.customProgramCacheKey = () => 'bld-' + key;
   return mat;
 }
-const _bldStoneMat  = _bidHide(new THREE.MeshStandardMaterial({ map: _stoneTexB, vertexColors: true, roughness: 0.93 }), 'stone');
-const _bldPlastMat  = _bidHide(new THREE.MeshStandardMaterial({ map: _plasterTex, vertexColors: true, roughness: 0.97, side: THREE.DoubleSide }), 'plaster');
-const _bldWoodMat   = _bidHide(new THREE.MeshStandardMaterial({ map: _woodTex, vertexColors: true, roughness: 0.88 }), 'wood');
-const _glassMat     = _bidHide(new THREE.MeshStandardMaterial({ color: 0x1d2328, roughness: 0.2, metalness: 0.3 }), 'glassd');
-const _boardMat     = _bidHide(new THREE.MeshStandardMaterial({ map: _boardTex, vertexColors: true, roughness: 0.95 }), 'boards');
-const _thatchMat    = _bidHide(new THREE.MeshStandardMaterial({ map: _thatchTex, vertexColors: true, roughness: 1, side: THREE.DoubleSide }), 'thatch');
+// The shadow pass gets the same cut and the same lifted roof — otherwise the
+// full-height walls it still saw shadowed their own cut tops black.
+const _bldDepthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+_bldDepthMat.onBeforeCompile = (sh) => _bldPatch(sh, 0, true);
+_bldDepthMat.customProgramCacheKey = () => 'bld-depth';
+const _bldStoneMat  = _bidHide(new THREE.MeshStandardMaterial({ map: _stoneTexB, vertexColors: true, roughness: 0.93 }), 'stone', 0);
+// FrontSide throughout: every face is wound to its normal, and the gables are
+// double-quadded (DoubleSide here cost shadow acne on the shaded walls).
+const _bldPlastMat  = _bidHide(new THREE.MeshStandardMaterial({ map: _plasterTex, vertexColors: true, roughness: 0.97 }), 'plaster', 0.4);
+const _bldWoodMat   = _bidHide(new THREE.MeshStandardMaterial({ map: _woodTex, vertexColors: true, roughness: 0.88 }), 'wood', 0.8);
+const _glassMat     = _bidHide(new THREE.MeshStandardMaterial({ color: 0x4b5b67, roughness: 0.15, metalness: 0 }), 'glassd', 1.2);
+const _boardMat     = _bidHide(new THREE.MeshStandardMaterial({ map: _boardTex, vertexColors: true, roughness: 0.95 }), 'boards', 0.2);
+const _thatchMat    = _bidHide(new THREE.MeshStandardMaterial({ map: _thatchTex, vertexColors: true, roughness: 1 }), 'thatch');
+const _slateMat     = _bidHide(new THREE.MeshStandardMaterial({ map: _slateTex, vertexColors: true, roughness: 0.7 }), 'slate');
 const _floorMat     = new THREE.MeshStandardMaterial({ map: _boardTex, vertexColors: true, roughness: 0.9 });
-const _windowMat    = _bidHide(new THREE.MeshStandardMaterial({ color: 0x3a3226, emissive: 0xffb057, emissiveIntensity: 0, roughness: 0.25, metalness: 0.1 }), 'glass');
-const _bldRoofMat   = _bidHide(new THREE.MeshStandardMaterial({ map: _tileTex, vertexColors: true, roughness: 0.8, side: THREE.DoubleSide }), 'roof');
+const _windowMat    = _bidHide(new THREE.MeshStandardMaterial({ color: 0x3a3226, emissive: 0xffb057, emissiveIntensity: 0, roughness: 0.25, metalness: 0.1 }), 'glass', 1.2);
+const _bldRoofMat   = _bidHide(new THREE.MeshStandardMaterial({ map: _tileTex, vertexColors: true, roughness: 0.8 }), 'roof');
 const roofMat = _bldRoofMat;           // the tower caps share the tiles
 const _spillTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64;
   const x = c.getContext('2d'), img = x.createImageData(64, 64);
@@ -3352,24 +3388,25 @@ const _spillMat = new THREE.MeshBasicMaterial({ map: _spillTex, transparent: tru
 (function buildTownMeshes(){
   const G = buildTown(THREE, { buildings: TOWN, TILE, groundAt: heightAt, coastY0: COAST_Y0 });
   const add = (geo, mat, shadow = true) => { if(!geo) return; const m = new THREE.Mesh(geo, mat);
-    m.castShadow = shadow; m.receiveShadow = true; scene.add(m); };
+    m.castShadow = shadow; m.receiveShadow = true; m.customDepthMaterial = _bldDepthMat; scene.add(m); };
   add(G.stone, _bldStoneMat); add(G.plaster, _bldPlastMat); add(G.timber, _bldWoodMat);
   add(G.glass, _glassMat, false); add(G.glassLit, _windowMat, false); add(G.roof, _bldRoofMat);
-  add(G.boards, _boardMat); add(G.thatch, _thatchMat); add(G.floor, _floorMat, false);
+  add(G.boards, _boardMat); add(G.thatch, _thatchMat); add(G.slate, _slateMat); add(G.floor, _floorMat, false);
   // Lamplight pools under lit windows and doorways: additive, a soft falloff
   // from the wall outward, faded in with the dark (see updateBuildings).
   if(G.spill){ const m = new THREE.Mesh(G.spill, _spillMat); m.renderOrder = 2; scene.add(m); }
   if(G.shadow){ const m = new THREE.Mesh(G.shadow, new THREE.MeshBasicMaterial({ map: _shadowTex, color: 0x000000, transparent: true, depthWrite: false }));
     m.renderOrder = 1; scene.add(m); }
-  // Tower caps: a conical tiled roof on each corner tower, with a finial.
+  // Tower caps: a conical tiled roof on each corner tower — merged, one draw.
+  const cones = [];
   for(const [tx, ty] of TOWER_CENTRES){
     const wx = tx*TILE+TILE/2, wz = ty*TILE+TILE/2, y = heightAt(wx, wz) + TOWER_H;
-    const coneGeo = new THREE.ConeGeometry(TILE*1.95, TILE*2.6, 16, 1, true);
-    coneGeo.setAttribute('color', new THREE.Float32BufferAttribute(new Array(coneGeo.attributes.position.count * 3).fill(0.42), 3));
-    coneGeo.setAttribute('aBid', new THREE.Float32BufferAttribute(new Array(coneGeo.attributes.position.count).fill(-1), 1));
-    const cone = new THREE.Mesh(coneGeo, _bldRoofMat); cone.position.set(wx, y + TILE*1.3, wz); cone.castShadow = true;
-    scene.add(cone);
+    const g = new THREE.ConeGeometry(TILE*1.95, TILE*2.6, 16, 1, true);
+    g.setAttribute('color', new THREE.Float32BufferAttribute(Array.from({ length: g.attributes.position.count }, () => [0.55, 0.30, 0.20]).flat(), 3));
+    for(const [k, v] of [['aBid', -1], ['aCut', -1], ['aBase', 0]]) g.setAttribute(k, new THREE.Float32BufferAttribute(new Array(g.attributes.position.count).fill(v), 1));
+    g.translate(wx, y + TILE*1.3, wz); cones.push(g);
   }
+  if(cones.length){ const m = new THREE.Mesh(mergeGeometries(cones), _bldRoofMat); m.castShadow = true; scene.add(m); cones.forEach(g => g.dispose()); }
 })();
 // Per frame: the roof over you lifts away; windows light up after dusk.
 let _bldT0 = 0;
@@ -3404,13 +3441,20 @@ function rebuildWalls() {
       _pos.set(cx, gy + h/2, cz); _sc1.set(TILE, h, TILE); q.identity();
       _m4.compose(_pos, q, _sc1); wallMesh.setMatrixAt(i, _m4);
       wallInstTile[i]=ty*MAP_W+tx; i++;
-      // Merlons on tiles that face open ground; along the wall's own run.
-      const open = !_isW(tx+1,ty)||!_isW(tx-1,ty)||!_isW(tx,ty+1)||!_isW(tx,ty-1);
-      if(open && mi < mcap-1){
-        const alongX = _isW(tx+1,ty)||_isW(tx-1,ty);
+      // Merlons: a parapet along the wall's run, standing at the EDGE that faces
+      // open ground, with the wall-walk behind it. (Centred full-width merlons
+      // on both rows of a 2-thick wall made an egg-crate grid — critic r3.)
+      // A 1-thick wall open on both sides keeps one centred row.
+      const alongX = _isW(tx+1,ty)||_isW(tx-1,ty);
+      const sides = alongX ? [[0,-1],[0,1]].filter(([dx,dy])=>!_isW(tx+dx,ty+dy))
+                           : [[-1,0],[1,0]].filter(([dx,dy])=>!_isW(tx+dx,ty+dy));
+      const edges = sides.length === 1 ? [[sides[0][0]*0.36, sides[0][1]*0.36, 0.26]]
+                  : sides.length === 2 ? [[0, 0, 0.4]] : [];
+      for(const [ex, ez, thick] of edges){
+        if(mi >= mcap-1) break;
         for(const s of [-0.25, 0.25]){
-          _pos.set(cx + (alongX?s*TILE:0), gy + h + 11, cz + (alongX?0:s*TILE));
-          _sc1.set(alongX?TILE*0.3:TILE*0.62, 22, alongX?TILE*0.62:TILE*0.3);
+          _pos.set(cx + (alongX?s*TILE:ex*TILE), gy + h + 11, cz + (alongX?ez*TILE:s*TILE));
+          _sc1.set(alongX?TILE*0.3:TILE*thick, 22, alongX?TILE*thick:TILE*0.3);
           _m4.compose(_pos, q, _sc1); merlonMesh.setMatrixAt(mi++, _m4);
         }
       }
