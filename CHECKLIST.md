@@ -301,5 +301,9 @@ on the band's lower half, slope-based rock blend.
 - [x] critic r3 (5.5/10): all 12 items applied except half-hips + merlon UV scale (commit a7a0fa9)
 - [x] roof dither fade + waist-high cutaway (shadows too); night spill light; tower caps merged
 - [x] commit + HANDOFF entry; npm run test:buildings (42 checks)
-- [ ] critic r5 verdict → iterate until PASS
-- [ ] half-hips on ~30% of roofs; merlon UV scale; shop signs
+- [x] critic r5 (6.5/10) → 8 fixes (commit a7aa5a2); half-hips done
+- [x] critic r6: **PASS 7.5/10**; its 2 leftovers fixed (door glow material at the back of the
+      reveal; door leaf hides with the roof)
+- [ ] optional polish (critic's top pick for 7.5 → 8.5): hanging shop signs (merchant/healer/bank),
+      flower boxes, benches. Merlon UVs: already world-space via wallMesh's shader — the
+      critic's "stretched" note looks mistaken; recheck only if seen in game.

@@ -25,6 +25,16 @@ handoff is invisible to the next session and causes collisions.
 
 ### 2026-09-27 — Buildings rebuilt as architecture (NOT yet deployed)
 
+**Critic loop result: PASS at 7.5/10 in round 6** (r0 4 → r3 5.5 → r5 6.5 → r6 7.5). Later
+rounds added:
+- half-hip roofs;
+- windows beside doors;
+- door leaves left ajar;
+- a dim room glow (`doorGlow`, `_doorGlowMat`) at the back of each doorway;
+- freestone window dressings;
+- varied, softer thatched huts;
+- one outward-facing parapet per wall circuit (`_buildWallCentres`).
+
 The owner called the town "meh". The old code drew every wall tile as its own textured box, which
 gave per-tile wallpaper framing, paper roofs, and doors lower than the character. The strong critic
 loop is still running; this is the state after critic round 3.

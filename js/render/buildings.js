@@ -125,7 +125,7 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
   const A = {
     stone: new Acc(96), plaster: new Acc(64), timber: new Acc(48), boards: new Acc(64),
     glass: new Acc(24), glassLit: new Acc(24), roof: new Acc(96), slate: new Acc(96), thatch: new Acc(64),
-    floor: new Acc(64), shadow: new Acc(1), spill: new Acc(1),
+    floor: new Acc(64), shadow: new Acc(1), spill: new Acc(1), doorGlow: new Acc(48),
   };
   const T = TILE;
   buildings.forEach((B, bid) => {
@@ -401,14 +401,18 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
       const hx = pp[0][0] + out[0]*3, hz = pp[0][1] + out[1]*3;               // hinge, just outside the first post
       const tip = (y, k = 44) => [hx + (-al[0]*ca + out[0]*sa)*k, y, hz + (-al[1]*ca + out[1]*sa)*k];
       const lf = (y, k) => [hx + (-al[0]*ca + out[0]*sa)*k, y, hz + (-al[1]*ca + out[1]*sa)*k];
-      A.timber.beam(THREE, lf(G + 75, 1), tip(G + 75), 3, cDoor, -1, 146);
-      for (const sy of [32, 112]) A.timber.beam(THREE, lf(G + sy, 1), tip(G + sy, 40), 3.8, [0.03, 0.03, 0.03], -1, 4);
+      // (it lifts away with the roof when you are inside: cut to waist height it
+      // read as a stray slab beside the wall)
+      A.timber.beam(THREE, lf(G + 75, 1), tip(G + 75), 3, cDoor, bid, 146);
+      for (const sy of [32, 112]) A.timber.beam(THREE, lf(G + sy, 1), tip(G + sy, 40), 3.8, [0.03, 0.03, 0.03], bid, 4);
       // the room beyond glows through the open door at night (critic r5: a
-      // lamplight pool on the step with no visible source). Hidden with the roof.
-      { const ix = ax ? 0 : out[0], iz = ax ? out[1] : 0, dd = -30;
+      // lamplight pool on the step with no visible source). At the BACK of the
+      // reveal, with its own dim warm material, so it reads as a lit room and
+      // not a white-hot slit (critic r6). Hidden with the roof.
+      { const ix = ax ? 0 : out[0], iz = ax ? out[1] : 0, dd = -(T - 4);
         const q0 = ax ? [x + 6, G + 4, fz + iz*dd] : [fx + ix*dd, G + 4, z + 6];
         const q1 = ax ? [x + T - 6, G + 4, fz + iz*dd] : [fx + ix*dd, G + 4, z + T - 6];
-        A.glassLit.quad(q0, q1, [q1[0], G + DOOR_H - 2, q1[2]], [q0[0], G + DOOR_H - 2, q0[2]], [out[0], 0, out[1]], [1,1,1], bid); }
+        A.doorGlow.quad(q0, q1, [q1[0], G + DOOR_H - 2, q1[2]], [q0[0], G + DOOR_H - 2, q0[2]], [out[0], 0, out[1]], [1,1,1], bid); }
       // threshold stone
       const tx0 = ax ? x : (out[0] > 0 ? x + T : x - 14), tx1 = ax ? x + T : (out[0] > 0 ? x + T + 14 : x);
       const tz0 = ax ? (out[1] > 0 ? z + T : z - 14) : z, tz1 = ax ? (out[1] > 0 ? z + T + 14 : z) : z + T;

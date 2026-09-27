@@ -3367,6 +3367,8 @@ const _bldStoneMat  = _bidHide(new THREE.MeshStandardMaterial({ map: _stoneTexB,
 // double-quadded (DoubleSide here cost shadow acne on the shaded walls).
 const _bldPlastMat  = _bidHide(new THREE.MeshStandardMaterial({ map: _plasterTex, vertexColors: true, roughness: 0.97 }), 'plaster', 0.4);
 const _bldWoodMat   = _bidHide(new THREE.MeshStandardMaterial({ map: _woodTex, vertexColors: true, roughness: 0.88 }), 'wood', 0.8);
+// The room seen through an open door: near-black by day, a dim warm glow at night.
+const _doorGlowMat  = _bidHide(new THREE.MeshStandardMaterial({ color: 0x1a140e, emissive: 0xff8a3a, emissiveIntensity: 0, roughness: 1 }), 'doorglow', 1.2);
 const _glassMat     = _bidHide(new THREE.MeshStandardMaterial({ color: 0x4b5b67, roughness: 0.15, metalness: 0 }), 'glassd', 1.2);
 const _boardMat     = _bidHide(new THREE.MeshStandardMaterial({ map: _boardTex, vertexColors: true, roughness: 0.95 }), 'boards', 0.2);
 const _thatchMat    = _bidHide(new THREE.MeshStandardMaterial({ map: _thatchTex, vertexColors: true, roughness: 1 }), 'thatch');
@@ -3390,7 +3392,7 @@ const _spillMat = new THREE.MeshBasicMaterial({ map: _spillTex, transparent: tru
   const add = (geo, mat, shadow = true) => { if(!geo) return; const m = new THREE.Mesh(geo, mat);
     m.castShadow = shadow; m.receiveShadow = true; m.customDepthMaterial = _bldDepthMat; scene.add(m); };
   add(G.stone, _bldStoneMat); add(G.plaster, _bldPlastMat); add(G.timber, _bldWoodMat);
-  add(G.glass, _glassMat, false); add(G.glassLit, _windowMat, false); add(G.roof, _bldRoofMat);
+  add(G.glass, _glassMat, false); add(G.glassLit, _windowMat, false); add(G.doorGlow, _doorGlowMat, false); add(G.roof, _bldRoofMat);
   add(G.boards, _boardMat); add(G.thatch, _thatchMat); add(G.slate, _slateMat); add(G.floor, _floorMat, false);
   // Lamplight pools under lit windows and doorways: additive, a soft falloff
   // from the wall outward, faded in with the dark (see updateBuildings).
@@ -3421,6 +3423,7 @@ function updateBuildings(){
   else { _hideT.value = Math.max(0, _hideT.value - dt * 4); if(_hideT.value === 0) _hideBid.value = hide; }
   const night = Math.max(0, 1 - _envDayF*1.6);
   _windowMat.emissiveIntensity = night * 2.2;
+  _doorGlowMat.emissiveIntensity = night * 0.8;
   _spillMat.opacity = night * 0.55; _spillMat.visible = night > 0.01;
 }
 

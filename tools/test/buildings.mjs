@@ -38,7 +38,7 @@ const buildings = [
 ];
 const G = buildTown(THREE, { buildings, TILE, groundAt: ground, coastY0: 150 });
 
-for (const k of ['stone', 'plaster', 'timber', 'boards', 'glass', 'glassLit', 'roof', 'thatch', 'floor', 'shadow', 'spill'])
+for (const k of ['stone', 'plaster', 'timber', 'boards', 'glass', 'glassLit', 'roof', 'thatch', 'floor', 'shadow', 'spill', 'doorGlow'])
   check(`geometry "${k}" is produced`, !!G[k]);
 
 // No NaN anywhere; every face's winding agrees with its normal.
