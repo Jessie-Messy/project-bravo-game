@@ -298,5 +298,8 @@ on the band's lower half, slope-based rock blend.
 ### C4e building rebuild — status 2026-09-26 (limit reached mid-loop)
 - [x] js/render/buildings.js rewritten to critic spec (types A/B/C/HUT, 150 doors, facade-wide framing, closed gables, thick roofs, thatch/weatherboard huts, ridge chimneys); wired in game3d.js (TOWN merge, new mats boards/thatch/floor/glass/glassLit)
 - [x] page loads with no errors; r1_ tour shots written to .shots/r1_bld_*.jpg (NOT yet reviewed)
-- [ ] review r1 shots, run strong critic, iterate; then roof dither fade, shop signs, night spill light, draw-call count
-- [ ] commit + HANDOFF entry (buildings.js is still untracked)
+- [x] critic r3 (5.5/10): all 12 items applied except half-hips + merlon UV scale (commit a7a0fa9)
+- [x] roof dither fade + waist-high cutaway (shadows too); night spill light; tower caps merged
+- [x] commit + HANDOFF entry; npm run test:buildings (42 checks)
+- [ ] critic r5 verdict → iterate until PASS
+- [ ] half-hips on ~30% of roofs; merlon UV scale; shop signs

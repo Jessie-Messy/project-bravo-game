@@ -23,6 +23,41 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-27 — Buildings rebuilt as architecture (NOT yet deployed)
+
+The owner called the town "meh". The old code drew every wall tile as its own textured box, which
+gave per-tile wallpaper framing, paper roofs, and doors lower than the character. The strong critic
+loop is still running; this is the state after critic round 3.
+
+- **`js/render/buildings.js`** (new, pure geometry): `buildTown(THREE, {buildings, TILE, groundAt,
+  coastY0})` builds each building once from its footprint and returns one merged geometry per
+  material. Building types:
+  - A: one storey plus loft.
+  - B: sandstone base (164), jettied timber-framed upper (144), jetty 20.
+  - C: the bank, a bigger B.
+  - HUT: every building at or past `COAST_Y0`, i.e. Saltmere — weatherboard and banded reed thatch,
+    rise capped at 120.
+- **Details:**
+  - Doors are 150 tall and their leaves swing out.
+  - Framing is facade-wide and door-aware (spacing 42).
+  - Windows are framed glass *just proud of* the wall. The walls are solid tiles; glass inside
+    them is invisible and never lights.
+  - Roofs are 12 thick with 30 eaves and 20 verges, closed framed gables, and ridge chimneys.
+  - Clay / slate / thatch each have their own material.
+- **Inside a building:**
+  - Its roof and upper storey dissolve (R2 dither, `_hideT`).
+  - Its ground walls are cut to waist height in the vertex shader (`aCut`/`aBase`, `_bldPatch`).
+  - The shadow pass gets the same cut via `_bldDepthMat`. Without it, the cut tops were shadowed
+    black.
+- **Night:** lit windows are emissive, and additive lamplight pools (`spill`) sit under lit
+  windows and doors.
+- **City walls:** parapet merlons stand only at the edge facing open ground (the old version was an
+  egg-crate on 2-thick walls). The tower caps are merged into one mesh and are clay again.
+- **Test:** `npm run test:buildings` covers door height, no buried glass, winding, thatched coast
+  huts, and roof ids.
+- **Dev:** tour helpers `go`/`snap`/`settle`/`btour` are pasted into the page (see the transcript).
+  `settle()` steps frames with real time so the fade completes. Shots are `.shots/r*_bld_*.jpg`.
+
 ### 2026-09-26 — DEPLOYED v0.20.0 to production (for testing)
 
 Everything in the v0.20 entry below — rune gates, the edge ridge + mountains, aerial haze, grass,

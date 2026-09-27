@@ -70,13 +70,16 @@ for (const [k, g] of Object.entries(G)) {
 }
 
 // Glass must be at or in front of the wall face, never buried in it: the walls
-// are solid, so no glass vertex may lie strictly inside any footprint.
+// are solid, so no glass vertex may lie strictly inside any footprint — except
+// the glow panel set back inside each open doorway, which is in the door TILE
+// (a passage, not wall).
 for (const k of ['glass', 'glassLit']) {
   const p = G[k].attributes.position.array;
   let buried = 0;
   for (let i = 0; i < p.length; i += 3) for (const b of buildings) {
     const X0 = b.x0 * TILE, X1 = (b.x1 + 1) * TILE, Z0 = b.y0 * TILE, Z1 = (b.y1 + 1) * TILE;
-    if (p[i] > X0 + 0.3 && p[i] < X1 - 0.3 && p[i + 2] > Z0 + 0.3 && p[i + 2] < Z1 - 0.3) buried++;
+    const inDoorTile = b.doors.some(d => p[i] >= d.tx*TILE && p[i] <= (d.tx + 1)*TILE && p[i + 2] >= d.ty*TILE && p[i + 2] <= (d.ty + 1)*TILE);
+    if (!inDoorTile && p[i] > X0 + 0.3 && p[i] < X1 - 0.3 && p[i + 2] > Z0 + 0.3 && p[i + 2] < Z1 - 0.3) buried++;
   }
   check(`${k}: no glass buried inside a solid wall`, buried === 0, buried + ' vertices');
 }

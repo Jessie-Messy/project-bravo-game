@@ -2548,7 +2548,7 @@ wallMesh.material.onBeforeCompile = (sh) => {
     {
       vec4 _wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
       vec3 _wn = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
-      vec2 _u = abs(_wn.x) > 0.5 ? _wp.zy : (abs(_wn.z) > 0.5 ? _wp.xy : _wp.xz);
+      vec2 _u = abs(_wn.x) > 0.5 ? _wp.zy : (abs(_wn.z) > 0.5 ? _wp.xy : _wp.xz * 0.5);   // tops: flags twice the size
       #ifdef USE_MAP
         vMapUv = _u / vec2(${TILE.toFixed(1)}, ${(TILE*2).toFixed(1)});
       #endif
@@ -2557,7 +2557,7 @@ wallMesh.material.onBeforeCompile = (sh) => {
       #endif
     }`);
 };
-wallMesh.material.customProgramCacheKey = () => 'wall-worlduv-v1';
+wallMesh.material.customProgramCacheKey = () => 'wall-worlduv-v2';
 // Stacked-skirt canopy and flared trunk instead of a bare cone on a cylinder.
 // Both merge down to ONE geometry each, so this is the same two draw calls the
 // primitives cost — the tier count is free.
@@ -3293,9 +3293,9 @@ const _thatchTex = _mkTex(64, 64, (x, w, h) => {
   for(let i = 0; i < 700; i++){ const l = 130 + Math.random() * 110 | 0;
     x.fillStyle = `rgb(${l},${l - 8},${l - 26})`; x.fillRect(Math.random() * w, Math.random() * h, 1, 4 + Math.random() * 8); }
   // course bands: each layer of reed overhangs the one below it
-  for(let r = 0; r < 4; r++){ const y = r * 16;
-    const g = x.createLinearGradient(0, y, 0, y + 16); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.8, 'rgba(0,0,0,.10)'); g.addColorStop(1, 'rgba(30,20,5,.38)');
-    x.fillStyle = g; x.fillRect(0, y, w, 16); }
+  for(let r = 0; r < 2; r++){ const y = r * 32;
+    const g = x.createLinearGradient(0, y, 0, y + 32); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.8, 'rgba(0,0,0,.06)'); g.addColorStop(1, 'rgba(30,20,5,.14)');
+    x.fillStyle = g; x.fillRect(0, y, w, 32); }
 });
 // Slate: flat rectangular slates in offset courses (they had the clay tile's
 // rounded scallops before, which read as fish scales in grey).
@@ -3424,7 +3424,33 @@ function updateBuildings(){
   _spillMat.opacity = night * 0.55; _spillMat.visible = night > 0.01;
 }
 
+// Which way a fort wall faces: away from the middle of its own circuit. Fort
+// and tower tiles are grouped into circuits, bridging gaps up to 5 tiles (the
+// gates), and each circuit's bounding-box centre is its inside. A wall gets
+// its parapet only on the open side that faces away from that centre — the
+// city ring faces the fields, the bank court's wall faces the city. (Both
+// open edges of a 2-thick wall had one: a double parapet, critic r5.)
+// Built once: the map editor's wall painting does not change fort outlines.
+let _wallCentre = null;
+function _buildWallCentres(){
+  const cen = new Float32Array(MAP_W * MAP_H * 2).fill(NaN), seen = new Uint8Array(MAP_W * MAP_H);
+  const isF = (x, y) => x >= 0 && y >= 0 && x < MAP_W && y < MAP_H && (wallKind[y*MAP_W+x] === WK_FORT || wallKind[y*MAP_W+x] === WK_TOWER);
+  for(let y0 = 0; y0 < MAP_H; y0++) for(let x0 = 0; x0 < MAP_W; x0++){
+    if(seen[y0*MAP_W+x0] || !isF(x0, y0)) continue;
+    const comp = [], q = [y0*MAP_W+x0]; seen[q[0]] = 1;
+    let bx0 = x0, bx1 = x0, by0 = y0, by1 = y0;
+    while(q.length){ const k = q.pop(), x = k % MAP_W, y = (k / MAP_W) | 0; comp.push(k);
+      bx0 = Math.min(bx0, x); bx1 = Math.max(bx1, x); by0 = Math.min(by0, y); by1 = Math.max(by1, y);
+      for(let dy = -3; dy <= 3; dy++) for(let dx = -3; dx <= 3; dx++){
+        const nx = x + dx, ny = y + dy; if(!isF(nx, ny)) continue;
+        const nk = ny*MAP_W + nx; if(!seen[nk]){ seen[nk] = 1; q.push(nk); } } }
+    const cx = (bx0 + bx1) / 2, cy = (by0 + by1) / 2;
+    for(const k of comp){ cen[k*2] = cx; cen[k*2+1] = cy; }
+  }
+  return cen;
+}
 function rebuildWalls() {
+  if(!_wallCentre) _wallCentre = _buildWallCentres();
   let i=0; const cap=wallMesh.instanceMatrix.count, b=_obsBounds();
   let mi=0; const mcap=merlonMesh.instanceMatrix.count;
   const _isW=(x,y)=>map[y]&&(map[y][x]===T.WALL||map[y][x]===T.STAINED_GLASS);
@@ -3446,8 +3472,14 @@ function rebuildWalls() {
       // on both rows of a 2-thick wall made an egg-crate grid — critic r3.)
       // A 1-thick wall open on both sides keeps one centred row.
       const alongX = _isW(tx+1,ty)||_isW(tx-1,ty);
-      const sides = alongX ? [[0,-1],[0,1]].filter(([dx,dy])=>!_isW(tx+dx,ty+dy))
-                           : [[-1,0],[1,0]].filter(([dx,dy])=>!_isW(tx+dx,ty+dy));
+      const open = alongX ? [[0,-1],[0,1]].filter(([dx,dy])=>!_isW(tx+dx,ty+dy))
+                          : [[-1,0],[1,0]].filter(([dx,dy])=>!_isW(tx+dx,ty+dy));
+      // outward-facing only, when we can tell (critic r5: double parapets)
+      const ccx = _wallCentre[(ty*MAP_W+tx)*2], ccy = _wallCentre[(ty*MAP_W+tx)*2+1];
+      const outward = open.filter(([dx,dy])=>dx*(tx-ccx) + dy*(ty-ccy) > 0.5);
+      // (a tile open only toward the inside gets none; a 1-thick wall square on
+      // its circuit centre keeps one centred row)
+      const sides = outward.length ? outward : open.length === 2 ? open : [];
       const edges = sides.length === 1 ? [[sides[0][0]*0.36, sides[0][1]*0.36, 0.26]]
                   : sides.length === 2 ? [[0, 0, 0.4]] : [];
       for(const [ex, ez, thick] of edges){

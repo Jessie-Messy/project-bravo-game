@@ -111,7 +111,7 @@ const STONE   = [0xc9bba0, 0xbfb096, 0xd0c4ac];   // warm dressed sandstone — 
 const CLAY    = [0x8c4a30, 0x9e5b3c, 0x74402e];
 const SLATE   = [0x707880, 0x7e848c];
 const DOORS   = [0x5b3a24, 0x3f5a4a, 0x7a2e22];
-const THATCH  = [0x9c8250, 0x7d6b48];
+const THATCH  = [0xb09a68, 0x9a8660];
 
 /**
  * @param opts.buildings  [{x0,y0,x1,y1, doors:[{tx,ty,side}]}] inclusive tile bounds
@@ -147,8 +147,8 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
     const cPl = jit(hex(THREE, pick(PLASTER))), cTi = jit(hex(THREE, pick(TIMBER))), cSt = jit(hex(THREE, pick(STONE)));
     const cDoor = hex(THREE, hut ? 0x4f6b78 : pick(DOORS));
     const slate = !hut && r() >= 0.7;
-    const cRf = hut ? hex(THREE, pick(THATCH)) : hex(THREE, slate ? pick(SLATE) : pick(CLAY));
-    const cBoard = jit(hex(THREE, 0x5e5247)), cSalt = hex(THREE, 0x9a948a);   // tarred boards, salt-bleached at the foot
+    const cRf = hut ? mul(hex(THREE, pick(THATCH)), 0.94 + r() * 0.12) : hex(THREE, slate ? pick(SLATE) : pick(CLAY));
+    const cBoard = jit(hex(THREE, 0x6f6456)), cSalt = hex(THREE, 0x9a948a);   // tarred boards, salt-bleached at the foot
 
     const PL = 24;                                   // plinth top
     const DOOR_H = 150;
@@ -321,18 +321,25 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
         if (inDoor(s0, s1)) continue;
         // braces: in the corner bays, and in a bay beside a doorway, rising toward it
         const doorL = inDoor(s0 - step, s0), doorR = inDoor(s1, s1 + step);
-        if (k === 0 || k === n - 1 || doorL || doorR) {
-          const towardLeft = k === 0 || doorL;
+        const corner = k === 0 || k === n - 1;
+        if (corner || doorL || doorR) {
+          const towardLeft = corner ? k === 0 : doorL;
           const lo = F.y0 + 6, hi = yMid;
           if (towardLeft) A.timber.beam(THREE, at(s0 + 4, hi), at(s1 - 4, lo), 7, cTi, bb, 4);
           else            A.timber.beam(THREE, at(s1 - 4, hi), at(s0 + 4, lo), 7, cTi, bb, 4);
-          const lo2 = yMid + 4, hi2 = F.y1 - 6;
-          if (towardLeft) A.timber.beam(THREE, at(s0 + 4, lo2), at(s1 - 4, hi2), 7, cTi, bb, 4);
-          else            A.timber.beam(THREE, at(s1 - 4, lo2), at(s0 + 4, hi2), 7, cTi, bb, 4);
-          continue;
+          // A corner bay is braced full height. A bay beside a door keeps only
+          // the lower brace and takes a window above the rail — critic r5: the
+          // healer's front had nothing but door-flanking bays, so no windows.
+          if (corner && !(doorL || doorR)) {
+            const lo2 = yMid + 4, hi2 = F.y1 - 6;
+            if (towardLeft) A.timber.beam(THREE, at(s0 + 4, lo2), at(s1 - 4, hi2), 7, cTi, bb, 4);
+            else            A.timber.beam(THREE, at(s1 - 4, lo2), at(s0 + 4, hi2), 7, cTi, bb, 4);
+            continue;
+          }
+          if (step < 30) continue;
         }
-        // windows: every other free bay, heads aligned per facade
-        if ((k % 2) !== 1 || step < 30) continue;
+        // windows: every other free bay, and every bay beside a door; heads aligned
+        else if ((k % 2) !== 1 || step < 30) continue;
         const ww = Math.min(28, step - 12), wy0 = yMid + 5, wh = Math.min(46, F.y1 - 10 - wy0), wy1 = wy0 + wh;
         const lit = r() < 0.6;
         const gl = lit ? A.glassLit : A.glass;
@@ -368,11 +375,12 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
         const litS = r() < 0.6; if (litS) { const q = at(s, 0, 0); spill(q[0], q[2], F.n[0], F.n[1], 40, 80); }
         (litS ? A.glassLit : A.glass).quad(at(s - 14, y0, 0.6), at(s + 14, y0, 0.6), at(s + 14, y1, 0.6), at(s - 14, y1, 0.6), [F.n[0],0,F.n[1]], [1,1,1]);
         // dressings in pale freestone (critic r3: stone-on-stone vanished, leaving black holes)
-        const cDr = hex(THREE, 0xd8cdb4);
+        const cDr = hex(THREE, 0xb9ab8e);
         for (const e of [-1, 1]) A.plaster.beam(THREE, at(s + e*17, y0 - 1, 2), at(s + e*17, y1 + 1, 2), 6, cDr, -1, 4);   // jambs
-        A.plaster.beam(THREE, at(s - 22, y1 + 5, 2), at(s + 22, y1 + 5, 2), 9, cDr, -1, 4);   // lintel
-        A.plaster.beam(THREE, at(s - 20, y0 - 3, 3), at(s + 20, y0 - 3, 3), 5, cDr, -1, 6);   // sill
+        A.plaster.beam(THREE, at(s - 21, y1 + 5, 2), at(s + 21, y1 + 5, 2), 9, cDr, -1, 4);   // lintel, 1.5x the opening
+        A.plaster.beam(THREE, at(s - 20, y0 - 3, 3), at(s + 20, y0 - 3, 3), 5, cDr, -1, 6);   // sill, 6 proud
         A.timber.beam(THREE, at(s, y0, 1), at(s, y1, 1), 3, cTi, -1, 2);                        // mullion
+        A.timber.beam(THREE, at(s - 14, y0 + 44*0.62, 1), at(s + 14, y0 + 44*0.62, 1), 3, cTi, -1, 2);   // transom
       }
     }
 
@@ -386,15 +394,21 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
       const pp = ax ? [[x + 2, fz + out[1]*2], [x + T - 2, fz + out[1]*2]] : [[fx + out[0]*2, z + 2], [fx + out[0]*2, z + T - 2]];
       for (const [px, pz] of pp) A.timber.beam(THREE, [px, G, pz], [px, G + DOOR_H, pz], 8, cTi, -1, 8);
       A.timber.beam(THREE, [pp[0][0], G + DOOR_H + 4, pp[0][1]], [pp[1][0], G + DOOR_H + 4, pp[1][1]], 8, cTi, -1, 9);
-      // the leaf: 42 x 146 planks with two iron straps, swung OUT flat against the
-      // wall beside the opening (in the reveal it read as a dark slot)
-      const al = ax ? [1, 0] : [0, 1];
+      // the leaf: 44 x 146 planks with two iron straps, swung out and left ajar,
+      // 65 deg off the wall. (In the reveal it read as a dark slot; flat against
+      // the wall it read as a second, closed door.)
+      const al = ax ? [1, 0] : [0, 1], ca = Math.cos(65 * Math.PI / 180), sa = Math.sin(65 * Math.PI / 180);
       const hx = pp[0][0] + out[0]*3, hz = pp[0][1] + out[1]*3;               // hinge, just outside the first post
-      const ex = hx - al[0]*46, ez = hz - al[1]*46;
-      const lxs = ax ? [ex, hx - 4] : [Math.min(hx, hx + out[0]*3), Math.max(hx, hx + out[0]*3)];
-      const lzs = ax ? [Math.min(hz, hz + out[1]*3), Math.max(hz, hz + out[1]*3)] : [ez, hz - 4];
-      A.timber.box(lxs[0], G + 2, lzs[0], lxs[1], G + 146, lzs[1], cDoor);
-      for (const sy of [30, 110]) A.timber.box(lxs[0] - 0.4, G + sy, lzs[0] - 0.4, lxs[1] + 0.4, G + sy + 4, lzs[1] + 0.4, [0.03, 0.03, 0.03]);
+      const tip = (y, k = 44) => [hx + (-al[0]*ca + out[0]*sa)*k, y, hz + (-al[1]*ca + out[1]*sa)*k];
+      const lf = (y, k) => [hx + (-al[0]*ca + out[0]*sa)*k, y, hz + (-al[1]*ca + out[1]*sa)*k];
+      A.timber.beam(THREE, lf(G + 75, 1), tip(G + 75), 3, cDoor, -1, 146);
+      for (const sy of [32, 112]) A.timber.beam(THREE, lf(G + sy, 1), tip(G + sy, 40), 3.8, [0.03, 0.03, 0.03], -1, 4);
+      // the room beyond glows through the open door at night (critic r5: a
+      // lamplight pool on the step with no visible source). Hidden with the roof.
+      { const ix = ax ? 0 : out[0], iz = ax ? out[1] : 0, dd = -30;
+        const q0 = ax ? [x + 6, G + 4, fz + iz*dd] : [fx + ix*dd, G + 4, z + 6];
+        const q1 = ax ? [x + T - 6, G + 4, fz + iz*dd] : [fx + ix*dd, G + 4, z + T - 6];
+        A.glassLit.quad(q0, q1, [q1[0], G + DOOR_H - 2, q1[2]], [q0[0], G + DOOR_H - 2, q0[2]], [out[0], 0, out[1]], [1,1,1], bid); }
       // threshold stone
       const tx0 = ax ? x : (out[0] > 0 ? x + T : x - 14), tx1 = ax ? x + T : (out[0] > 0 ? x + T + 14 : x);
       const tz0 = ax ? (out[1] > 0 ? z + T : z - 14) : z, tz1 = ax ? (out[1] > 0 ? z + T + 14 : z) : z + T;
@@ -402,59 +416,85 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
     }
 
     // ── roof ──
-    const alongX = (ox1 - ox0) >= (oz1 - oz0);
+    // Square huts pick their ridge axis at random, so Saltmere is not a row of clones.
+    const alongX = (ox1 - ox0) === (oz1 - oz0) ? r() < 0.5 : (ox1 - ox0) > (oz1 - oz0);
     const verge = 20, eave = 30;
     const Lh = (alongX ? (ox1 - ox0) : (oz1 - oz0)) / 2 + verge;
     const Wh = (alongX ? (oz1 - oz0) : (ox1 - ox0)) / 2;
-    // A: 42-48 deg; B/C: 50-55; huts steep for thatch, but the rise capped so a
+    // A: 42-48 deg; B/C: 50-55; huts 52-58 for thatch, but the rise capped so a
     // wide hut is not a barn (critic r3: 5-tile huts rose higher than their walls)
-    let pitch = (hut ? 58 : type === 'A' ? 42 + r() * 6 : 50 + r() * 5) * Math.PI / 180;
+    let pitch = (hut ? 52 + r() * 6 : type === 'A' ? 42 + r() * 6 : 50 + r() * 5) * Math.PI / 180;
     if (hut) pitch = Math.atan(Math.min(Math.tan(pitch), 120 / Wh));
-    const th = hut ? 22 : 12;
-    const rise = Wh * Math.tan(pitch);
+    const th = hut ? 22 : 12, tp = Math.tan(pitch);
+    const rise = Wh * tp;
+    // Half-hips (jerkinhead) on about a third of the town roofs: the gable stops
+    // at 0.7 of the rise and a small hip runs up to a shortened ridge. Breaks
+    // the chess-piece skyline from the aerial camera (critic r5).
+    const hh = !hut && Wh > 90 && r() < 0.35;
+    const yc = rise * 0.7, vc = Wh * 0.3, Lr = hh ? Lh - vc : Lh;        // cut height, its half-width, ridge half-length
     const W = (u, v, y) => alongX ? [cx + u, EAVE + y, cz + v] : [cx + v, EAVE + y, cz + u];
+    const Wn = (nu, ny, nv) => alongX ? [nu, ny, nv] : [nv, ny, nu];
     const RA = hut ? A.thatch : slate ? A.slate : A.roof;
+    const soffit = hex(THREE, 0x3a2c22);
     for (const side of [-1, 1]) {
-      const vE = side * (Wh + eave), yE = -eave * Math.tan(pitch);
-      const nl = [Math.cos(pitch), side * Math.sin(pitch)];
-      const N = alongX ? [0, nl[0], nl[1]] : [nl[1], nl[0], 0];
+      const vE = side * (Wh + eave), yE = -eave * tp;
+      const N = Wn(0, Math.cos(pitch), side * Math.sin(pitch)), Nd = [-N[0], -N[1], -N[2]];
       const jz = () => (r() - 0.5) * 3;                           // not ruler-straight
       const moss = mix(cRf, hex(THREE, 0x55603a), hut ? 0.15 : 0.18);
-      const a = W(-Lh, vE, yE + th + jz()), b = W(Lh, vE, yE + th + jz()), c = W(Lh, 0, rise + th), d = W(-Lh, 0, rise + th);
-      // top face, with moss toward the eaves: two quads so the eave edge can be tinted
-      const m1 = W(-Lh, vE*0.55, (yE + th)*0.55 + (rise + th)*0.45), m2 = W(Lh, vE*0.55, (yE + th)*0.55 + (rise + th)*0.45);
-      if (side > 0) { RA.quad(a, b, m2, m1, N, moss, bid); RA.quad(m1, m2, c, d, N, cRf, bid); }
-      else          { RA.quad(b, a, m1, m2, N, moss, bid); RA.quad(m2, m1, d, c, N, cRf, bid); }
-      // underside (soffit) and the eave fascia
-      const a2 = W(-Lh, vE, yE), b2 = W(Lh, vE, yE), c2 = W(Lh, 0, rise), d2 = W(-Lh, 0, rise);
-      const soffit = hex(THREE, 0x3a2c22);
-      if (side > 0) A.timber.quad(b2, a2, d2, c2, [-N[0], -N[1], -N[2]], soffit, bid); else A.timber.quad(a2, b2, c2, d2, [-N[0], -N[1], -N[2]], soffit, bid);
-      A.timber.quad(side > 0 ? a2 : b2, side > 0 ? b2 : a2, side > 0 ? b : a, side > 0 ? a : b, alongX ? [0,0,side] : [side,0,0], mul(cTi, 0.9), bid);
-      // verge ends of the slab
-      for (const u of [-1, 1]) {
-        const e0 = W(u*Lh, vE, yE), e1 = W(u*Lh, 0, rise), e2 = W(u*Lh, 0, rise + th), e3 = W(u*Lh, vE, yE + th);
-        const NN = alongX ? [u,0,0] : [0,0,u];
-        RA.quad(e0, e1, e2, e3, NN, mul(cRf, 0.8), bid);
-        if (!hut) A.timber.beam(THREE, W(u*(Lh + 1.5), vE, yE + th/2), W(u*(Lh + 1.5), 0, rise + th/2), 3, cTi, bid, 12);  // barge board
+      if (hh) {
+        // lower band to the cut line (moss), then a trapezoid up to the short ridge
+        const e1 = W(-Lh, vE, yE + th + jz()), e2 = W(Lh, vE, yE + th + jz());
+        const k1 = W(-Lh, side*vc, yc + th), k2 = W(Lh, side*vc, yc + th), r1 = W(-Lr, 0, rise + th), r2 = W(Lr, 0, rise + th);
+        RA.quad(e1, e2, k2, k1, N, moss, bid); RA.quad(k1, k2, r2, r1, N, cRf, bid);
+        A.timber.quad(W(-Lh, vE, yE), W(Lh, vE, yE), W(Lh, side*vc, yc), W(-Lh, side*vc, yc), Nd, soffit, bid);
+        A.timber.quad(W(-Lh, side*vc, yc), W(Lh, side*vc, yc), W(Lr, 0, rise), W(-Lr, 0, rise), Nd, soffit, bid);
+      } else {
+        const a = W(-Lh, vE, yE + th + jz()), b = W(Lh, vE, yE + th + jz()), c = W(Lh, 0, rise + th), d = W(-Lh, 0, rise + th);
+        // top face, with moss toward the eaves: two quads so the eave edge can be tinted
+        const m1 = W(-Lh, vE*0.55, (yE + th)*0.55 + (rise + th)*0.45), m2 = W(Lh, vE*0.55, (yE + th)*0.55 + (rise + th)*0.45);
+        RA.quad(a, b, m2, m1, N, moss, bid); RA.quad(m1, m2, c, d, N, cRf, bid);
+        A.timber.quad(W(-Lh, vE, yE), W(Lh, vE, yE), W(Lh, 0, rise), W(-Lh, 0, rise), Nd, soffit, bid);
       }
-      if (!hut) A.timber.beam(THREE, W(-Lh, vE - side*1.5, yE + th/2 - 2), W(Lh, vE - side*1.5, yE + th/2 - 2), 3, cTi, bid, 10);   // fascia
+      // the eave fascia face
+      A.timber.quad(W(-Lh, vE, yE), W(Lh, vE, yE), W(Lh, vE, yE + th), W(-Lh, vE, yE + th), Wn(0, 0, side), mul(cTi, 0.9), bid);
+      // verge ends of the slab: to the ridge, or to the cut line under a half-hip
+      for (const u of [-1, 1]) {
+        const topV = hh ? side*vc : 0, topY = hh ? yc : rise;
+        const e0 = W(u*Lh, vE, yE), e1 = W(u*Lh, topV, topY), e2 = W(u*Lh, topV, topY + th), e3 = W(u*Lh, vE, yE + th);
+        RA.quad(e0, e1, e2, e3, Wn(u, 0, 0), mul(cRf, 0.8), bid);
+        if (!hut) A.timber.beam(THREE, W(u*(Lh + 1.5), vE, yE + th/2), W(u*(Lh + 1.5), topV, topY + th/2), 3, cTi, bid, 12);  // barge board
+        // thatch: a soft roll along the verge, like the ridge and the eave (critic r5)
+        else RA.beam(THREE, W(u*Lh, vE, yE + th/2), W(u*Lh, 0, rise + th/2), 14, mul(cRf, 0.9), bid, 14);
+      }
+      if (!hut) A.timber.beam(THREE, W(-Lh, vE - side*1.5, yE + th/2 - 2), W(Lh, vE - side*1.5, yE + th/2 - 2), 3, cTi, bid, 10);   // fascia board
       else RA.beam(THREE, W(-Lh, vE, yE + th/2), W(Lh, vE, yE + th/2), 16, mul(cRf, 0.9), bid, 16);                     // thatch eave roll
+    }
+    // the half-hips themselves: a triangle at each end, its slab edge, hip caps
+    if (hh) for (const u of [-1, 1]) {
+      const Nh = Wn(u * Math.sin(pitch), Math.cos(pitch), 0);
+      RA.quad(W(u*Lh, -vc, yc + th), W(u*Lh, vc, yc + th), W(u*Lr, 0, rise + th), W(u*Lr, 0, rise + th), Nh, cRf, bid);
+      A.timber.quad(W(u*Lh, -vc, yc), W(u*Lh, vc, yc), W(u*Lr, 0, rise), W(u*Lr, 0, rise), [-Nh[0], -Nh[1], -Nh[2]], soffit, bid);
+      RA.quad(W(u*Lh, -vc, yc), W(u*Lh, vc, yc), W(u*Lh, vc, yc + th), W(u*Lh, -vc, yc + th), Wn(u, 0, 0), mul(cRf, 0.8), bid);
+      A.timber.beam(THREE, W(u*(Lh + 1.5), -vc, yc + th/2), W(u*(Lh + 1.5), vc, yc + th/2), 3, cTi, bid, 12);
+      for (const sv of [-1, 1]) RA.beam(THREE, W(u*Lh, sv*vc, yc + th + 2), W(u*Lr, 0, rise + th + 2), 8, mul(cRf, 0.8), bid, 5);
     }
     // ridge: a tile cap, or a thatch roll
     if (hut) RA.beam(THREE, W(-Lh, 0, rise + th + 3), W(Lh, 0, rise + th + 3), 14, mul(cRf, 0.85), bid, 10);
-    else     RA.beam(THREE, W(-Lh - 2, 0, rise + th + 2), W(Lh + 2, 0, rise + th + 2), 10, mul(cRf, 0.8), bid, 6);
-    // gable ends: closed right up to the roof underside, framed
+    else     RA.beam(THREE, W(-Lr - 2, 0, rise + th + 2), W(Lr + 2, 0, rise + th + 2), 10, mul(cRf, 0.8), bid, 6);
+    // gable ends: closed right up to the roof underside, framed. Under a
+    // half-hip the gable is a trapezoid: it meets the hip's underside, which at
+    // the wall plane (verge in from the hip's edge) stands verge*tan above the cut.
     for (const s of [-1, 1]) {
       const u = s * (Lh - verge);
-      const N = alongX ? [s, 0, 0] : [0, 0, s];
-      const gA = W(u, -Wh, 0), gB = W(u, Wh, 0), gC = W(u, 0, rise);
+      const N = Wn(s, 0, 0), Nb = Wn(-s, 0, 0);
       const gAcc = hut ? A.boards : A.plaster, gCol = hut ? cBoard : mul(cPl, 0.97);
-      if (s > 0) gAcc.quad(gA, gB, gC, gC, N, gCol, bid); else gAcc.quad(gB, gA, gC, gC, N, gCol, bid);
-      if (s > 0) gAcc.quad(gB, gA, gC, gC, [-N[0],0,-N[2]], gCol, bid); else gAcc.quad(gA, gB, gC, gC, [-N[0],0,-N[2]], gCol, bid);
+      const gTop = hh ? yc + verge * tp : rise, gV = hh ? Math.max(0, vc - verge) : 0;
+      const gA = W(u, -Wh, 0), gB = W(u, Wh, 0), gC = W(u, gV, gTop), gD = W(u, -gV, gTop);
+      gAcc.quad(gA, gB, gC, gD, N, gCol, bid); gAcc.quad(gA, gB, gC, gD, Nb, gCol, bid);
       if (hut) continue;
       const o = (p) => alongX ? [p[0] + s*P, p[1], p[2]] : [p[0], p[1], p[2] + s*P];
       A.timber.beam(THREE, o(W(u, -Wh, 3)), o(W(u, Wh, 3)), 8, cTi, bid, 4);                   // tie beam
-      A.timber.beam(THREE, o(W(u, 0, 3)), o(W(u, 0, rise - 4)), 8, cTi, bid, 4);               // king post
+      A.timber.beam(THREE, o(W(u, 0, 3)), o(W(u, 0, gTop - 4)), 8, cTi, bid, 4);               // king post
       A.timber.beam(THREE, o(W(u, -Wh*0.5, rise*0.5)), o(W(u, Wh*0.5, rise*0.5)), 6, cTi, bid, 4);  // collar
       A.timber.beam(THREE, o(W(u, -Wh*0.55, 3)), o(W(u, -Wh*0.08, rise*0.48)), 6, cTi, bid, 4); // struts
       A.timber.beam(THREE, o(W(u, Wh*0.55, 3)), o(W(u, Wh*0.08, rise*0.48)), 6, cTi, bid, 4);
@@ -468,7 +508,7 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
     }
     // chimney: stone, on the ridge line 0.3 of the way from one gable, 30 above the ridge
     if (!hut || r() < 0.5) {
-      const u = (r() < 0.5 ? -1 : 1) * (Lh - verge) * 0.4;
+      const u = (r() < 0.5 ? -1 : 1) * Math.min((Lh - verge) * 0.4, Lr - 30);
       const base = W(u, 0, 0), sz = hut ? 18 : 30;
       const x0 = base[0] - sz/2, z0 = base[2] - sz/2, y1 = EAVE + rise + th + 50;
       A.stone.box(x0, EAVE - 20, z0, x0 + sz, y1, z0 + sz, mul(cSt, 0.78), bid, {bottom:true});
