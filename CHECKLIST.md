@@ -294,3 +294,9 @@ on the band's lower half, slope-based rock blend.
 - [ ] D3 HANDOFF entry, version bump, commit + push
 - [x] D4 Backups on the VPS, then deployed v0.20.0 (user asked 2026-09-26) — verified live
 - [x] D5 model budget raised 8 → 12 MB (user asked)
+
+### C4e building rebuild — status 2026-09-26 (limit reached mid-loop)
+- [x] js/render/buildings.js rewritten to critic spec (types A/B/C/HUT, 150 doors, facade-wide framing, closed gables, thick roofs, thatch/weatherboard huts, ridge chimneys); wired in game3d.js (TOWN merge, new mats boards/thatch/floor/glass/glassLit)
+- [x] page loads with no errors; r1_ tour shots written to .shots/r1_bld_*.jpg (NOT yet reviewed)
+- [ ] review r1 shots, run strong critic, iterate; then roof dither fade, shop signs, night spill light, draw-call count
+- [ ] commit + HANDOFF entry (buildings.js is still untracked)

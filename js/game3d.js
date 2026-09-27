@@ -6,6 +6,7 @@ import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { buildTown } from './render/buildings.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave, netCallGuards,
   netHousePlace, netHouseUpdate, netHouseRemove,
   netDropAdd, netDropTake, netCorpseFill, netCorpseTake, netCorpseHarvest, netTradeReq, netTradeAccept, netTradeOffer, netTradeConfirm, netTradeCancel,
@@ -3197,128 +3198,193 @@ for(let y = 1; y < MAP_H-1; y++) for(let x = 1; x < MAP_W-1; x++){
   for(let dy = -1; dy <= 1 && all; dy++) for(let dx = -1; dx <= 1; dx++) if(wallKind[(y+dy)*MAP_W+x+dx] !== WK_TOWER){ all = false; break; }
   if(all) TOWER_CENTRES.push([x, y]);
 }
-const BLDG_H = WALL_H * 0.82, TOWER_H = WALL_H * 1.38;
+const TOWER_H = WALL_H * 1.38;
 
 // Crenellations: two merlons per fort tile that faces open ground.
 const merlonMesh = makeMesh(new THREE.BoxGeometry(1,1,1), wallMesh.material, 12000);
 scene.add(merlonMesh);
 
 // ── The buildings ──
-// Built once: they are few, and the city never moves. Walls are a second
-// instanced box set in plaster and timber over a stone footing; each building
-// gets its own roof mesh so a roof can hide while you are inside (the shop-
-// keepers stand indoors). Doors get a lintel, and the windows glow at night.
-const houseTex = makeCanvasTex(128, 128, (x, w, h) => {
-  // stone footing, bottom quarter
-  x.fillStyle = '#6f675c'; x.fillRect(0, h*0.74, w, h*0.26);
-  x.fillStyle = 'rgba(0,0,0,.18)';
-  for(let r = 0; r < 2; r++) for(let c = 0; c < 4; c++) x.fillRect(c*32 + (r%2)*16, h*0.76 + r*16, 2, 14);
-  x.fillRect(0, h*0.88, w, 2);
-  // plaster
-  const g = x.createLinearGradient(0, 0, 0, h*0.74);
-  g.addColorStop(0, '#e2d6bb'); g.addColorStop(1, '#cfc09f');
-  x.fillStyle = g; x.fillRect(0, 0, w, h*0.74);
-  // timber: posts at the edges, a rail, a brace
-  x.fillStyle = '#4a3322';
-  x.fillRect(0, 0, 10, h*0.74); x.fillRect(w-10, 0, 10, h*0.74);
-  x.fillRect(0, 0, w, 8); x.fillRect(0, h*0.40, w, 8); x.fillRect(0, h*0.70, w, 7);
-  x.save(); x.translate(w/2, h*0.22); x.rotate(-0.62); x.fillRect(-40, -4, 80, 8); x.restore();
-});
-const houseWallMat = new THREE.MeshStandardMaterial({ map: houseTex, roughness: 0.94, metalness: 0 });
-const roofTex = makeCanvasTex(128, 128, (x, w, h) => {
-  x.fillStyle = '#5a3326'; x.fillRect(0, 0, w, h);
-  for(let r = 0; r < 8; r++){
-    x.fillStyle = r % 2 ? '#6a3b2c' : '#61372a'; x.fillRect(0, r*16, w, 14);
-    x.fillStyle = 'rgba(0,0,0,.35)'; x.fillRect(0, r*16 + 14, w, 2);
-    for(let c = 0; c < 8; c++) x.fillRect(c*16 + (r%2)*8, r*16, 1.5, 14);
-  }
-});
-roofTex.wrapS = roofTex.wrapT = THREE.RepeatWrapping;
-const roofMat = new THREE.MeshStandardMaterial({ map: roofTex, roughness: 0.82, metalness: 0, side: THREE.DoubleSide });
-const _windowMat = new THREE.MeshStandardMaterial({ color: 0x1c1712, emissive: 0xffb057, emissiveIntensity: 0, roughness: 0.6 });
-const buildingRoofs = [];                 // { mesh, b }
-const houseWallMesh = (() => {
-  let n = 0; for(let i = 0; i < wallKind.length; i++) if(wallKind[i] === WK_BUILDING) n++;
-  const m = makeMesh(new THREE.BoxGeometry(1,1,1), houseWallMat, Math.max(1, n));
-  let i = 0;
-  for(let ty = 0; ty < MAP_H; ty++) for(let tx = 0; tx < MAP_W; tx++){
-    if(wallKind[ty*MAP_W+tx] !== WK_BUILDING) continue;
-    const cx = tx*TILE+TILE/2, cz = ty*TILE+TILE/2;
-    _pos.set(cx, heightAt(cx, cz) + BLDG_H/2, cz); _sc1.set(TILE, BLDG_H, TILE);
-    _m4.compose(_pos, new THREE.Quaternion(), _sc1); m.setMatrixAt(i++, _m4);
-  }
-  markInst(m, i); m.computeBoundingSphere();
-  scene.add(m);
-  return m;
-})();
-(function buildRoofsAndTrim(){
-  const trim = [], wins = [];
-  const box = (x, y, z, sx, sy, sz) => { const g = new THREE.BoxGeometry(sx, sy, sz); g.translate(x, y, z); return g; };
-  for(const b of BUILDINGS){
-    const X0 = b.x0*TILE, X1 = (b.x1+1)*TILE, Z0 = b.y0*TILE, Z1 = (b.y1+1)*TILE;
-    const cx = (X0+X1)/2, cz = (Z0+Z1)/2;
-    const base = heightAt(cx, cz) + BLDG_H;
-    const alongX = (X1-X0) >= (Z1-Z0);                 // ridge runs along the longer side
-    const half = (alongX ? (Z1-Z0) : (X1-X0)) / 2 + TILE*0.3, len = (alongX ? (X1-X0) : (Z1-Z0)) / 2 + TILE*0.3;
-    const rise = half * 0.72;
-    // Two slopes + two gable ends, in local space (ridge along +X), then turned.
-    const pos = [
-      -len, 0, -half,  len, 0, -half,  len, rise, 0,  -len, rise, 0,     // north slope
-      -len, 0,  half, -len, rise, 0,   len, rise, 0,   len, 0,  half,    // south slope
-    ];
-    const uv = [0,0, len/TILE,0, len/TILE,half/TILE, 0,half/TILE,  0,0, 0,half/TILE, len/TILE,half/TILE, len/TILE,0];
-    const idx = [0,1,2, 0,2,3, 4,5,6, 4,6,7];
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    g.setIndex(idx); g.computeVertexNormals();
-    const roof = new THREE.Mesh(g, roofMat);
-    roof.position.set(cx, base, cz); if(!alongX) roof.rotation.y = Math.PI/2;
-    roof.castShadow = true; roof.receiveShadow = true;
-    // Gable ends in plaster, and a chimney on every other building.
-    const gable = new THREE.BufferGeometry();
-    const gl = len - TILE*0.3;
-    gable.setAttribute('position', new THREE.Float32BufferAttribute([
-      -gl, 0, -half+TILE*0.3,  -gl, 0, half-TILE*0.3,  -gl, rise*0.8, 0,
-       gl, 0,  half-TILE*0.3,   gl, 0, -half+TILE*0.3,   gl, rise*0.8, 0 ], 3));
-    gable.computeVertexNormals();
-    roof.add(new THREE.Mesh(gable, new THREE.MeshStandardMaterial({ color: 0xd4c7a8, roughness: 0.95, side: THREE.DoubleSide })));
-    if(BUILDINGS.indexOf(b) % 2 === 0){
-      const ch = new THREE.Mesh(new THREE.BoxGeometry(TILE*0.5, rise*0.9, TILE*0.5), houseWallMat);
-      ch.position.set(len*0.45, rise*0.55, -half*0.35); ch.castShadow = true; roof.add(ch);
-    }
-    scene.add(roof); buildingRoofs.push({ mesh: roof, b });
-    // Door lintels (gaps in the building's outline) and windows (outer faces).
-    for(let tx = b.x0; tx <= b.x1; tx++) for(let ty = b.y0; ty <= b.y1; ty++){
-      const edge = tx === b.x0 || tx === b.x1 || ty === b.y0 || ty === b.y1; if(!edge) continue;
-      const k = wallKind[ty*MAP_W+tx], wx = tx*TILE+TILE/2, wz = ty*TILE+TILE/2, gy = heightAt(wx, wz);
-      if(k !== WK_BUILDING){                      // a gap: the doorway
-        trim.push(box(wx, gy + BLDG_H*0.86, wz, TILE, BLDG_H*0.28, TILE));
-        continue;
+// Each building is generated ONCE as architecture by render/buildings.js — a
+// stone ground storey, a jettied timber-framed upper storey with real beams,
+// framed windows and doors, a thick overhanging roof with framed gables and a
+// chimney — and the whole town merges into a handful of meshes. (The first pass
+// drew every wall tile as its own textured box: per-tile wallpaper framing,
+// paper roofs, sticker windows. The owner called it "meh", rightly.)
+//
+// Footprints: a building's walls can be split into several wall groups by its
+// own door gaps (the bank's north and south doors cut its ring in two, and it
+// got two roofs leaning apart). Groups whose bounds touch are merged here, and
+// every perimeter tile of the merged bounds that is NOT wall is a doorway.
+const TOWN = (() => {
+  const bs = BUILDINGS.map(b => ({ ...b }));
+  for(let again = true; again; ){
+    again = false;
+    for(let a = 0; a < bs.length && !again; a++) for(let c = a + 1; c < bs.length; c++){
+      const A = bs[a], C = bs[c];
+      if(A.x0 <= C.x1 + 1 && C.x0 <= A.x1 + 1 && A.y0 <= C.y1 + 1 && C.y0 <= A.y1 + 1){
+        A.x0 = Math.min(A.x0, C.x0); A.y0 = Math.min(A.y0, C.y0);
+        A.x1 = Math.max(A.x1, C.x1); A.y1 = Math.max(A.y1, C.y1);
+        bs.splice(c, 1); again = true; break;
       }
-      const corner = (tx === b.x0 || tx === b.x1) && (ty === b.y0 || ty === b.y1);
-      if(corner || (tx + ty) % 2) continue;
-      const out = ty === b.y0 ? [0,-1] : ty === b.y1 ? [0,1] : tx === b.x0 ? [-1,0] : [1,0];
-      const ww = out[0] ? 2 : TILE*0.36, wd = out[0] ? TILE*0.36 : 2;
-      wins.push(box(wx + out[0]*TILE*0.51, gy + BLDG_H*0.55, wz + out[1]*TILE*0.51, ww, TILE*0.44, wd));
     }
   }
-  if(trim.length){ const m = new THREE.Mesh(mergeGeometries(trim), houseWallMat); m.castShadow = true; scene.add(m); }
-  if(wins.length){ scene.add(new THREE.Mesh(mergeGeometries(wins), _windowMat)); }
-  // Tower caps: a conical slate roof on each corner tower.
+  const isW = (x, y) => map[y] && (map[y][x] === T.WALL || map[y][x] === T.STAINED_GLASS);
+  for(const b of bs){
+    b.doors = [];
+    for(let tx = b.x0; tx <= b.x1; tx++) for(let ty = b.y0; ty <= b.y1; ty++){
+      const edge = tx === b.x0 || tx === b.x1 || ty === b.y0 || ty === b.y1;
+      const corner = (tx === b.x0 || tx === b.x1) && (ty === b.y0 || ty === b.y1);
+      if(!edge || corner || isW(tx, ty)) continue;
+      b.doors.push({ tx, ty, side: ty === b.y0 ? 'n' : ty === b.y1 ? 's' : tx === b.x0 ? 'w' : 'e' });
+    }
+  }
+  return bs;
+})();
+BUILDINGS.length = 0; BUILDINGS.push(...TOWN);
+
+// Materials. Colour comes from the vertices (per-building palettes); the
+// textures only carry surface detail, so one set serves every building.
+const _mkTex = (w, h, draw) => { const t = makeCanvasTex(w, h, draw); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t; };
+// Coursed rubble: irregular blocks with real vertical joints, so it reads as
+// stone and not as planks (round 1's long, joint-less courses did).
+const _stoneTexB = _mkTex(128, 128, (x, w, h) => {
+  x.fillStyle = '#6f675c'; x.fillRect(0, 0, w, h);
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for(let r = 0; r < 4; r++){ const y = r * 32; let bx = -Math.floor(rnd() * 30);
+    while(bx < w){ const bw = 22 + Math.floor(rnd() * 26), l = 175 + Math.floor(rnd() * 60), tint = Math.floor(rnd() * 10);
+      const draw = (ox) => {
+        x.fillStyle = `rgb(${l},${l - 4 - tint},${l - 12 - tint})`; x.beginPath(); x.roundRect(ox + 2, y + 2, bw - 3, 28, 4); x.fill();
+        x.fillStyle = 'rgba(255,255,255,.18)'; x.fillRect(ox + 4, y + 3, bw - 7, 3);            // lit top edge
+        x.fillStyle = 'rgba(0,0,0,.22)'; x.fillRect(ox + 4, y + 26, bw - 7, 3); };              // shaded bottom
+      draw(bx); if(bx + bw > w) draw(bx - w); bx += bw; } }
+  grain(x, w, h, 14, 0.12);
+});
+const _plasterTex = _mkTex(64, 64, (x, w, h) => {
+  x.fillStyle = '#f2f0ec'; x.fillRect(0, 0, w, h);
+  for(let i = 0; i < 180; i++){ const g = 225 + Math.random() * 30 | 0;
+    x.fillStyle = `rgba(${g},${g - 3},${g - 8},.5)`; x.fillRect(Math.random() * w, Math.random() * h, 2 + Math.random() * 5, 2 + Math.random() * 4); }
+});
+const _woodTex = _mkTex(64, 64, (x, w, h) => {
+  x.fillStyle = '#d6c9b8'; x.fillRect(0, 0, w, h);
+  for(let i = 0; i < 26; i++){ x.strokeStyle = `rgba(90,70,50,${.12 + Math.random() * .2})`; x.lineWidth = 1 + Math.random() * 1.5;
+    const y = Math.random() * h; x.beginPath(); x.moveTo(0, y); x.bezierCurveTo(w * .3, y + 3, w * .7, y - 3, w, y + 1); x.stroke(); }
+});
+const _tileTex = _mkTex(128, 128, (x, w, h) => {
+  x.fillStyle = '#d8d0c8'; x.fillRect(0, 0, w, h);
+  for(let r = 0; r < 8; r++) for(let c = 0; c < 9; c++){
+    const l = 190 + ((c * 29 + r * 41) % 55);
+    x.fillStyle = `rgb(${l},${l - 8},${l - 12})`;
+    x.beginPath(); x.roundRect((c - 0.5 * (r % 2)) * 16 + 1, r * 16 + 1, 14, 17, [0, 0, 6, 6]); x.fill();
+    x.fillStyle = 'rgba(0,0,0,.28)'; x.fillRect((c - 0.5 * (r % 2)) * 16 + 1, r * 16 + 15, 14, 3);
+  }
+});
+// Weatherboard: horizontal overlapping boards, 12 units a board (v runs up).
+const _boardTex = _mkTex(64, 64, (x, w, h) => {
+  x.fillStyle = '#cfc6b8'; x.fillRect(0, 0, w, h);
+  for(let r = 0; r < 5; r++){ const y = r * 64/5;
+    x.fillStyle = 'rgba(0,0,0,.35)'; x.fillRect(0, y, w, 2);
+    x.fillStyle = 'rgba(255,255,255,.12)'; x.fillRect(0, y + 2, w, 2); }
+  for(let i = 0; i < 30; i++){ x.fillStyle = `rgba(60,45,30,${.08 + Math.random() * .12})`; x.fillRect(Math.random() * w, Math.random() * h, 6 + Math.random() * 20, 1); }
+});
+// Reed thatch: dense strands running down the slope.
+const _thatchTex = _mkTex(64, 64, (x, w, h) => {
+  x.fillStyle = '#b8ad96'; x.fillRect(0, 0, w, h);
+  for(let i = 0; i < 700; i++){ const l = 130 + Math.random() * 110 | 0;
+    x.fillStyle = `rgb(${l},${l - 8},${l - 26})`; x.fillRect(Math.random() * w, Math.random() * h, 1, 4 + Math.random() * 8); }
+});
+const _shadowTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64;
+  const x = c.getContext('2d'), g = x.createLinearGradient(0, 0, 64, 0);
+  // a soft-edged rectangle: dark in the middle, fading to nothing at the rim
+  const img = x.createImageData(64, 64);
+  for(let yy = 0; yy < 64; yy++) for(let xx = 0; xx < 64; xx++){
+    const d = Math.min(xx, 63 - xx, yy, 63 - yy) / 12, a = Math.max(0, Math.min(1, d));
+    img.data[(yy * 64 + xx) * 4 + 3] = (a * a * 150) | 0; }
+  x.putImageData(img, 0, 0); return new THREE.CanvasTexture(c); })();
+// Two uniforms shared by every building material: the building id whose ROOF
+// is lifted off because the player stands inside it (-2 = none), and how far
+// it has faded (0..1). The fade is a screen-door dither, so the roof dissolves
+// over a quarter second instead of popping. Walls carry id -1, never hidden.
+const _hideBid = { value: -2 }, _hideT = { value: 0 };
+function _bidHide(mat, key){
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uHideBid = _hideBid; sh.uniforms.uHideT = _hideT;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>
+        attribute float aBid;
+        uniform float uHideBid;
+        varying float vHid;`)
+      .replace('#include <project_vertex>', `#include <project_vertex>
+        vHid = abs(aBid - uHideBid) < 0.5 ? 1.0 : 0.0;`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+        uniform float uHideT;
+        varying float vHid;`)
+      .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+        if (vHid > 0.5) {
+          // the same R2 screen-door dither the canopies fade with (CAM_FADE)
+          if ( fract( dot( gl_FragCoord.xy, vec2( 0.7548776662, 0.5698402910 ) ) ) < uHideT ) discard;
+        }`);
+  };
+  mat.customProgramCacheKey = () => 'bld-' + key;
+  return mat;
+}
+const _bldStoneMat  = _bidHide(new THREE.MeshStandardMaterial({ map: _stoneTexB, vertexColors: true, roughness: 0.93 }), 'stone');
+const _bldPlastMat  = _bidHide(new THREE.MeshStandardMaterial({ map: _plasterTex, vertexColors: true, roughness: 0.97, side: THREE.DoubleSide }), 'plaster');
+const _bldWoodMat   = _bidHide(new THREE.MeshStandardMaterial({ map: _woodTex, vertexColors: true, roughness: 0.88 }), 'wood');
+const _glassMat     = _bidHide(new THREE.MeshStandardMaterial({ color: 0x1d2328, roughness: 0.2, metalness: 0.3 }), 'glassd');
+const _boardMat     = _bidHide(new THREE.MeshStandardMaterial({ map: _boardTex, vertexColors: true, roughness: 0.95 }), 'boards');
+const _thatchMat    = _bidHide(new THREE.MeshStandardMaterial({ map: _thatchTex, vertexColors: true, roughness: 1, side: THREE.DoubleSide }), 'thatch');
+const _floorMat     = new THREE.MeshStandardMaterial({ map: _boardTex, vertexColors: true, roughness: 0.9 });
+const _windowMat    = _bidHide(new THREE.MeshStandardMaterial({ color: 0x3a3226, emissive: 0xffb057, emissiveIntensity: 0, roughness: 0.25, metalness: 0.1 }), 'glass');
+const _bldRoofMat   = _bidHide(new THREE.MeshStandardMaterial({ map: _tileTex, vertexColors: true, roughness: 0.8, side: THREE.DoubleSide }), 'roof');
+const roofMat = _bldRoofMat;           // the tower caps share the tiles
+const _spillTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64;
+  const x = c.getContext('2d'), img = x.createImageData(64, 64);
+  for(let yy = 0; yy < 64; yy++) for(let xx = 0; xx < 64; xx++){
+    const u = (xx + 0.5) / 64, v = (yy + 0.5) / 64;                 // v: 0 at the wall, 1 far
+    const across = Math.max(0, 1 - Math.pow(Math.abs(u - 0.5) * 2, 2));
+    const a = across * Math.pow(1 - v, 1.6);
+    const o = (yy * 64 + xx) * 4; img.data[o] = 255; img.data[o+1] = 170; img.data[o+2] = 80; img.data[o+3] = (a * 255) | 0; }
+  x.putImageData(img, 0, 0); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.flipY = false; return t; })();
+const _spillMat = new THREE.MeshBasicMaterial({ map: _spillTex, transparent: true, opacity: 0, depthWrite: false,
+  blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, fog: true });
+(function buildTownMeshes(){
+  const G = buildTown(THREE, { buildings: TOWN, TILE, groundAt: heightAt, coastY0: COAST_Y0 });
+  const add = (geo, mat, shadow = true) => { if(!geo) return; const m = new THREE.Mesh(geo, mat);
+    m.castShadow = shadow; m.receiveShadow = true; scene.add(m); };
+  add(G.stone, _bldStoneMat); add(G.plaster, _bldPlastMat); add(G.timber, _bldWoodMat);
+  add(G.glass, _glassMat, false); add(G.glassLit, _windowMat, false); add(G.roof, _bldRoofMat);
+  add(G.boards, _boardMat); add(G.thatch, _thatchMat); add(G.floor, _floorMat, false);
+  // Lamplight pools under lit windows and doorways: additive, a soft falloff
+  // from the wall outward, faded in with the dark (see updateBuildings).
+  if(G.spill){ const m = new THREE.Mesh(G.spill, _spillMat); m.renderOrder = 2; scene.add(m); }
+  if(G.shadow){ const m = new THREE.Mesh(G.shadow, new THREE.MeshBasicMaterial({ map: _shadowTex, color: 0x000000, transparent: true, depthWrite: false }));
+    m.renderOrder = 1; scene.add(m); }
+  // Tower caps: a conical tiled roof on each corner tower, with a finial.
   for(const [tx, ty] of TOWER_CENTRES){
-    const wx = tx*TILE+TILE/2, wz = ty*TILE+TILE/2;
-    const cone = new THREE.Mesh(new THREE.ConeGeometry(TILE*1.95, TILE*2.6, 12), roofMat);
-    cone.position.set(wx, heightAt(wx, wz) + TOWER_H + TILE*1.3, wz); cone.castShadow = true;
+    const wx = tx*TILE+TILE/2, wz = ty*TILE+TILE/2, y = heightAt(wx, wz) + TOWER_H;
+    const coneGeo = new THREE.ConeGeometry(TILE*1.95, TILE*2.6, 16, 1, true);
+    coneGeo.setAttribute('color', new THREE.Float32BufferAttribute(new Array(coneGeo.attributes.position.count * 3).fill(0.42), 3));
+    coneGeo.setAttribute('aBid', new THREE.Float32BufferAttribute(new Array(coneGeo.attributes.position.count).fill(-1), 1));
+    const cone = new THREE.Mesh(coneGeo, _bldRoofMat); cone.position.set(wx, y + TILE*1.3, wz); cone.castShadow = true;
     scene.add(cone);
   }
 })();
 // Per frame: the roof over you lifts away; windows light up after dusk.
+let _bldT0 = 0;
 function updateBuildings(){
   const ptx = Math.floor(player.x/TILE), pty = Math.floor(player.y/TILE);
-  for(const r of buildingRoofs){ const b = r.b;
-    r.mesh.visible = !(ptx >= b.x0 && ptx <= b.x1 && pty >= b.y0 && pty <= b.y1); }
-  _windowMat.emissiveIntensity = Math.max(0, 1 - _envDayF*1.6) * 1.8;
+  let hide = -2;
+  for(let i = 0; i < TOWN.length; i++){ const b = TOWN[i];
+    if(ptx >= b.x0 && ptx <= b.x1 && pty >= b.y0 && pty <= b.y1){ hide = i; break; } }
+  // fade the current roof out before switching to another building's
+  const now = performance.now(), dt = Math.min(0.1, (now - (_bldT0 || now)) / 1000); _bldT0 = now;
+  if(hide === _hideBid.value){ if(hide >= 0) _hideT.value = Math.min(1, _hideT.value + dt * 4); }
+  else { _hideT.value = Math.max(0, _hideT.value - dt * 4); if(_hideT.value === 0) _hideBid.value = hide; }
+  const night = Math.max(0, 1 - _envDayF*1.6);
+  _windowMat.emissiveIntensity = night * 2.2;
+  _spillMat.opacity = night * 0.55; _spillMat.visible = night > 0.01;
 }
 
 function rebuildWalls() {
@@ -3329,7 +3395,7 @@ function rebuildWalls() {
   for(let ty=b.ty0;ty<=b.ty1&&i<cap;ty++) for(let tx=b.tx0;tx<=b.tx1&&i<cap;tx++) {
     if(map[ty][tx]!==T.WALL) continue;
     const wk = wallKind[ty*MAP_W+tx];
-    if(wk===WK_BUILDING) continue;                 // drawn by houseWallMesh
+    if(wk===WK_BUILDING) continue;                 // drawn by render/buildings.js
     const cx=tx*TILE+TILE/2, cz=ty*TILE+TILE/2, gy=heightAt(cx,cz);
     if(wk===WK_FORT||wk===WK_TOWER){
       // Masonry is laid straight: no per-tile tilt or height jitter, which
