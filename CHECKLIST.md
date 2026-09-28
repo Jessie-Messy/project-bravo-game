@@ -359,3 +359,13 @@ on the band's lower half, slope-based rock blend.
 - [x] G3-7 dusk warmth: sky turbidity/rayleigh/mie pushed harder by horizonF² — amber sun-side glow, noon untouched
 - [ ] minor: Saltmere pale sand smear under a tree; trunk stubs through canopy sides (top view);
       near-plane clipping in first person (city_street)
+
+### SHORT LIST (owner, 2026-09-28)
+- [x] water blinking black (v0.21.0): water sheet re-windowed 6th in the obstacle stagger → every frame now
+- [x] ultra "grass shadows way too much": GTAO treated blades as occluders → grass out of the AO prepass
+- [x] cave exteriors: surface caves are one continuous rock heightfield (js/render/cave-rock.js, 3 samples/tile,
+      talus foot, crags, mossy ledges); dungeon keeps its boxes; torches still mount; test:caverock
+- [ ] TORCHES (owner: "they suck… the animation sucks and the light source sucks, it looks wonky") —
+      critic loop: flame animation + light source (flicker, falloff, colour, placement)
+- [ ] minor: Saltmere pale sand patch under a tree; trunk stubs through canopies (top view);
+      first-person camera clipping into buildings

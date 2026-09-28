@@ -7,6 +7,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildTown } from './render/buildings.js';
+import { buildCaveRock } from './render/cave-rock.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave, netCallGuards,
   netHousePlace, netHouseUpdate, netHouseRemove,
   netDropAdd, netDropTake, netCorpseFill, netCorpseTake, netCorpseHarvest, netTradeReq, netTradeAccept, netTradeOffer, netTradeConfirm, netTradeCancel,
@@ -4135,12 +4136,86 @@ function rebuildWorldChests(){
 // the old short one; walking a known list is O(number of walls) and does not
 // care how far the window reaches at all.
 let _caveTiles = null;
+// Surface caves (the overworld and the coast) are drawn by the rock mesh
+// below; only the dungeon's cave walls are still instanced boxes.
+const _caveSurface = ty => ty < DUNGEON_Y0 - 10 || ty >= COAST_Y0;
 function _buildCaveList(){
   const out=[];
-  for(let ty=0;ty<MAP_H;ty++){ const row=map[ty];
+  for(let ty=0;ty<MAP_H;ty++){ if(_caveSurface(ty)) continue; const row=map[ty];
     for(let tx=0;tx<MAP_W;tx++) if(row[tx]===T.CAVE_WALL) out.push(ty*MAP_W+tx); }
   _caveTiles = Int32Array.from(out);
 }
+
+// ── Surface cave exteriors: one continuous rock mass ─────────────────
+// See render/cave-rock.js. Shaded in world space like the mountain skirt —
+// broad tone, faint bedding, soft gullies down the fall line, moss on what
+// faces the sky — so the caves read as outcrops of the same range.
+const _caveRockMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0 });
+_caveRockMat.defines = { NO_RANGE_FOG: '' };
+_caveRockMat.onBeforeCompile = (sh) => {
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', `#include <common>
+      varying vec3 vRkW;`)
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+      vRkW = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', `#include <common>
+      varying vec3 vRkW;
+      // sin-free hash: the sin() one loses precision on world-sized inputs
+      // and printed zigzag contour bands across the faces
+      float _rh(vec2 p){ vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
+      float _rv(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+        return mix(mix(_rh(i), _rh(i+vec2(1,0)), f.x), mix(_rh(i+vec2(0,1)), _rh(i+vec2(1,1)), f.x), f.y); }`)
+    .replace('#include <color_fragment>', `#include <color_fragment>
+      {
+        vec3 wn = normalize( ( vec4( vNormal, 0.0 ) * viewMatrix ).xyz );
+        // Height folded into the lookup: sampled on XZ alone, the noise ran
+        // straight down every face and read as vertical drapery.
+        // On a steep face, sample in the face's own plane (along it, and up):
+        // XZ alone ran straight down every cliff as vertical drapery.
+        vec2 ft = normalize(vec2(-wn.z, wn.x) + 1e-4);
+        float steep = 1.0 - smoothstep(0.35, 0.75, wn.y);
+        // Blend the two SAMPLES, never the coordinates: mixing coordinates
+        // compressed the noise wherever a face was half-steep and printed
+        // zigzag contour bands.
+        vec2 qa = vRkW.xz, qb = vec2(dot(vRkW.xz, ft), vRkW.y * 1.6);
+        float a = mix(_rv(qa / 70.0),       _rv(qb / 70.0),       steep);
+        float b = mix(_rv(qa / 17.0 + 4.1), _rv(qb / 17.0 + 4.1), steep);
+        float c = mix(_rv(qa / 5.0 + 9.3),  _rv(qb / 5.0 + 9.3),  steep);
+        vec2 nh = wn.xz / max(length(wn.xz), 1e-3);
+        // No height strata here (they printed contour bands on the faces) and
+        // only a whisper of fall-line streaking: blotchy rock, broken by the
+        // geometry's own ledges, is what reads as stone at this scale.
+        float gully = _rv(vec2(dot(vRkW.xz, vec2(-nh.y, nh.x)) / 60.0, vRkW.y / 160.0));
+        vec3 rock = vec3(0.27, 0.25, 0.225) * (0.62 + 0.52 * a + 0.20 * b + 0.12 * c)
+                  * (0.94 + 0.10 * gully);
+        // steep faces a shade darker and cooler than ledges: reads as relief
+        rock *= mix(vec3(0.86, 0.88, 0.92), vec3(1.0), smoothstep(0.2, 0.7, wn.y));
+        // what faces the sky carries moss and a little turf
+        float top = smoothstep(0.62, 0.9, wn.y) * (0.55 + 0.45 * b);
+        rock = mix(rock, vec3(0.16, 0.22, 0.10) * (0.8 + 0.4 * c), top * 0.75);
+        // the foot darkens where it meets the ground
+        diffuseColor.rgb = rock;
+      }`);
+};
+_caveRockMat.customProgramCacheKey = () => 'cave-rock-v1';
+let caveRockMesh = null;
+function rebuildCaveRock(){
+  if(caveRockMesh){ scene.remove(caveRockMesh); caveRockMesh.geometry.dispose(); caveRockMesh = null; }
+  const tiles = [];
+  for(let ty=0;ty<MAP_H;ty++){ if(!_caveSurface(ty)) continue; const row=map[ty];
+    for(let tx=0;tx<MAP_W;tx++) if(row[tx]===T.CAVE_WALL) tiles.push([tx, ty]); }
+  const geo = buildCaveRock(THREE, {
+    tiles, TILE, height: CAVEH, groundAt: heightAt,
+    isWall: (tx, ty) => tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H && _caveSurface(ty) && map[ty][tx] === T.CAVE_WALL,
+    noise: (x, y) => _rn(x, y), ridged: (x, y) => _rr(x, y),
+  });
+  if(!geo) return;
+  caveRockMesh = new THREE.Mesh(geo, _caveRockMat);
+  caveRockMesh.castShadow = true; caveRockMesh.receiveShadow = true;
+  scene.add(caveRockMesh);
+}
+let caveRockDirty = true;
 // Smooth value noise on a 5-tile lattice (the hash alone is white noise).
 function _swell5(tx, ty){
   const gx = tx / 5, gy = ty / 5, x0 = Math.floor(gx), y0 = Math.floor(gy);
@@ -4202,6 +4277,7 @@ function updateObstacles() {
   // frames after every turn, and the carved channel — twenty-plus units deep
   // and dark — flashed through as a black blink (reported on v0.21.0).
   rebuildWater(); waterDirty=false;
+  if(caveRockDirty){ rebuildCaveRock(); caveRockDirty=false; }
   // Rebuild at most one obstacle type per frame. Re-windowing all seven at
   // once (esp. thousands of cave/tree instances) caused a stutter every few
   // tiles of movement; staggering spreads it over ~7 frames (~0.1s), and the
@@ -4901,7 +4977,7 @@ function bakeStaticTile(tx, ty, oldT) {
   // The packed cave list is a cache of the map, so an edit has to drop it or
   // the editor can paint a wall that never appears (or erase one that never
   // leaves) until the next reload.
-  if(t===T.CAVE_WALL||ot===T.CAVE_WALL){ caveDirty=true; _caveTiles=null; }
+  if(t===T.CAVE_WALL||ot===T.CAVE_WALL){ caveDirty=true; _caveTiles=null; if(_caveSurface(ty)) caveRockDirty=true; }
   // customMesh draws ids >=100 AND stained glass (12) — both have to mark it dirty,
   // or painting glass leaves it invisible until the window happens to re-centre.
   if(t>=100||ot>=100||t===T.STAINED_GLASS||ot===T.STAINED_GLASS) customDirty=true;
@@ -8196,12 +8272,18 @@ function pickTreeTile(sx, sy) {
 function pickWallTile(sx, sy) {
   _ndc.set((sx/innerWidth)*2-1, -(sy/innerHeight)*2+1);
   _ray.setFromCamera(_ndc, camera);
-  const hits = _ray.intersectObjects([wallMesh, fortMesh, caveMesh, customMesh], false);
+  const hits = _ray.intersectObjects(caveRockMesh ? [wallMesh, fortMesh, caveMesh, customMesh, caveRockMesh] : [wallMesh, fortMesh, caveMesh, customMesh], false);
   for (const h of hits) {
-    if (h.instanceId==null) continue;
+    if (h.instanceId==null && h.object!==caveRockMesh) continue;
     const packed = h.object===wallMesh ? wallInstTile[h.instanceId]
                  : h.object===fortMesh ? fortInstTile[h.instanceId]
                  : h.object===caveMesh ? caveInstTile[h.instanceId] : null;
+    if (h.object===caveRockMesh) {            // the rock's foot spills half a tile out: step back into it
+      const n=h.face.normal, px=h.point.x-n.x*TILE*0.4, pz=h.point.z-n.z*TILE*0.4;
+      const tx=Math.floor(px/TILE), ty=Math.floor(pz/TILE);
+      if(map[ty] && _isFullCover(map[ty][tx])) return {tx,ty,point:h.point};
+      continue;
+    }
     if (packed==null) {                       // customMesh (glass): fall back to the hit point
       const tx=Math.floor(h.point.x/TILE), ty=Math.floor(h.point.z/TILE);
       if(map[ty] && _isFullCover(map[ty][tx])) return {tx,ty,point:h.point};
