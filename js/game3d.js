@@ -248,13 +248,22 @@ THREE.ShaderChunk.alphatest_fragment = `
 // so terrain, trees, grass, buildings and the mountain skirt all haze by the
 // same rule and can't disagree at a seam. A material that must not get the
 // range fog (the skirt, which lives past it) defines NO_RANGE_FOG; one that
-// needs a different ceiling on the haze defines HAZE_CAP.
+// needs a different ceiling on the haze defines HAZE_CAP. One that should
+// DISSOLVE at the range edge instead of turning fog-coloured defines
+// RANGE_DISSOLVE: a big mass faded to fog colour in front of land that only
+// hazes reads as a pale slab on the horizon (critic C-8, the cave walls).
 THREE.ShaderChunk.fog_fragment = `
 #ifdef USE_FOG
   #ifdef FOG_EXP2
     float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
   #else
     float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+  #endif
+  #ifdef RANGE_DISSOLVE
+    // solid until 70% of the way through the range, then gone quickly: a
+    // dither spread over the whole range read as stipple on mid-distance rock
+    if ( fract( dot( gl_FragCoord.xy, vec2( 0.7548776662, 0.5698402910 ) ) ) < smoothstep( 0.7, 1.0, fogFactor ) ) discard;
+    fogFactor = 0.0;
   #endif
   #ifdef NO_RANGE_FOG
     fogFactor = 0.0;
@@ -2796,6 +2805,9 @@ function updateFallingTrees(dt){
 // Window panels removed for performance. Stained glass is now custom tiles.
 const stoneMesh = makeMesh(new THREE.DodecahedronGeometry(STONE_R),      new THREE.MeshStandardMaterial({map:rockTex, normalMap:rockNrm, roughness:0.92, metalness:0.0}), nStone+4000);
 const caveMesh  = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({map:caveTex, normalMap:caveNrm, roughness:0.95, metalness:0.0}), nCave+8000);
+// cave rock dissolves out at the range edge; fogged to fog colour it stood on
+// the horizon as a pale slab, in front of land that only hazes (critic C-8)
+caveMesh.material.defines = { RANGE_DISSOLVE: '' };
 // Custom-tile boxes: one mesh for all custom obstacle tiles, per-instance color. transparent for glass aesthetics.
 const customMesh = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.6, metalness:0.0, transparent:true, opacity:0.85}), 4000);
 const ironMesh = makeMesh(new THREE.DodecahedronGeometry(STONE_R), new THREE.MeshStandardMaterial({color:0x6a564d, roughness:0.42, metalness:0.88, map:rockTex}), 1500);
@@ -2970,7 +2982,7 @@ const FACE_DIR = { e:[1,0], w:[-1,0], s:[0,1], n:[0,-1] };
 const PLACE_GROUND = new Set([T.GRASS, T.PATH, T.CAVE_FLOOR, T.CAVE_ENTRANCE]);
 const PLACEABLE_LIGHTS = new Set(Object.keys(PLACEABLES).filter(k=>PLACEABLES[k].light));
 
-let wallDirty=true, treeDirty=true, stoneDirty=true, ironDirty=true, caveDirty=true, customDirty=true, placedObjectsDirty=true;
+let fortDirty=true, wallDirty=true, treeDirty=true, stoneDirty=true, ironDirty=true, caveDirty=true, customDirty=true, placedObjectsDirty=true;
 const _custCol=new THREE.Color();
 
 // ── Obstacle render window ────────────────────────────────────────
@@ -3200,9 +3212,25 @@ for(let y = 1; y < MAP_H-1; y++) for(let x = 1; x < MAP_W-1; x++){
 }
 const TOWER_H = WALL_H * 1.38;
 
-// Crenellations: two merlons per fort tile that faces open ground.
-const merlonMesh = makeMesh(new THREE.BoxGeometry(1,1,1), wallMesh.material, 12000);
-scene.add(merlonMesh);
+// Fort walls, towers and their merlons are drawn ALL the time rather than
+// windowed round the player like other obstacles, and they haze the way the
+// land does (NO_RANGE_FOG: the capped aerial haze only). Windowed and range-
+// fogged, the city's ring wall seen from the fields was a slab floating on the
+// horizon — black before the aerial haze existed, then pale fog colour while
+// the land round it only hazed (critic C-8). There are only a few hundred
+// fort tiles; drawing them all is one instanced call either way.
+const FORT_TILES = [];
+for(let y = 0; y < MAP_H; y++) for(let x = 0; x < MAP_W; x++){
+  const k = wallKind[y*MAP_W + x]; if(k === WK_FORT || k === WK_TOWER) FORT_TILES.push(y*MAP_W + x);
+}
+const _fortMat = new THREE.MeshStandardMaterial({ map: wallTex, normalMap: wallNrm, roughness: 0.99, metalness: 0.0 });
+_fortMat.onBeforeCompile = wallMesh.material.onBeforeCompile;          // same world-space courses
+_fortMat.defines = { NO_RANGE_FOG: '' };
+_fortMat.customProgramCacheKey = () => 'fort-worlduv-v1';
+const fortMesh = makeMesh(new THREE.BoxGeometry(1,1,1), _fortMat, FORT_TILES.length + 16);
+const fortInstTile = [];
+// Crenellations: a parapet on the outward edge of each fort tile.
+const merlonMesh = makeMesh(new THREE.BoxGeometry(1,1,1), _fortMat, FORT_TILES.length * 2 + 16);
 
 // ── The buildings ──
 // Each building is generated ONCE as architecture by render/buildings.js — a
@@ -3354,6 +3382,8 @@ function _bldPatch(sh, cutOff, depth){
 }
 function _bidHide(mat, key, cutOff = 0){
   mat.onBeforeCompile = (sh) => _bldPatch(sh, cutOff, false);
+  // always drawn, so hazed like the land rather than range-fogged (see fortMesh)
+  mat.defines = Object.assign({}, mat.defines, { NO_RANGE_FOG: '' });
   mat.customProgramCacheKey = () => 'bld-' + key;
   return mat;
 }
@@ -3387,12 +3417,66 @@ const _spillTex = (() => { const c = document.createElement('canvas'); c.width =
   x.putImageData(img, 0, 0); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.flipY = false; return t; })();
 const _spillMat = new THREE.MeshBasicMaterial({ map: _spillTex, transparent: true, opacity: 0, depthWrite: false,
   blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, fog: true });
+// Hanging shop signs: which door carries which icon. Door tiles are the ones
+// world.js carves (buildHouse / the bank); icons index the atlas below.
+const SHOP_SIGNS = [
+  { tx: 310, ty: 343, icon: 4 },   // healer
+  { tx: 301, ty: 355, icon: 0 },   // merchant (NW shop)
+  { tx: 319, ty: 355, icon: 1 },   // blacksmith (NE)
+  { tx: 301, ty: 369, icon: 2 },   // mage (SW)
+  { tx: 319, ty: 369, icon: 3 },   // farrier (SE)
+  { tx: 311, ty: 365, icon: 5 },   // bank, south doors
+  { tx: 310, ty: 359, icon: 5 },   // bank, north door
+];
+// The sign atlas: 3 x 2 painted boards — scales, anvil, star and moon,
+// horseshoe, healer's cross, stacked coins.
+const _signTex = (() => {
+  const c = document.createElement('canvas'); c.width = 384; c.height = 256;
+  const x = c.getContext('2d');
+  const gold = '#d9b25a', dark = '#1c140c';
+  for(let i = 0; i < 6; i++){
+    const ox = (i % 3) * 128, oy = Math.floor(i / 3) * 128;
+    // weathered planks with a painted border
+    x.fillStyle = ['#3b5a78', '#5a2e24', '#2e3f5e', '#4a5a34', '#e8e0cc', '#5a3a1c'][i]; x.fillRect(ox, oy, 128, 128);
+    for(let k = 1; k < 4; k++){ x.fillStyle = 'rgba(0,0,0,.25)'; x.fillRect(ox, oy + k * 32, 128, 2); }
+    x.strokeStyle = i === 4 ? '#6b1c1c' : gold; x.lineWidth = 6; x.strokeRect(ox + 7, oy + 7, 114, 114);
+    x.save(); x.translate(ox + 64, oy + 66); x.fillStyle = x.strokeStyle = gold; x.lineWidth = 6; x.lineCap = 'round';
+    if(i === 0){          // scales
+      x.beginPath(); x.moveTo(0, -38); x.lineTo(0, 30); x.moveTo(-34, -24); x.lineTo(34, -24); x.moveTo(-20, 32); x.lineTo(20, 32); x.stroke();
+      for(const sx of [-30, 30]){ x.beginPath(); x.moveTo(sx, -24); x.lineTo(sx - 12, 4); x.moveTo(sx, -24); x.lineTo(sx + 12, 4); x.stroke();
+        x.beginPath(); x.arc(sx, 4, 13, 0, Math.PI); x.fill(); }
+    } else if(i === 1){   // anvil and hammer
+      x.beginPath(); x.moveTo(-40, -8); x.lineTo(30, -8); x.quadraticCurveTo(44, -8, 46, -18); x.lineTo(46, -4); x.lineTo(22, 6);
+      x.lineTo(14, 22); x.lineTo(26, 32); x.lineTo(-26, 32); x.lineTo(-14, 22); x.lineTo(-20, 6); x.lineTo(-40, 2); x.closePath(); x.fill();
+      x.fillRect(-8, -44, 36, 12); x.save(); x.rotate(-0.5); x.fillRect(-2, -40, 6, 30); x.restore();
+    } else if(i === 2){   // star and crescent
+      x.beginPath(); x.arc(-8, 0, 32, 0, Math.PI * 2); x.fill();
+      x.fillStyle = '#2e3f5e'; x.beginPath(); x.arc(4, -6, 28, 0, Math.PI * 2); x.fill(); x.fillStyle = gold;
+      x.beginPath(); for(let k = 0; k < 10; k++){ const a = k * Math.PI / 5 - Math.PI / 2, rr = k % 2 ? 7 : 16; x.lineTo(26 + Math.cos(a) * rr, -2 + Math.sin(a) * rr); } x.closePath(); x.fill();
+    } else if(i === 3){   // horseshoe, open end up
+      x.lineWidth = 14; x.beginPath(); x.arc(0, 0, 30, Math.PI * 0.12, Math.PI * 0.88, true); x.stroke();
+      x.fillStyle = dark; for(let k = 0; k < 6; k++){ const a = Math.PI * (0.2 + k * 0.12) + Math.PI; x.beginPath(); x.arc(Math.cos(a) * 30, -Math.sin(a) * 30, 2.5, 0, Math.PI * 2); x.fill(); }
+    } else if(i === 4){   // healer's cross
+      x.fillStyle = '#a82424'; x.fillRect(-12, -40, 24, 80); x.fillRect(-40, -12, 80, 24);
+    } else {              // stacked coins
+      for(let k = 0; k < 4; k++){ x.fillStyle = k % 2 ? '#b8923e' : gold; x.beginPath(); x.ellipse(-14, 28 - k * 12, 24, 8, 0, 0, Math.PI * 2); x.fill(); }
+      for(let k = 0; k < 3; k++){ x.fillStyle = k % 2 ? '#b8923e' : gold; x.beginPath(); x.ellipse(20, 28 - k * 12, 20, 7, 0, 0, Math.PI * 2); x.fill(); }
+    }
+    x.restore();
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+})();
+const _signMat   = _bidHide(new THREE.MeshStandardMaterial({ map: _signTex, roughness: 0.85 }), 'sign', 1.2);
+const _flowerMat = _bidHide(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }), 'flowers', 1.0);
 (function buildTownMeshes(){
-  const G = buildTown(THREE, { buildings: TOWN, TILE, groundAt: heightAt, coastY0: COAST_Y0 });
+  const G = buildTown(THREE, { buildings: TOWN, TILE, groundAt: heightAt, coastY0: COAST_Y0, signs: SHOP_SIGNS });
   const add = (geo, mat, shadow = true) => { if(!geo) return; const m = new THREE.Mesh(geo, mat);
     m.castShadow = shadow; m.receiveShadow = true; m.customDepthMaterial = _bldDepthMat; scene.add(m); };
   add(G.stone, _bldStoneMat); add(G.plaster, _bldPlastMat); add(G.timber, _bldWoodMat);
   add(G.glass, _glassMat, false); add(G.glassLit, _windowMat, false); add(G.doorGlow, _doorGlowMat, false); add(G.roof, _bldRoofMat);
+  add(G.sign, _signMat); add(G.flowers, _flowerMat);
+  // barrels, crates and benches block the player like any other prop
+  for(const q of G.props) pointColliders.push({ x: q.x, y: q.z, r: q.r });
   add(G.boards, _boardMat); add(G.thatch, _thatchMat); add(G.slate, _slateMat); add(G.floor, _floorMat, false);
   // Lamplight pools under lit windows and doorways: additive, a soft falloff
   // from the wall outward, faded in with the dark (see updateBuildings).
@@ -3453,23 +3537,46 @@ function _buildWallCentres(){
   return cen;
 }
 function rebuildWalls() {
-  if(!_wallCentre) _wallCentre = _buildWallCentres();
   let i=0; const cap=wallMesh.instanceMatrix.count, b=_obsBounds();
-  let mi=0; const mcap=merlonMesh.instanceMatrix.count;
-  const _isW=(x,y)=>map[y]&&(map[y][x]===T.WALL||map[y][x]===T.STAINED_GLASS);
   const q=new THREE.Quaternion(), eul=new THREE.Euler();
   for(let ty=b.ty0;ty<=b.ty1&&i<cap;ty++) for(let tx=b.tx0;tx<=b.tx1&&i<cap;tx++) {
     if(map[ty][tx]!==T.WALL) continue;
     const wk = wallKind[ty*MAP_W+tx];
     if(wk===WK_BUILDING) continue;                 // drawn by render/buildings.js
     const cx=tx*TILE+TILE/2, cz=ty*TILE+TILE/2, gy=heightAt(cx,cz);
-    if(wk===WK_FORT||wk===WK_TOWER){
+    if(wk===WK_FORT||wk===WK_TOWER) continue;       // drawn whole by rebuildForts
+    const n1=_terrNoise(tx*13, ty*17), n2=_terrNoise(tx*29, ty*5);
+    const varH = WALL_H + (n1 - 0.5) * 5;
+    eul.set((n1-0.5)*0.03, (n2-0.5)*0.08, (n2-0.5)*0.03);
+    q.setFromEuler(eul);
+    _pos.set(cx + (n1-0.5)*2, gy + varH/2, cz + (n2-0.5)*2);
+    _sc1.set(TILE*0.98, varH, TILE*0.98);
+    _m4.compose(_pos, q, _sc1); wallMesh.setMatrixAt(i, _m4);
+    wallInstTile[i]=ty*MAP_W+tx;
+    i++;
+  }
+  wallInstTile.length=i;
+  markInst(wallMesh,i);
+  wallMesh.computeBoundingSphere();   // raycast early-outs on this; stale = missed clicks
+}
+// Every fort and tower tile, once, plus again whenever the editor changes one.
+function rebuildForts(){
+  if(!_wallCentre) _wallCentre = _buildWallCentres();
+  let i=0, mi=0; const mcap=merlonMesh.instanceMatrix.count;
+  const _isW=(x,y)=>map[y]&&(map[y][x]===T.WALL||map[y][x]===T.STAINED_GLASS);
+  const q=new THREE.Quaternion();
+  for(const k of FORT_TILES){
+    const tx = k % MAP_W, ty = (k / MAP_W) | 0;
+    if(map[ty][tx]!==T.WALL) continue;             // the editor removed it
+    const wk = wallKind[k];
+    const cx=tx*TILE+TILE/2, cz=ty*TILE+TILE/2, gy=heightAt(cx,cz);
+    {
       // Masonry is laid straight: no per-tile tilt or height jitter, which
       // opened seams and stepped the top (critic C-9). A full tile wide.
       const h = wk===WK_TOWER ? TOWER_H : WALL_H;
       _pos.set(cx, gy + h/2, cz); _sc1.set(TILE, h, TILE); q.identity();
-      _m4.compose(_pos, q, _sc1); wallMesh.setMatrixAt(i, _m4);
-      wallInstTile[i]=ty*MAP_W+tx; i++;
+      _m4.compose(_pos, q, _sc1); fortMesh.setMatrixAt(i, _m4);
+      fortInstTile[i]=k; i++;
       // Merlons: a parapet along the wall's run, standing at the EDGE that faces
       // open ground, with the wall-walk behind it. (Centred full-width merlons
       // on both rows of a 2-thick wall made an egg-crate grid — critic r3.)
@@ -3493,22 +3600,11 @@ function rebuildWalls() {
           _m4.compose(_pos, q, _sc1); merlonMesh.setMatrixAt(mi++, _m4);
         }
       }
-      continue;
     }
-    const n1=_terrNoise(tx*13, ty*17), n2=_terrNoise(tx*29, ty*5);
-    const varH = WALL_H + (n1 - 0.5) * 5;
-    eul.set((n1-0.5)*0.03, (n2-0.5)*0.08, (n2-0.5)*0.03);
-    q.setFromEuler(eul);
-    _pos.set(cx + (n1-0.5)*2, gy + varH/2, cz + (n2-0.5)*2);
-    _sc1.set(TILE*0.98, varH, TILE*0.98);
-    _m4.compose(_pos, q, _sc1); wallMesh.setMatrixAt(i, _m4);
-    wallInstTile[i]=ty*MAP_W+tx;
-    i++;
   }
-  wallInstTile.length=i;
-  markInst(wallMesh,i);
-  markInst(merlonMesh,mi);
-  wallMesh.computeBoundingSphere();   // raycast early-outs on this; stale = missed clicks
+  fortInstTile.length=i;
+  markInst(fortMesh,i); markInst(merlonMesh,mi);
+  fortMesh.computeBoundingSphere();
 }
 // ── Tree placement ────────────────────────────────────────────────
 // Two levels of detail, split by a BUDGET rather than a radius. The closest
@@ -3796,6 +3892,13 @@ function _buildCaveList(){
     for(let tx=0;tx<MAP_W;tx++) if(row[tx]===T.CAVE_WALL) out.push(ty*MAP_W+tx); }
   _caveTiles = Int32Array.from(out);
 }
+// Smooth value noise on a 5-tile lattice (the hash alone is white noise).
+function _swell5(tx, ty){
+  const gx = tx / 5, gy = ty / 5, x0 = Math.floor(gx), y0 = Math.floor(gy);
+  const u = (gx - x0) * (gx - x0) * (3 - 2 * (gx - x0)), v = (gy - y0) * (gy - y0) * (3 - 2 * (gy - y0));
+  const a = _terrNoise(x0, y0), b = _terrNoise(x0 + 1, y0), c = _terrNoise(x0, y0 + 1), d = _terrNoise(x0 + 1, y0 + 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
 function rebuildCave() {
   if(!_caveTiles) _buildCaveList();
   let i=0; const cap=caveMesh.instanceMatrix.count;
@@ -3812,7 +3915,8 @@ function rebuildCave() {
     const packed=_caveTiles[k], ty=(packed/MAP_W)|0, tx=packed-ty*MAP_W;
     if(tx<b.tx0||tx>b.tx1||ty<b.ty0||ty>b.ty1) continue;
     const n1=_terrNoise(tx*11, ty*19), n2=_terrNoise(tx*23, ty*7);
-    const varH = CAVEH + (n1 - 0.5) * 8;
+    // a broken skyline, not a ruled one: a slow swell (+-18%) under the tile jitter
+    const varH = CAVEH * (1 + (_swell5(tx, ty) - 0.5) * 0.36) + (n1 - 0.5) * 8;
     eul.set((n1-0.5)*0.05, n2*Math.PI*2, (n2-0.5)*0.05);
     q.setFromEuler(eul);
     _pos.set(tx*TILE+TILE/2 + (n1-0.5)*3, heightAt(tx*TILE+TILE/2, ty*TILE+TILE/2) + varH/2, ty*TILE+TILE/2 + (n2-0.5)*3);
@@ -3849,6 +3953,7 @@ function updateObstacles() {
   // tiles of movement; staggering spreads it over ~7 frames (~0.1s), and the
   // old instances stay valid meanwhile since the window only shifted a little.
   if(wallDirty)       { rebuildWalls();      wallDirty=false;   }
+  if(fortDirty)       { rebuildForts();      fortDirty=false;   }
   else if(treeDirty)  { rebuildTrees();      treeDirty=false;   }
   else if(stoneDirty) { rebuildStones();     stoneDirty=false;  }
   else if(ironDirty)  { rebuildIron();       ironDirty=false;   }
@@ -4512,6 +4617,7 @@ function bakeStaticTile(tx, ty, oldT) {
   updateTerrPx(tx, ty);
   const t=map[ty][tx], ot=oldT!==undefined?oldT:origTile[ty]?.[tx];
   if(t===T.WALL||ot===T.WALL)   wallDirty=true;
+  if((t===T.WALL||ot===T.WALL) && (wallKind[ty*MAP_W+tx]===WK_FORT||wallKind[ty*MAP_W+tx]===WK_TOWER)) fortDirty=true;
   if(t===T.TREE||ot===T.TREE)   treeDirty=true;
   if(t===T.STONE||ot===T.STONE) stoneDirty=true;
   if(t===T.ORE_IRON||ot===T.ORE_IRON) ironDirty=true;
@@ -7806,10 +7912,11 @@ function pickTreeTile(sx, sy) {
 function pickWallTile(sx, sy) {
   _ndc.set((sx/innerWidth)*2-1, -(sy/innerHeight)*2+1);
   _ray.setFromCamera(_ndc, camera);
-  const hits = _ray.intersectObjects([wallMesh, caveMesh, customMesh], false);
+  const hits = _ray.intersectObjects([wallMesh, fortMesh, caveMesh, customMesh], false);
   for (const h of hits) {
     if (h.instanceId==null) continue;
     const packed = h.object===wallMesh ? wallInstTile[h.instanceId]
+                 : h.object===fortMesh ? fortInstTile[h.instanceId]
                  : h.object===caveMesh ? caveInstTile[h.instanceId] : null;
     if (packed==null) {                       // customMesh (glass): fall back to the hit point
       const tx=Math.floor(h.point.x/TILE), ty=Math.floor(h.point.z/TILE);

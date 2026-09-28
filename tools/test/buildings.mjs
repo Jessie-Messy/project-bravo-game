@@ -36,14 +36,14 @@ const buildings = [
   ring(50, 10, 53, 13, [{ tx: 50, ty: 12, side: 'w' }]),                  // small
   ring(10, 200, 14, 204, [{ tx: 12, ty: 204, side: 's' }]),               // coast hut
 ];
-const G = buildTown(THREE, { buildings, TILE, groundAt: ground, coastY0: 150 });
+const G = buildTown(THREE, { buildings, TILE, groundAt: ground, coastY0: 150, signs: [{ tx: 12, ty: 14, icon: 4 }] });
 
 for (const k of ['stone', 'plaster', 'timber', 'boards', 'glass', 'glassLit', 'roof', 'thatch', 'floor', 'shadow', 'spill', 'doorGlow'])
   check(`geometry "${k}" is produced`, !!G[k]);
 
 // No NaN anywhere; every face's winding agrees with its normal.
 for (const [k, g] of Object.entries(G)) {
-  if (!g) continue;
+  if (!g || !g.isBufferGeometry) continue;
   const p = g.attributes.position.array, n = g.attributes.normal.array, idx = g.index.array;
   check(`${k}: no NaN positions`, !p.some(Number.isNaN));
   let bad = 0;
@@ -91,6 +91,29 @@ for (const k of ['glass', 'glassLit']) {
     for (let i = 0; i < p.length; i += 3) if (p[i] >= X0 - 40 && p[i] <= X1 + 40 && p[i + 2] >= Z0 - 40 && p[i + 2] <= Z1 + 40) n++; return n; };
   check('the coast hut is thatched', over(G.thatch) > 0);
   check('the coast hut has no tiled roof', over(G.roof) === 0);
+}
+
+// The shop sign: exactly one board (two faces, 8 vertices), its UVs inside the
+// icon's atlas cell (4 = row 1, col 1 of 3x2), hung above head height.
+{
+  const g = G.sign, uv = g.attributes.uv.array, p = g.attributes.position.array;
+  check('one shop sign is built', g.attributes.position.count === 8, g.attributes.position.count + ' vertices');
+  let inCell = true;
+  for (let i = 0; i < uv.length; i += 2) if (uv[i] < 1/3 - 1e-6 || uv[i] > 2/3 + 1e-6 || uv[i + 1] > 0.5 + 1e-6) inCell = false;
+  check('the sign samples only its own atlas cell', inCell);
+  let minY = Infinity; for (let i = 1; i < p.length; i += 3) minY = Math.min(minY, p[i]);
+  check('the sign hangs clear of a walking head', minY - ground(12 * TILE, 14 * TILE) > CHAR_H - 20);
+}
+
+// Street furniture comes back as colliders, and none of it blocks a doorway.
+{
+  check('props are returned as colliders', Array.isArray(G.props) && G.props.every(q => q.r > 0 && Number.isFinite(q.x)));
+  let blocked = 0;
+  for (const b of buildings) for (const d of b.doors) {
+    const cx = (d.tx + 0.5) * TILE, cz = (d.ty + 0.5) * TILE;
+    for (const q of G.props) if (Math.hypot(q.x - cx, q.z - cz) < q.r + TILE * 0.5) blocked++;
+  }
+  check('no prop stands in a doorway', blocked === 0, blocked + ' props');
 }
 
 // Roof pieces carry their building id (so they can be lifted off); walls do not.

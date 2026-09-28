@@ -119,17 +119,94 @@ const THATCH  = [0xb09a68, 0x9a8660];
  * @param opts.groundAt   (wx, wz) => ground height
  * @param opts.coastY0    tile row where the coast begins: buildings there are Saltmere huts
  * @returns geometries by material (null when empty): stone, plaster, timber,
- *          boards, glass, glassLit, roof, slate, thatch, floor, shadow, spill
+ *          boards, glass, glassLit, roof, slate, thatch, floor, shadow, spill,
+ *          doorGlow, sign, flowers
+ * @param opts.signs      [{tx, ty, icon}] a hanging sign at that door tile (icon: atlas cell)
  */
-export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity }) {
+// Street furniture, shared by every building. Props draw from their OWN random
+// stream, so adding or tuning them never reshuffles the architecture (which a
+// critic loop signed off on).
+const FLOWERS = [0xb8574f, 0xd4b060, 0xe6e0cc, 0x8f6fa6, 0xc97a4a];
+
+// A hanging shop sign: an iron bracket out from the wall above the door, a
+// board hanging from it edge-on to the wall so it reads from along the street.
+// (hx,hz) the wall-face point, out the outward normal, icon the atlas cell.
+function shopSign(THREE, A, hx, hz, out, y, icon, bid) {
+  const iron = [0.05, 0.05, 0.05], P = (k, yy) => [hx + out[0]*k, yy, hz + out[1]*k];
+  A.timber.beam(THREE, P(0, y), P(60, y), 3.5, iron, bid, 3.5);                     // bracket arm
+  A.timber.beam(THREE, P(0, y - 22), P(22, y), 2.5, iron, bid, 2.5);                // its stay
+  for (const k of [16, 52]) A.timber.beam(THREE, P(k, y), P(k, y - 6), 1.5, iron, bid, 1.5);   // chains
+  // a small lantern hung near the wall, so the sign reads at night
+  A.timber.beam(THREE, P(8, y), P(8, y - 8), 1.2, iron, bid, 1.2);
+  A.glassLit.beam(THREE, P(8, y - 8), P(8, y - 22), 10, [1, 1, 1], bid, 10);
+  A.timber.beam(THREE, P(8, y - 8), P(8, y - 10), 12, iron, bid, 12);
+  // the board: 42 across (outward) x 36 tall; both faces carry the icon
+  const al = [-out[1], out[0]], y1 = y - 6, y0 = y1 - 36, k0 = 13, k1 = 55;
+  const C = (k, yy, e) => [hx + out[0]*k + al[0]*e, yy, hz + out[1]*k + al[1]*e];
+  const col = 3, row = 2, cu = (icon % col) / col, cv = Math.floor(icon / col) / row;
+  for (const e of [-1, 1]) {
+    // u runs outward from the wall on one face and back toward it on the other,
+    // so the icon is never mirrored
+    const flip = A.sign.quad(C(k0, y0, e), C(k1, y0, e), C(k1, y1, e), C(k0, y1, e), [al[0]*e, 0, al[1]*e], [1, 1, 1], bid);
+    const u0 = e > 0 ? cu : cu + 1/col, u1 = e > 0 ? cu + 1/col : cu, v0 = 1 - cv - 1/row, v1 = 1 - cv;
+    const uv = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+    const order = flip ? [0, 3, 2, 1] : [0, 1, 2, 3];
+    A.sign.u.splice(-8, 8, ...order.flatMap(i => uv[i]));
+  }
+  A.timber.box(Math.min(C(k0, y0, -1)[0], C(k1, y1, 1)[0]), y0, Math.min(C(k0, y0, -1)[2], C(k1, y1, 1)[2]),
+               Math.max(C(k0, y0, -1)[0], C(k1, y1, 1)[0]), y0 + 1.5, Math.max(C(k0, y0, -1)[2], C(k1, y1, 1)[2]), [0.2, 0.14, 0.09], bid);
+}
+
+// A window box of flowers under a sill: (at) maps (along, y, out) to world.
+function flowerBox(THREE, A, at, n, mid, y, w, cTi, rp, bid) {
+  A.timber.beam(THREE, at(mid - w/2, y - 4, 7), at(mid + w/2, y - 4, 7), 9, cTi, bid, 9);
+  // foliage first — a green mound gives the box its mass (critic: bare heads read as confetti)
+  A.flowers.beam(THREE, at(mid - w/2 + 2, y + 3, 7), at(mid + w/2 - 2, y + 3, 7), 8, [0.05, 0.12, 0.04], bid, 7);
+  for (let x = mid - w/2 + 4; x <= mid + w/2 - 4; x += 6) {
+    if (rp() < 0.3) continue;
+    const c = FLOWERS[Math.floor(rp() * FLOWERS.length)], cc = [((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255];
+    const lin = cc.map(v => Math.pow(v, 2.2)), yy = y + 6 + rp() * 4, o = 5 + rp() * 4;
+    A.flowers.beam(THREE, at(x, yy, o), at(x, yy + 3, o), 3, lin, bid, 3);
+  }
+}
+
+// A plank bench against the wall: along [s0,s1], seat 32 up (a quarter of a
+// 126 character), 16 deep; a backrest on the town ones.
+function bench(THREE, A, at, s0, s1, G, c, bid, back) {
+  A.timber.beam(THREE, at(s0, G + 32, 11), at(s1, G + 32, 11), 16, c, bid, 3);
+  for (const s of [s0 + 5, s1 - 5]) A.timber.beam(THREE, at(s, G, 11), at(s, G + 31, 11), 4, c, bid, 14);
+  if (back) A.timber.beam(THREE, at(s0, G + 50, 3), at(s1, G + 50, 3), 8, c, bid, 3);
+}
+
+// A barrel: an 8-sided stave body bulging at the middle (56 tall, 19 at the
+// belly — nearly half a character), a lid, two iron hoops.
+function barrel(THREE, A, x, z, G, c, bid) {
+  const pt = (i, r, y) => { const t = i * Math.PI / 4 + Math.PI / 8; return [x + Math.cos(t) * r, G + y, z + Math.sin(t) * r]; };
+  const nrm = i => { const t = (i + 0.5) * Math.PI / 4 + Math.PI / 8; return [Math.cos(t), 0, Math.sin(t)]; };
+  for (let i = 0; i < 8; i++) {
+    for (const [y0, y1, r0, r1] of [[0, 28, 16, 19], [28, 56, 19, 16]])
+      A.timber.quad(pt(i, r0, y0), pt(i + 1, r0, y0), pt(i + 1, r1, y1), pt(i, r1, y1), nrm(i), c, bid);
+    for (const y of [10, 44]) {
+      const rr = 16 + 3 * (y < 28 ? y / 28 : (56 - y) / 28) + 0.4;
+      A.timber.quad(pt(i, rr, y), pt(i + 1, rr, y), pt(i + 1, rr, y + 3), pt(i, rr, y + 3), nrm(i), [0.05, 0.05, 0.05], bid);
+    }
+  }
+  for (const q of [[0, 1, 2, 3], [0, 3, 4, 7], [4, 5, 6, 7]])
+    A.timber.quad(...q.map(i => pt(i, 16, 56)), [0, 1, 0], mul(c, 0.8), bid);
+}
+
+export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity, signs = [] }) {
   const A = {
     stone: new Acc(96), plaster: new Acc(64), timber: new Acc(48), boards: new Acc(64),
     glass: new Acc(24), glassLit: new Acc(24), roof: new Acc(96), slate: new Acc(96), thatch: new Acc(64),
     floor: new Acc(64), shadow: new Acc(1), spill: new Acc(1), doorGlow: new Acc(48),
+    sign: new Acc(1), flowers: new Acc(16),
   };
   const T = TILE;
+  const props = [];           // {x, z, r}: circle colliders for the street furniture
   buildings.forEach((B, bid) => {
     const r = rng(0x9e3779b1 ^ (B.x0 * 73856093) ^ (B.y0 * 19349663));
+    const rp = rng(0x51ed270b ^ (B.x0 * 83492791) ^ (B.y0 * 2971215073));   // props only
     const pick = a => a[Math.floor(r() * a.length)];
     const jit = c => mul(c, 0.96 + r() * 0.08);
     const X0 = B.x0 * T, X1 = (B.x1 + 1) * T, Z0 = B.y0 * T, Z1 = (B.y1 + 1) * T;
@@ -206,10 +283,12 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
     // 1.5 proud of both faces
     if (two) for (const [qx, qz, sx, sz] of [[X0, Z0, 1, 1], [X1, Z0, -1, 1], [X0, Z1, 1, -1], [X1, Z1, -1, -1]]) {
       for (let y = G + PL, k = 0; y < G + H1 - 6; y += 22, k++) {
-        const la = k % 2 ? 20 : 34, lb = k % 2 ? 34 : 20, y1 = Math.min(y + 20, G + H1 - 2), c = mul(cSt, 1.16 + (k % 3) * 0.03);
+        const la = k % 2 ? 20 : 34, lb = k % 2 ? 34 : 20, y1 = Math.min(y + 20, G + H1 - 2), c = mul(cSt, 1.05 + (k % 3) * 0.03);
         const ox = -sx*1.5, oz = -sz*1.5;                 // outward offsets
-        A.stone.box(Math.min(qx + ox, qx + sx*la), y, Math.min(qz + oz, qz), Math.max(qx + ox, qx + sx*la), y1, Math.max(qz + oz, qz), c, -1, {bottom:true});
-        A.stone.box(Math.min(qx + ox, qx), y, Math.min(qz + oz, qz + sz*lb), Math.max(qx + ox, qx), y1, Math.max(qz + oz, qz + sz*lb), c, -1, {bottom:true});
+        // flat freestone like the window dressings: the stone texture's phase
+        // fought the wall's at every joint and read as loose slabs (critic)
+        A.plaster.box(Math.min(qx + ox, qx + sx*la), y, Math.min(qz + oz, qz), Math.max(qx + ox, qx + sx*la), y1, Math.max(qz + oz, qz), c, -1, {bottom:true});
+        A.plaster.box(Math.min(qx + ox, qx), y, Math.min(qz + oz, qz + sz*lb), Math.max(qx + ox, qx), y1, Math.max(qz + oz, qz + sz*lb), c, -1, {bottom:true});
       }
     }
 
@@ -343,6 +422,7 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
         const ww = Math.min(28, step - 12), wy0 = yMid + 5, wh = Math.min(46, F.y1 - 10 - wy0), wy1 = wy0 + wh;
         const lit = r() < 0.6;
         const gl = lit ? A.glassLit : A.glass;
+        if (rp() < (F.upper ? 0.25 : 0.35)) flowerBox(THREE, A, at, F.n, mid, wy0 - 6, ww + 10, cTi, rp, bb);
         if (lit && !F.upper) { const q = at(mid, 0, 0); spill(q[0], q[2], F.n[0], F.n[1], ww + 12, 80); }
         // The walls are solid (a full tile thick), so the glass sits just proud of
         // the plaster, inside a frame that stands 3 proud — the frame's depth is
@@ -373,6 +453,7 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
         if (isDoor(Math.floor(px / T), Math.floor(pz / T))) continue;
         const y0 = G + 72, y1 = y0 + 44;
         const litS = r() < 0.6; if (litS) { const q = at(s, 0, 0); spill(q[0], q[2], F.n[0], F.n[1], 40, 80); }
+        if (rp() < 0.35) flowerBox(THREE, A, (a, y, o) => at(a, y, o + 3), F.n, s, y0 - 6, 38, cTi, rp, -1);
         (litS ? A.glassLit : A.glass).quad(at(s - 14, y0, 0.6), at(s + 14, y0, 0.6), at(s + 14, y1, 0.6), at(s - 14, y1, 0.6), [F.n[0],0,F.n[1]], [1,1,1]);
         // dressings in pale freestone (critic r3: stone-on-stone vanished, leaving black holes)
         const cDr = hex(THREE, 0xb9ab8e);
@@ -413,6 +494,29 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
         const q0 = ax ? [x + 6, G + 4, fz + iz*dd] : [fx + ix*dd, G + 4, z + 6];
         const q1 = ax ? [x + T - 6, G + 4, fz + iz*dd] : [fx + ix*dd, G + 4, z + T - 6];
         A.doorGlow.quad(q0, q1, [q1[0], G + DOOR_H - 2, q1[2]], [q0[0], G + DOOR_H - 2, q0[2]], [out[0], 0, out[1]], [1,1,1], bid); }
+      // shop sign on the far side from the leaf; a bench or barrels on some doors
+      const al2 = ax ? [1, 0] : [0, 1];
+      const wallAt = (k, y, o) => [pp[1][0] + al2[0]*k + out[0]*(o - 2), y, pp[1][1] + al2[1]*k + out[1]*(o - 2)];
+      const sg = signs.find(q => q.tx === d.tx && q.ty === d.ty);
+      if (sg) {
+        // hung above head height: from the jettied upper storey on B/C (so the
+        // bracket starts at ITS face), under the eaves on A
+        const w0 = wallAt(16, 0, two ? J : 0);
+        shopSign(THREE, A, w0[0], w0[2], out, two ? G + H1 + 34 : G + H1 - 4, sg.icon, bid);
+        if (sg.icon === 0 || sg.icon === 1 || sg.icon === 3) {         // trades keep stock outside
+          const bc = mul(hex(THREE, 0x7a5634), 0.9 + rp() * 0.2);
+          { const q = wallAt(26, 0, 21); barrel(THREE, A, q[0], q[2], G, bc, -1); props.push({ x: q[0], z: q[2], r: 19 }); }
+          const q = wallAt(66, 0, 20);
+          A.timber.box(q[0] - 18, G, q[2] - 18, q[0] + 18, G + 36, q[2] + 18, mul(hex(THREE, 0x8a6a44), 0.9 + rp() * 0.2), -1);
+          props.push({ x: q[0], z: q[2], r: 20 });
+        }
+      } else if (rp() < (hut ? 0.5 : 0.4)) {
+        bench(THREE, A, wallAt, 12, 60, G, mul(cTi, 1.3), -1, !hut);
+        for (const k of [24, 48]) { const q = wallAt(k, 0, 11); props.push({ x: q[0], z: q[2], r: 10 }); }
+      } else if (hut && rp() < 0.6) {
+        const q = wallAt(28, 0, 21); barrel(THREE, A, q[0], q[2], G, mul(hex(THREE, 0x6b5a48), 0.9 + rp() * 0.2), -1);
+        props.push({ x: q[0], z: q[2], r: 19 });
+      }
       // threshold stone
       const tx0 = ax ? x : (out[0] > 0 ? x + T : x - 14), tx1 = ax ? x + T : (out[0] > 0 ? x + T + 14 : x);
       const tz0 = ax ? (out[1] > 0 ? z + T : z - 14) : z, tz1 = ax ? (out[1] > 0 ? z + T + 14 : z) : z + T;
@@ -521,5 +625,6 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
   });
   const out = {};
   for (const k in A) out[k] = A[k].p.length ? A[k].geometry(THREE) : null;
+  out.props = props;
   return out;
 }

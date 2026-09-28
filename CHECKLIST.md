@@ -266,8 +266,12 @@ Round 1 (baseline shots `.shots/base_*.jpg`), ranked worst first:
 - [x] [critic] C-7 Canopy shading flat & dark (leaf normal 1.8→0.8 killed the rings; albedo lifted;
       wrap lighting NOT done) (#1d3f1a); leaf texture has fish-scale outline
       rings; add wrap lighting + outward normals; raise albedo ~#3d6a2a
-- [ ] [critic] C-8 Black slabs on the horizon (horizon_field, vista, grass_close) — unfogged
-      far wall/bridge boxes? Identify and fix
+- [x] [critic] C-8 Black slabs on the horizon — identified by raycast: the CAVE walls (21k box
+      tiles, windowed to the fog edge) range-fogged to fog colour = a pale slab, in front of land
+      that only hazes. Fix: `RANGE_DISSOLVE` fog define (dissolve in the last 30% of the range)
+      on caveMesh + a smooth +-18% height swell. Fort walls/merlons now drawn whole
+      (`fortMesh`, `rebuildForts`) with NO_RANGE_FOG, and the town too, so the city hazes like
+      the land. Follow-up: cave EXTERIORS still read as stacked boxes up close — needs a rock mesh
 - [x] [critic] C-9 City walls: per-tile random tilt/yaw/offset/height opens seams and a stepped
       top — zero it for T.WALL; world-space UVs so brick courses continue; merlons +
       coping + plinth; interior building kit (gable timber-frame, stone hall, tower)
@@ -304,6 +308,7 @@ on the band's lower half, slope-based rock blend.
 - [x] critic r5 (6.5/10) → 8 fixes (commit a7aa5a2); half-hips done
 - [x] critic r6: **PASS 7.5/10**; its 2 leftovers fixed (door glow material at the back of the
       reveal; door leaf hides with the roof)
-- [ ] optional polish (critic's top pick for 7.5 → 8.5): hanging shop signs (merchant/healer/bank),
-      flower boxes, benches. Merlon UVs: already world-space via wallMesh's shader — the
+- [x] street props (critic PASS after 2 rounds): hanging shop signs with lanterns on 7 shop
+      doors (atlas `_signTex`, `SHOP_SIGNS`), barrels + crates at trades, flower boxes, benches;
+      props are player colliders (buildTown returns `props`). Merlon UVs: already world-space via wallMesh's shader — the
       critic's "stretched" note looks mistaken; recheck only if seen in game.
