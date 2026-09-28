@@ -5991,12 +5991,12 @@ loadPropGeometry('models/torch.glb', {h:26, baseY:0}, (geo, mat)=>{
   // end. It billboards in WORLD space, so it burns upright whatever the hand
   // is doing with the shaft.
   const flame=new THREE.Mesh(makeFlameGeometry(THREE), makeFlameMaterial(THREE, { uTime:_fireU }));
-  flame.position.set(17,0,0); flame.scale.set(11,20,11); flame.frustumCulled=false;
+  flame.position.set(17,0,0); flame.scale.set(13,22,13); flame.frustumCulled=false;
   flame.userData.heldFlame=true;
   // centred half the flame's height above its root: 0.19 of a 2.6x-tall card
   const glow=new THREE.Mesh(makeGlowGeometry(THREE).translate(0,0.19,0), makeGlowMaterial(THREE, { uTime:_fireU }));
   glow.position.set(17,0,0);
-  glow.scale.set(2.4*11, 2.6*20, 1); glow.frustumCulled=false; grp.add(glow);
+  glow.scale.set(2.4*13, 2.6*22, 1); glow.frustumCulled=false; grp.add(glow);
   grp.add(flame);
   weaponTemplates['torch']=grp; refreshHeldProp(true);
 });

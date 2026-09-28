@@ -95,7 +95,11 @@ const FLAME_FRAG = /* glsl */`
     // the edges burn away first: one central tongue, lower ones at the sides
     // (equal spikes read as a paper crown)
     erode += abs(x) / max(halfW, 1e-3) * 0.25 * free;
-    float f = body * smoothstep(erode - 0.06, erode + 0.05, n * 1.15 + (1.0 - p.y) * 0.22);
+    // and the centre column always survives to most of the height, so the
+    // flame never bobs tall-squat-tall
+    erode *= mix(0.8, 1.0, clamp(abs(x) / max(halfW, 1e-3), 0.0, 1.0));
+    float centre = 1.0 - clamp(abs(x) / max(halfW, 1e-3), 0.0, 1.0);
+    float f = body * smoothstep(erode - 0.06, erode + 0.05, n * 1.15 + (1.0 - p.y) * 0.22 + centre * 0.16);
     if (f < 0.02) discard;
     // heat falls off with height and toward the edge; tips end red
     float heat = clamp(f * (1.1 - p.y * 1.15) * (1.0 - abs(x) / max(halfW, 1e-3) * 0.55), 0.0, 1.0);
@@ -103,7 +107,7 @@ const FLAME_FRAG = /* glsl */`
     const float w = 0.03;
     vec3 col = vec3(0.60, 0.08, 0.01);
     col = mix(col, vec3(0.95, 0.30, 0.04), smoothstep(0.25 - w, 0.25 + w, heat));
-    col = mix(col, vec3(1.00, 0.60, 0.12), smoothstep(0.50 - w, 0.50 + w, heat));
+    col = mix(col, vec3(1.00, 0.52, 0.08), smoothstep(0.58 - w, 0.58 + w, heat));
     col = mix(col, vec3(1.00, 0.88, 0.55), smoothstep(0.85 - w, 0.85 + w, heat) * (1.0 - step(0.25, p.y)));
     // Normal blending, premultiplied: additive washed all four bands out to
     // cream once the halo and bloom were added on top (torch critic r2).
@@ -137,8 +141,8 @@ const GLOW_FRAG = /* glsl */`
       vec2 ep = vec2((fh(vec2(seed, 1.0)) - 0.5) * 0.10 + sin(life * 6.0 + seed) * 0.05 * life,
                      0.15 + life * 0.65);            // q units: from the tip up the card
       float d = length((q - ep) * vec2(1.0, 0.45));  // squashed along the path: a streak
-      float e = smoothstep(0.012, 0.0, d) * (1.0 - life) * step(0.15, fh(vec2(seed, 3.0)));
-      col += mix(vec3(1.0, 0.85, 0.35), vec3(0.9, 0.2, 0.03), life) * e * 1.6;
+      float e = smoothstep(0.006, 0.0, d) * (1.0 - life) * (1.0 - life) * step(0.15, fh(vec2(seed, 3.0)));
+      col += mix(vec3(1.0, 0.55, 0.15), vec3(0.7, 0.12, 0.02), life) * e * 0.9;
     }
     if (max(col.r, max(col.g, col.b)) < 0.002) discard;
     gl_FragColor = vec4(col, 1.0);

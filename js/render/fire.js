@@ -46,7 +46,8 @@ export function animateFire(material, { uFireTime, topY = 36, sway = 1.0, hide =
         uniform sampler2D emissiveMap;
         uniform float uFireTime;
         uniform float uFireTopY;
-        uniform float uFireSway;`)
+        uniform float uFireSway;
+        varying float vCollapse;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         {
           // The mask. smoothstep rather than a hard cut so the base of the
@@ -81,8 +82,21 @@ export function animateFire(material, { uFireTime, topY = 36, sway = 1.0, hide =
           // (by height: the emissive map is not a clean mask on these models —
           // the outer flame layer barely glows in it and was left behind as
           // dark petals inside the new flame)
-          ${hide ? 'transformed = mix( transformed, vec3( 0.0, uFireTopY * 0.5, 0.0 ), max( step( 0.5, flame ), step( uFireTopY * 0.62, transformed.y ) ) );' : ''}
+          vCollapse = ${hide ? 'max( step( 0.5, flame ), step( uFireTopY * 0.62, transformed.y ) )' : '0.0'};
+          // sunk below the head's wooden rim, so the fold cannot show
+          ${hide ? 'transformed = mix( transformed, vec3( 0.0, uFireTopY * 0.35, 0.0 ), vCollapse );' : ''}
 
+        }`);
+
+    // Anything left of the collapsed flame (a creased fold at the root) is
+    // glowing char, never the pale emissive texels — it read as a paper cup.
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying float vCollapse;`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        if ( vCollapse > 0.5 ) {
+          totalEmissiveRadiance = vec3( 0.55, 0.10, 0.02 );
+          diffuseColor.rgb = vec3( 0.06, 0.03, 0.02 );
         }`);
 
     // The flame's own BRIGHTNESS is deliberately left alone. A pulse here made
@@ -94,7 +108,7 @@ export function animateFire(material, { uFireTime, topY = 36, sway = 1.0, hide =
 
   // Two materials with the same parameters but different patches must not share
   // a compiled program.
-  material.customProgramCacheKey = () => hide ? 'fire-anim-v1-hide' : 'fire-anim-v1';
+  material.customProgramCacheKey = () => hide ? 'fire-anim-v2-hide' : 'fire-anim-v2';
   material.needsUpdate = true;
   return material;
 }
