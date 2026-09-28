@@ -1008,9 +1008,31 @@ export function ridgeZone(tx, ty) {
   return tx < COAST_X0 + COAST_RIDGE_BAND || tx >= COAST_X0 + COAST_W - COAST_RIDGE_BAND
       || ty >= COAST_Y0 + COAST_H - COAST_RIDGE_BAND;
 }
+// The band's inner edge wanders 0-3 tiles further in, so the foot of the range
+// is not a ruled line (critic C-10: seen square-on, a river ran into a rock
+// wall along a perfectly straight seam). Only natural ground is taken — grass,
+// trees, stone, sand — so a road, a river, a portal or a building that reaches
+// the edge keeps its tiles, and a river leaves a notch: its gorge.
+const _RAG_TAKES = new Set([T.GRASS, T.TREE, T.STONE, T.SAND]);
+function _ragNoise(u) {                         // smooth 1-D value noise, 0..1
+  const h = n => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  const i = Math.floor(u), f = u - i, t = f * f * (3 - 2 * f);
+  return h(i) + (h(i + 1) - h(i)) * t;
+}
+export function ridgeRagged(tx, ty) {
+  if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H || ridgeZone(tx, ty)) return false;
+  const extra = (along, salt) => Math.floor(3.4 * _ragNoise(along / 7 + salt));
+  if (ty < OVERWORLD_H) {
+    return tx < RIDGE_BAND + extra(ty, 11) || tx >= MAP_W - RIDGE_BAND - extra(ty, 23)
+        || ty < RIDGE_BAND + extra(tx, 37) || ty >= OVERWORLD_H - RIDGE_BAND - extra(tx, 53);
+  }
+  if (ty < COAST_Y0) return false;
+  return tx < COAST_X0 + COAST_RIDGE_BAND + extra(ty, 71) || tx >= COAST_X0 + COAST_W - COAST_RIDGE_BAND - extra(ty, 89)
+      || ty >= COAST_Y0 + COAST_H - COAST_RIDGE_BAND - extra(tx, 97);
+}
 (function raiseRidges(){
   for (let ty = 0; ty < MAP_H; ty++) for (let tx = 0; tx < MAP_W; tx++) {
-    if (!ridgeZone(tx, ty)) continue;
+    if (!ridgeZone(tx, ty) && !(ridgeRagged(tx, ty) && _RAG_TAKES.has(map[ty][tx]))) continue;
     map[ty][tx] = T.RIDGE; origTile[ty][tx] = T.RIDGE;
     resourceHp[ty][tx] = 0; respawnAt[ty][tx] = null;
   }

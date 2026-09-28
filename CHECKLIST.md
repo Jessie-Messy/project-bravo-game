@@ -278,9 +278,9 @@ Round 1 (baseline shots `.shots/base_*.jpg`), ranked worst first:
 - [x] [critic] C-10 Water edge: grass no longer grows within half a tile of water/shallows
       (`_WET_PROBE` in `_bladeOnGrass`), so no blades ghost through the foam. The river now
       thins out over the last ~3 tiles before the edge ridge (mask BLUE = `_ridgeFade`, water.js
-      cov *= mask.b). FOLLOW-UP: the ridge band is a ruled 5-tile column, so its FOOT is a
-      straight line wherever you see it square-on — needs an irregular band edge in world.js
-      (shared with the server's world data, so it ships with a server rebuild)
+      cov *= mask.b). The band's inner edge now wanders 0-3 tiles (world.js `ridgeRagged`,
+      natural ground only, so roads/rivers/portals keep their tiles and rivers leave a gorge
+      notch). server/world-data.json rebuilt — ⚠ ships with the next SERVER deploy too
 - [ ] [critic] C-11 Contact darkening under trees/walls (AO in the terrain splat)
 - [x] [critic] C-12 Grass on biome boundaries keeps full height (ragged cliffs)
 Mountain guidance (critic): 3 rings (foothills #6f8575 haze .35, mid #8d9fae .55, far
