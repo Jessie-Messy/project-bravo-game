@@ -301,7 +301,12 @@ on the band's lower half, slope-based rock blend.
    graphics critic on the whole tour (window.TOUR in the page; see HANDOFF dev tooling)
 2. [x] camera boom inside canopies: CAM_FADE dither in alphatest_fragment (canopy + near leaf mats)
 3. C-8 black slabs on the horizon (identify), C-10 water edge foam wash, C-11 contact AO
-4. cat idle frame; U1b 10 Hz far-anim check; B9 low-tier perf check
+4. [x] cat idle frame; [x] U1b 10 Hz far-anim check; [x] B9 low-tier perf check —
+   low: ~5 ms/frame, 180-260 draws, ~500k tris; ultra: ~11 ms, 590-820 draws, 1.9-3.8M tris
+   (desktop, 1280x720). Found + fixed on the way: ultra-only BLACK HORIZON BAND = GTAOPass
+   reading the far mountains (at the 12000 far plane) as fully occluded → AO faded out
+   6000-10000 view units (composer.js); tree/stone AO baked into the ground left crop-mark
+   blotches where far trees are culled (low tier) → ground AO is walls-only now
 5. [x] deployed v0.20.0; await the user's test feedback
 
 ## Phase D — ship

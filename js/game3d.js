@@ -1126,12 +1126,17 @@ function _tileIsInterior(tx, ty, g0){
 // Per tile, the 3x3 neighbourhood's occluders; per pixel, a soft falloff —
 // box-shaped for walls, round for trunks and stones. 1 = unoccluded.
 const _AO_BOX = new Set([T.WALL, T.CAVE_WALL, T.STAINED_GLASS]);
-function _aoOccluders(tx, ty){
+// wallsOnly: the GROUND bake takes only walls. Trees and boulders are culled
+// at range, and their baked darkening was left behind in the fields as
+// blotchy crop-mark patterns (seen on the low tier's city view) — so those
+// darken only the grass blades, which never outlive their occluders.
+function _aoOccluders(tx, ty, wallsOnly){
   let occ = null;
   for(let oy=-1; oy<=1; oy++){ const row = map[ty+oy]; if(!row) continue;
     for(let ox=-1; ox<=1; ox++){ const t = row[tx+ox];
       if(t === undefined) continue;
       if(_AO_BOX.has(t)) (occ || (occ = [])).push(0, tx+ox, ty+oy);
+      else if(wallsOnly) continue;
       else if(t === T.TREE) (occ || (occ = [])).push(1, tx+ox, ty+oy);
       else if(t === T.STONE || t === T.ORE_IRON) (occ || (occ = [])).push(2, tx+ox, ty+oy);
     } }
@@ -1173,7 +1178,7 @@ function paintTerrainRegion(tx0, ty0, tx1, ty1, surface) {
     // Interior tiles can't be changed by the warp, so skip it for the bulk of
     // the map and only pay for the boundary pixels that actually bend.
     const interior = _tileIsInterior(tx, ty, g0);
-    const occ = _aoOccluders(tx, ty);
+    const occ = _aoOccluders(tx, ty, true);
     for (let py = 0; py < TERR_PX; py++) for (let px = 0; px < TERR_PX; px++) {
       const gx = tx*TERR_PX+px, gy = ty*TERR_PX+py;    // global — keeps the noise stable
       let cr=br, cg=bg, cb=bb, isWater=isWater0;

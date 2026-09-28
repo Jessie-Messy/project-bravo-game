@@ -204,6 +204,18 @@ export async function createComposer({ THREE, renderer, scene, camera, settings,
         }
       };
 
+      // Fade the AO out with view depth. On a 60000 far plane the depth buffer
+      // has almost no precision left out at the far ground ring and the
+      // mountains, the reconstructed normals there are noise, and GTAO read
+      // them as fully occluded: a black band along the horizon on ultra only.
+      // AO is a contact effect; past ~6000 units there is nothing it should add
+      // (the ultra far plane is 12000, the mountains sit at ~11500).
+      if (gtao.gtaoMaterial && gtao.gtaoMaterial.fragmentShader.includes('ao = pow(ao, scale);')) {
+        gtao.gtaoMaterial.fragmentShader = gtao.gtaoMaterial.fragmentShader.replace('ao = pow(ao, scale);',
+          'ao = pow(ao, scale);\n\t\t\tao = mix(ao, 1., smoothstep(6000., 10000., -viewPos.z));');
+        gtao.gtaoMaterial.needsUpdate = true;
+      }
+
       composer.addPass(gtao);
       names.push('GTAOPass');
     }
