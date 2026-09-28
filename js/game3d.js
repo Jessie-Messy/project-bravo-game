@@ -8,6 +8,7 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildTown } from './render/buildings.js';
 import { buildCaveRock } from './render/cave-rock.js';
+import { makeFlameMaterial, makeFlameGeometry } from './render/flame.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave, netCallGuards,
   netHousePlace, netHouseUpdate, netHouseRemove,
   netDropAdd, netDropTake, netCorpseFill, netCorpseTake, netCorpseHarvest, netTradeReq, netTradeAccept, netTradeOffer, netTradeConfirm, netTradeCancel,
@@ -781,6 +782,7 @@ scene.add(moon.target);
 // Player local light source (lantern) for caves and night cycles.
 // decay 0 — see placementLights: physical falloff kills legacy intensities.
 const playerLight = new THREE.PointLight(0xffbbaa, 0.0, TILE * 10, 0);
+const _heldBox = new THREE.Box3(), _heldC = new THREE.Vector3();
 scene.add(playerLight);
 
 // ── Sky + dynamic environment ─────────────────────────────────────
@@ -3072,8 +3074,12 @@ const anvilMesh = makeMesh(new THREE.BoxGeometry(18, 10, 10), new THREE.MeshStan
 const placedLanternMesh = makeMesh(new THREE.CylinderGeometry(2.5, 2.5, 8, 6), new THREE.MeshStandardMaterial({color:0x1a1a1a, metalness:0.9, roughness:0.1}), 1000);
 // Glowing flame blobs on torches / campfires / lanterns so every placed light
 // source visibly reads as one (the actual PointLights come from the pool below).
-const placedFlameMesh = makeMesh(new THREE.SphereGeometry(4, 7, 6), new THREE.MeshBasicMaterial({
-  color:0xffa040, transparent:true, opacity:0.85, blending:THREE.AdditiveBlending, depthWrite:false}), 3000);
+// The flame on every placed torch, campfire and lantern: a procedural fire
+// card (render/flame.js), not the old additive sphere. Its clock is _fireU,
+// declared just below — handed over by reference, so it can be filled later.
+const _flameClock = { value: 0 };
+const placedFlameMesh = makeMesh(makeFlameGeometry(THREE), makeFlameMaterial(THREE, { uTime: _flameClock }), 3000);
+placedFlameMesh.castShadow = false; placedFlameMesh.receiveShadow = false;
 
 // ── HDR glow ──────────────────────────────────────────────────────
 // A colour like 0xffa040 converts to roughly (1.0, 0.36, 0.05) in linear, so
@@ -3088,7 +3094,7 @@ const placedFlameMesh = makeMesh(new THREE.SphereGeometry(4, 7, 6), new THREE.Me
 // Shared clock for the flame shader. One uniform object handed to every fire
 // material, so they all advance together and there is a single place to stop
 // them from.
-const _fireU = { value: 0 };
+const _fireU = _flameClock;   // one clock for the fire shaders and the flame cards
 const FLAME_GAIN = 2.6, PORTAL_GAIN = 1.9;
 function hdrGlow(m, gain){
   if(m && m.color && !m.userData._hdrBoosted){
@@ -3227,6 +3233,21 @@ const FACE_DIR = { e:[1,0], w:[-1,0], s:[0,1], n:[0,-1] };
 // Tiles a 'ground' placeable may stand on. CAVE_FLOOR is new — you could not put
 // a torch down in a dungeon before, which was most of where you'd want one.
 const PLACE_GROUND = new Set([T.GRASS, T.PATH, T.CAVE_FLOOR, T.CAVE_ENTRANCE]);
+// Where a placed light's flame actually is, in world space: the same maths
+// rebuildPlacedObjects uses to draw it, so the light and the flame agree.
+// (The light pool used a bare constant height — 28 for a torch — measured
+// from y = 0. On any hill the light sat buried in the ground, and a wall
+// torch's light hung at knee height below its flame. "Wonky", fairly.)
+function placedFlameAt(o){
+  const def = PLACEABLES[o.type]; const gy = heightAt(o.x, o.y);
+  if(!def) return { x:o.x, y:gy + 12, z:o.y };
+  const s = def.scale, fy = def.flame ? def.flame.y : def.y * 1.4;
+  if(o.face && FACE_DIR[o.face]){
+    const [ox, oy] = FACE_DIR[o.face], fl = (fy - def.y) * s;
+    return { x:o.x + ox*fl*Math.sin(WALL_TILT), y:gy + o.mountY + fl*Math.cos(WALL_TILT), z:o.y + oy*fl*Math.sin(WALL_TILT) };
+  }
+  return { x:o.x, y:gy + fy*s, z:o.y };
+}
 const PLACEABLE_LIGHTS = new Set(Object.keys(PLACEABLES).filter(k=>PLACEABLES[k].light));
 
 let fortDirty=true, wallDirty=true, treeDirty=true, stoneDirty=true, ironDirty=true, caveDirty=true, customDirty=true, placedObjectsDirty=true;
@@ -4053,9 +4074,10 @@ const _placedCount = new Map();          // mesh → instances written this rebu
 function rebuildPlacedObjects() {
   let nFlame=0;
   const capFlame=placedFlameMesh.instanceMatrix.count;
+  // (x,y,z) is the flame's centre; the card's root sits a little below it.
   const addFlame=(x,y,z,s)=>{
     if(nFlame>=capFlame) return;
-    _pos.set(x,y,z); _sc1.set(s,s,s); _m4.compose(_pos,_qId,_sc1);
+    _pos.set(x,y-4*s,z); _sc1.set(10*s,17*s,10*s); _m4.compose(_pos,_qId,_sc1);
     placedFlameMesh.setMatrixAt(nFlame++,_m4);
   };
   _placedCount.clear();
@@ -4490,15 +4512,23 @@ function updateEnvironmentCycle(dt) {
   } else {
     playerLight.intensity = 0.0;
   }
-  playerLight.position.set(player.x, heightAt(player.x,player.y) + 18, player.y);
+  // A held torch lights from its FLAME, up in your hand, not from your knees:
+  // at +18 it lit the grass under you and left the torch hand in shadow.
+  if (hasTorch && protag && protag.weaponSlot && protag.weaponSlot.children.length && protag.obj.visible) {
+    _heldBox.setFromObject(protag.weaponSlot.children[0]);
+    if (!_heldBox.isEmpty()) {
+      _heldBox.getCenter(_heldC);
+      playerLight.position.set(_heldC.x, _heldBox.max.y + 3, _heldC.z);
+    } else playerLight.position.set(player.x, heightAt(player.x,player.y) + 70, player.y);
+  } else playerLight.position.set(player.x, heightAt(player.x,player.y) + (hasTorch ? 70 : 18), player.y);
   
   // Placed lights: campfires, forges, torches, hearths, lanterns
   // isLit(), not just "is a light type" — a doused campfire has to go dark.
   const lightSources = placedObjects.filter(o => PLACEABLE_LIGHTS.has(o.type) && isLit(o))
-    .map(o => ({ type: o.type, x: o.x, y: o.y }));
+    .map(o => { const f = placedFlameAt(o); return { type: o.type, x: f.x, y: f.z, fy: f.y }; });
 
   // Cave-mouth arch torches glow too (one light per archway)
-  for (const a of archLightSrcs) lightSources.push({ type: 'arch', x: a.x, y: a.y });
+  for (const a of archLightSrcs) lightSources.push({ type: 'arch', x: a.x, y: a.y, fy: a.fy });
 
   // House interior light sources at night
   if (G.placedHouses) {
@@ -4543,7 +4573,9 @@ function updateEnvironmentCycle(dt) {
         baseY = 6; baseInt = 1.3; colorHex = 0xff7722; dist = TILE * 7;
       }
 
-      pl.position.set(src.x, baseY, src.y);
+      // At the flame, a touch above it so the torch's own head is lit from
+      // inside rather than from below; the house lights keep their room height.
+      pl.position.set(src.x, src.fy != null ? src.fy + 4 : heightAt(src.x, src.y) + baseY, src.y);
       pl.color.setHex(colorHex);
       pl.distance = dist;
 
@@ -5921,10 +5953,11 @@ loadPropGeometry('models/torch.glb', {h:26, baseY:0}, (geo, mat)=>{
   geo.computeBoundingBox();
   animateFire(mat, { uFireTime:_fireU, topY:geo.boundingBox.max.y, sway:1.5 });
   grp.add(m);
-  const flame=new THREE.Mesh(new THREE.SphereGeometry(3.2,7,6),
-    new THREE.MeshBasicMaterial({color:0xffa040, transparent:true, opacity:0.85,
-      blending:THREE.AdditiveBlending, depthWrite:false}));
-  flame.position.set(13,0,0);                  // glow at the head end
+  // The same fire card as the placed torches (render/flame.js) at the head
+  // end. It billboards in WORLD space, so it burns upright whatever the hand
+  // is doing with the shaft.
+  const flame=new THREE.Mesh(makeFlameGeometry(THREE), makeFlameMaterial(THREE, { uTime:_fireU }));
+  flame.position.set(12,0,0); flame.scale.set(8,14,8); flame.frustumCulled=false;
   grp.add(flame);
   weaponTemplates['torch']=grp; refreshHeldProp(true);
 });
@@ -6060,6 +6093,9 @@ function protagProp(kind,tier){
           o.castShadow=true; o.frustumCulled=false;
           const src=o.material;
           o.material=src.clone(); o.material.transparent=true;
+          // ShaderMaterial.clone() deep-copies uniforms, which would freeze a
+          // shared clock at the moment of cloning: hand the live one back.
+          if(src.isShaderMaterial && src.uniforms && src.uniforms.uTime) o.material.uniforms.uTime = src.uniforms.uTime;
           // Material.clone() copies a FIXED LIST of material parameters, and
           // onBeforeCompile / customProgramCacheKey are not on it — three has no
           // way to know a patch exists. So every shader patch on a weapon
@@ -6090,7 +6126,7 @@ function protagProp(kind,tier){
                 4:[0x40e0ff,0x0d5a72], 5:[0xdf80ff,0x4a1a6a]};
     const [col,emis]=TINT[tier]||[0xffffff,0x000000];
     wModel.traverse(o=>{
-      if(o.isMesh && o.material){
+      if(o.isMesh && o.material && o.material.color){   // (the flame card has no colour to tint)
         o.material.color.setHex(col);
         if(o.material.emissive) o.material.emissive.setHex(emis);
       }
@@ -7840,18 +7876,18 @@ const archLightSrcs = [];   // world positions of arch flames → fed to the lig
   const stoneMat  = new THREE.MeshLambertMaterial({color:0x7a7264});
   for (let ty=0; ty<480; ty++) for (let tx=0; tx<MAP_W; tx++) {
     if (map[ty][tx]!==T.CAVE_ENTRANCE) continue;
-    const cx=tx*TILE+TILE/2, cz=ty*TILE+TILE/2;
+    const cx=tx*TILE+TILE/2, cz=ty*TILE+TILE/2, gy=heightAt(cx, cz);   // (were at absolute y: sunk on any hill)
     const pl=new THREE.Mesh(pillarGeo,stoneMat), pr=new THREE.Mesh(pillarGeo,stoneMat);
-    pl.position.set(cx-TILE/2-4, 28, cz); pr.position.set(cx+TILE/2+4, 28, cz);
+    pl.position.set(cx-TILE/2-4, gy+28, cz); pr.position.set(cx+TILE/2+4, gy+28, cz);
     pl.castShadow=pr.castShadow=true;
     const lintel=new THREE.Mesh(lintelGeo,stoneMat);
-    lintel.position.set(cx, 58, cz); lintel.castShadow=true;
+    lintel.position.set(cx, gy+58, cz); lintel.castShadow=true;
     const fl=new THREE.Mesh(flameGeo,hdrGlow(new THREE.MeshBasicMaterial({
       color:0xffa040, transparent:true, blending:THREE.AdditiveBlending, depthWrite:false}), FLAME_GAIN));
     const fr=fl.clone(); fr.material=fl.material.clone();
-    fl.position.set(cx-TILE/2-4, 62, cz); fr.position.set(cx+TILE/2+4, 62, cz);
+    fl.position.set(cx-TILE/2-4, gy+62, cz); fr.position.set(cx+TILE/2+4, gy+62, cz);
     scene.add(pl,pr,lintel,fl,fr); archFlames.push(fl,fr);
-    archLightSrcs.push({x:cx, y:cz});
+    archLightSrcs.push({x:cx, y:cz, fy:gy+62});
   }
 }
 function animateArches(t) {
