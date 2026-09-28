@@ -23,6 +23,46 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-27 (later) — props, horizon slab, water edge, AO, a live MP bug (NOT yet deployed)
+
+- **Street props** (critic PASS after 2 rounds):
+  - Hanging bracket signs with lanterns on the healer, merchant, smith, mage and farrier doors, plus
+    both bank doors. The list is `SHOP_SIGNS` and the painted atlas is `_signTex`; both are in
+    game3d.js.
+  - Barrels and crates at the trades, flower boxes, and benches.
+  - `buildTown` returns `props` as player colliders (`pointColliders`). The test proves none of them
+    blocks a doorway.
+- **C-8 horizon slabs** were two things:
+  - The CAVE walls: 21k windowed boxes range-fogged to fog colour in front of land that only hazes.
+    They now use `RANGE_DISSOLVE` (they dissolve in the last 30% of the range) and get a smooth
+    height swell.
+  - On ULTRA, GTAOPass read the far mountains, near the 12000 far plane, as fully occluded, which
+    made a black band. composer.js now fades AO out between 6000 and 10000 view units.
+  - Also from this item: fort walls and merlons are drawn whole (`fortMesh`, `rebuildForts`) with
+    NO_RANGE_FOG, and so is the town.
+- **C-10 water edge:**
+  - No grass within half a tile of water (`_WET_PROBE`).
+  - The water mask's BLUE channel thins rivers out before the edge ridge (`_ridgeFade`).
+  - world.js `ridgeRagged` lets the ridge band's inner edge wander 0-3 tiles, over natural ground
+    only.
+  - ⚠ **server/world-data.json was rebuilt and must ship with the next server deploy.**
+- **C-11 contact AO:**
+  - Walls are baked into the ground texture.
+  - Walls, trees and stones darken the near grass blades (`_aoOccluders`/`_aoAt`).
+  - Trees are NOT baked into the ground: they are culled at range and their AO stayed behind as
+    crop marks.
+- **Cat idle** holds 0.84 s of the walk clip (`idleAt`), where all four paws are lowest (measured
+  in-engine).
+- **LIVE BUG found and fixed (it is in v0.20.0 on the server now):**
+  - Remote players, horses, your rider, your corpse, NPCs, guards, the contract board and falling
+    trees were all placed at y=0 from the flat-world days, so anyone on a hill appeared sunk to the
+    chest.
+  - All now use `heightAt`, and `npm run test:grounding` pins it.
+- **B9 perf** (desktop, 1280x720):
+  - low: about 5 ms/frame, 180-260 draws, about 500k tris.
+  - ultra: about 11 ms, 590-820 draws, 1.9-3.8M tris.
+  - 80 remotes at night: 11.6 ms.
+
 ### 2026-09-27 — Buildings rebuilt as architecture (NOT yet deployed)
 
 **Critic loop result: PASS at 7.5/10 in round 6** (r0 4 → r3 5.5 → r5 6.5 → r6 7.5). Later
