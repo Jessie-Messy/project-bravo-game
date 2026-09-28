@@ -23,7 +23,32 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
-### 2026-09-28 (later) — owner's short list after v0.21.0 (NOT yet deployed)
+### 2026-09-28 — DEPLOYED v0.22.0 to production (for testing), client only
+
+This is the short-list entry below: water blink, ultra grass AO, cave exteriors, torches, and the minors.
+
+**Backups first** in `/home/ubuntu/bravo-backups/`: `bravo-server-20260928-121655.tgz` and
+`medieval-client-20260928-121655.tgz`.
+
+**Deploy:**
+1. Tests green (10 files).
+2. Platform `npm run build`: every patch anchor matched and it ships v0.22.0.
+3. Output audit:
+   - no extra files;
+   - the origin IP is not in the build;
+   - the built `index.html` is byte-identical to live.
+4. **Client only:** no server, model or world-data changes since v0.21.0.
+
+**Verified:**
+- Through nginx and through Cloudflare, v0.22.0 is served with no-cache, and the new files (`flame.js`,
+  `cave-rock.js`) return 200.
+- A live join from a v0.22.0 page succeeded: the ticket was accepted, the room joined and 48 mobs synced.
+  pm2 logged the join and the leave.
+- ⚠ Verification gotcha: when the Claude browser pane is hidden, `requestAnimationFrame` never fires.
+  The game loop (which calls `maybeStartNet`) does not run, and the page sits at "📴 offline" forever.
+  That is not a bug. Call `initNet` from `import('/games/medieval/js/net.js')` to test the join instead.
+
+### 2026-09-28 (later) — owner's short list after v0.21.0 (deployed as v0.22.0, see above)
 
 - **Water blinking black:** the water sheet was re-windowed in the one-per-frame obstacle stagger. After
   a turn, newly visible river had no water for ~6 frames, and the dark carved channel flashed through.
