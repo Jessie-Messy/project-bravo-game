@@ -340,7 +340,9 @@ on the band's lower half, slope-based rock blend.
       now take the terrain's own min height across their span (-2) + polygonOffset. Skirt snow also per-pixel.
 - [x] G2-4 paths: blurred path field (4/2/1 kernel, diagonal links bridged) inside _warpedTileAt; grass follows
 - [x] G2-7 (interim) cave rock lighter + mossy tops (`cave-moss-v1`); real rock mesh still TODO
-- [ ] G2-1 mountain band reads as a stacked curtain — cross-tier ridges, kill stripe noise
+- [~] G2-1 mountain band: horizontal strata striping replaced with soft fall-line gullies (ridge + skirt).
+      STILL OPEN: the two geometric tiers (foothill band, then the higher range) — needs spurs/ridges in
+      outerGroundAt that run toward the playfield and cross the tier seam
 - [x] G2-dusk haze colour clamped to ~2.5x the surface's own brightness (fogColor = bright horizon at dusk
       lit the hills paler than the sky); range fog keeps the true horizon colour; far range dims to 7% at night
 - [ ] minor: far grass dark specks; near-plane clip in city_street; wall-top streaks

@@ -1727,7 +1727,11 @@ const skirtMesh = (() => {
         {
           float a = _sn(vSkW.xz / 90.0), b = _sn(vSkW.xz / 23.0 + 4.1);
           float strata = 0.5 + 0.5 * sin(vSkW.y * 0.06 + a * 5.0 + b * 1.5);
-          diffuseColor.rgb *= (0.80 + 0.26 * a + 0.10 * b) * (0.88 + 0.16 * strata);
+          // Gullies down the fall line, as on the ridge; strata kept faint.
+          vec3 _gn = normalize( ( vec4( vNormal, 0.0 ) * viewMatrix ).xyz );
+          vec2 _nh = _gn.xz / max( length( _gn.xz ), 1e-3 );
+          float gully = _sn( vec2( dot( vSkW.xz, vec2( -_nh.y, _nh.x ) ) / 70.0, vSkW.y / 180.0 ) ) * 0.7 + a * 0.3;
+          diffuseColor.rgb *= (0.80 + 0.26 * a + 0.10 * b) * (0.95 + 0.05 * strata) * (0.88 + 0.20 * gully);
           // Snow, per pixel: a line broken by two octaves of noise, and only
           // where the slope is gentle enough for it to lie.
           vec3 _wn = normalize( ( vec4( vNormal, 0.0 ) * viewMatrix ).xyz );
@@ -2654,9 +2658,14 @@ terrMesh.material.onBeforeCompile = (shader) => {
         // term darkens the low spots of a finer field.
         float rn1 = _vn(vWXZ / 70.0), rn2 = _vn(vWXZ / 19.0 + 7.3);
         float strata = 0.5 + 0.5 * sin(vWY * 0.085 + rn1 * 5.0 + rn2 * 1.5);
+        // Gullies down the fall line. Height-banded strata alone striped every
+        // face horizontally, and the whole range read as a layer cake (round-2
+        // critic); streaks running downhill are what make a slope read as one.
+        vec2 _nh = vWNrm.xz / max(length(vWNrm.xz), 1e-3);
+        float gully = _vn(vec2(dot(vWXZ, vec2(-_nh.y, _nh.x)) / 48.0, vWY / 140.0)) * 0.7 + _vn(vWXZ / 55.0 + 1.7) * 0.3;
         float crev = smoothstep(0.22, 0.04, _vn(vWXZ / 41.0 + 3.1)) * 0.6;
         vec3 rockCol = vec3(0.40, 0.365, 0.335) * (0.72 + m * 0.30 + rn1 * 0.22)
-                     * (0.86 + strata * 0.20) * (1.0 - crev * 0.35);
+                     * (0.94 + strata * 0.06) * (0.88 + gully * 0.20) * (1.0 - crev * 0.35);
         diffuseColor.rgb = mix(diffuseColor.rgb, rockCol, rockF * 0.82);
 
         // Height tint: hollows stay lush and damp, tops dry out and pale off.
