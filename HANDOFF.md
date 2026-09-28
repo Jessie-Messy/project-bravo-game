@@ -23,6 +23,39 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-27 (evening) — round-2 whole-world critic fixes (NOT yet deployed)
+
+The round-2 critic scored the world 6.5/10 and raised 8 items. All are fixed; #7 is an interim fix.
+
+- **Trunks near-black:**
+  - Cause: the bark albedo. I measured it; shadows weren't the cause.
+  - Fix: lighter bark. Far trunks are tinted `e8d8c0` and have `receiveShadow` off.
+- **Milky haze from high cameras:** fog_fragment's haze distance now subtracts the camera's height
+  above 160 (`_hazeD`).
+- **Dusk inverted aerial perspective:**
+  - fogColor is the sky's horizon, which is bright at dusk.
+  - The haze term now mixes toward fogColor clamped to about 2.5x the surface's own luminance.
+  - The range fog still uses the true horizon colour.
+  - farRange dims to 7% at night.
+- **Paths as tile staircases:** `_warpedTileAt` reads a blurred path field near paths
+  (`_buildPathField`: 4/2/1 kernel, diagonal-only links bridged). Grass placement uses the same
+  lookup.
+- **Path up the ridge face:** world.js `_RAG_TAKES` now includes PATH. ⚠ server/world-data.json was
+  rebuilt.
+- **"Snow triangles":** these were SKY showing through a crack between the terrain edge and the
+  skirt.
+  - `outerGroundAt` clamps half a tile inside the map, and the 3-tile skirt spanned gorge dips.
+  - Skirt vertices ON a mesh edge now take the terrain's own minimum height across their span, minus
+    2, with a polygonOffset on the skirt.
+  - Skirt snow is now per pixel.
+- **Mountain "curtain":**
+  - Strata stripes replaced by fall-line gullies (terrain + skirt shaders).
+  - The shared `_edgeSpur(along)` lifts the ridge band (`ridgeLift`, outer edges only, not the
+    separators) and the skirt (`outerGroundAt`) together.
+- **Boulders:** jittered off the tile centre, sizes 0.6–1.35, lighter tint.
+- **Cave exteriors (interim):** lighter rock plus a moss tint on the up-facing tops. A real rock mesh
+  is still TODO.
+
 ### 2026-09-27 (later) — props, horizon slab, water edge, AO, a live MP bug (NOT yet deployed)
 
 - **Street props** (critic PASS after 2 rounds):
