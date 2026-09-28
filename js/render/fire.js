@@ -27,7 +27,10 @@
  * @param topY            local-space Y of the top of the model, for the taper
  * @param sway            lateral travel at the flame tip, in local units
  */
-export function animateFire(material, { uFireTime, topY = 36, sway = 1.0 } = {}) {
+//   hide  — collapse the model's own flame away entirely: the torch and the
+//           campfire burn with the flame card (render/flame.js) instead, and
+//           two flames on one torch fought each other (torch critic r1).
+export function animateFire(material, { uFireTime, topY = 36, sway = 1.0, hide = false } = {}) {
   if (!material || !material.emissiveMap) return material;
 
   const uFireTopY = { value: topY };
@@ -75,6 +78,10 @@ export function animateFire(material, { uFireTime, topY = 36, sway = 1.0 } = {})
           transformed.x += ( curl + lean ) * uFireSway * w;
           transformed.z += ( sin( t * 7.3 + transformed.z * 1.1 ) * 0.7 + lean * 0.6 ) * uFireSway * w;
           transformed.y += ( 0.55 + 0.45 * sin( t * 8.3 + ph ) ) * uFireSway * 0.9 * w;
+          // (by height: the emissive map is not a clean mask on these models —
+          // the outer flame layer barely glows in it and was left behind as
+          // dark petals inside the new flame)
+          ${hide ? 'transformed = mix( transformed, vec3( 0.0, uFireTopY * 0.6, 0.0 ), max( step( 0.5, flame ), step( uFireTopY * 0.62, transformed.y ) ) );' : ''}
 
         }`);
 
@@ -87,7 +94,7 @@ export function animateFire(material, { uFireTime, topY = 36, sway = 1.0 } = {})
 
   // Two materials with the same parameters but different patches must not share
   // a compiled program.
-  material.customProgramCacheKey = () => 'fire-anim-v1';
+  material.customProgramCacheKey = () => hide ? 'fire-anim-v1-hide' : 'fire-anim-v1';
   material.needsUpdate = true;
   return material;
 }

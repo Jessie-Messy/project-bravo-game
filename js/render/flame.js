@@ -1,27 +1,44 @@
-// flame.js — a real-looking fire for torches, campfires and lanterns.
+// flame.js — the fire on torches, campfires and lanterns.
 //
-// The flames were additive spheres: an orange ball on a stick, the same from
-// every side, and still, because moving the ball made the torch "breathe". The
-// owner's verdict on v0.21.0 torches: "the animation sucks and the light
-// source sucks, it looks wonky".
+// The flames were additive spheres: an orange ball on a stick. The owner's
+// verdict on the v0.21.0 torches: "the animation sucks and the light source
+// sucks, it looks wonky". Two pieces replace it, both camera-facing cards,
+// both one instanced draw for the whole world:
 //
-// This is a camera-facing card drawn with a procedural flame: a teardrop body
-// whose outline is eaten away by noise scrolling UP (so tongues lick upward,
-// break off and vanish), a white-yellow core, orange body, deep red tips, and a
-// few embers rising above it. The card faces the camera about the vertical
-// axis only, so a flame stays upright however you look at it, and its base is
-// pinned while its tip is free.
+//  FLAME — a teardrop eroded by noise that scrolls UP and is stretched tall,
+//          so tongues rise, tear off and vanish rather than boiling in place.
+//          The root is pinned; only the upper part wanders. Coloured in four
+//          hard bands (white core low down, yellow, orange, red tips) to sit
+//          with the flat-shaded art — a soft gradient read as a candle glow.
+//  GLOW  — a faint round halo around the flame whose brightness flickers with
+//          the SAME formula as the PointLight (flameFlicker in game3d.js), so
+//          the flame and the light it throws read as one source; and a few
+//          embers that rise off the tip, drift and die.
 //
-// Brightness does NOT pulse (that read as a dimmer, see fire.js); what moves is
-// the SHAPE. The light it casts flickers separately (flameFlicker in game3d).
-//
-// Instanced: one draw for every placed flame in the world. Per-instance phase
-// comes from the instance's position, so neighbours never move in step.
+// Per-instance phase comes from the instance's position, so neighbours never
+// move in step. The flame shape never pulses in brightness (that read as a
+// dimmer); the glow does, because a real flame's light does.
 
-const VERT = /* glsl */`
+const COMMON = /* glsl */`
+  float fh(vec2 p){ vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
+  float fn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+    return mix(mix(fh(i), fh(i+vec2(1,0)), f.x), mix(fh(i+vec2(0,1)), fh(i+vec2(1,1)), f.x), f.y); }
+  float fbm(vec2 p){ return fn(p) * 0.55 + fn(p * 2.1 + 3.7) * 0.30 + fn(p * 4.3 + 9.1) * 0.15; }
+  // The PointLight's flicker (game3d.js flameFlicker), in GLSL.
+  float flicker(float t, float ph){
+    float b = 0.80 + 0.11 * sin(t * 7.3 + ph) + 0.07 * sin(t * 11.9 + ph * 1.7) + 0.05 * sin(t * 19.1 + ph * 0.6);
+    float g = sin(t * 1.7 + ph * 2.3) * sin(t * 0.9 + ph);
+    return b * (1.0 - 0.34 * (g > 0.62 ? (g - 0.62) / 0.38 : 0.0));
+  }
+`;
+
+// Billboard: the card's local x runs along the camera's right, y up. `cyl`
+// keeps it upright (the flame); otherwise it faces the camera fully (the glow).
+const VERT = (cyl) => /* glsl */`
   uniform float uTime;
   varying vec2 vUv;
   varying float vPh;
+  varying float vAspect;
   #include <common>
   #include <fog_pars_vertex>
   void main() {
@@ -35,70 +52,121 @@ const VERT = /* glsl */`
     #endif
     vec3 wc = (modelMatrix * vec4(c, 1.0)).xyz;
     vPh = fract(dot(wc.xz, vec2(0.0131, 0.0217))) * 40.0;
-    // cylindrical billboard: face the camera about Y, stay upright
+    vAspect = sy / max(sx, 1e-3);
+    ${cyl ? `
     vec3 toCam = cameraPosition - wc; toCam.y = 0.0;
     vec3 right = normalize(vec3(toCam.z, 0.0, -toCam.x) + 1e-5);
-    // a gentle sway of the whole tip; the base stays put
-    float lean = (sin(uTime * 1.7 + vPh) * 0.6 + sin(uTime * 3.1 + vPh * 1.3) * 0.4) * uv.y * uv.y * 0.18;
-    vec3 wp = wc + right * ((position.x + lean) * sx) + vec3(0.0, 1.0, 0.0) * (position.y * sy);
-    vec4 mv = viewMatrix * vec4(wp, 1.0);
-    gl_Position = projectionMatrix * mv;
+    vec3 up = vec3(0.0, 1.0, 0.0);` : `
+    vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+    vec3 up    = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);`}
+    vec3 wp = wc + right * (position.x * sx) + up * (position.y * sy);
+    vec4 mvPosition = viewMatrix * vec4(wp, 1.0);   // (the name fog_vertex reads)
+    gl_Position = projectionMatrix * mvPosition;
     #include <fog_vertex>
   }
 `;
 
-const FRAG = /* glsl */`
+const FLAME_FRAG = /* glsl */`
   uniform float uTime;
   uniform float uGain;
   varying vec2 vUv;
   varying float vPh;
+  varying float vAspect;
   #include <common>
   #include <fog_pars_fragment>
-  float fh(vec2 p){ vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
-  float fn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
-    return mix(mix(fh(i), fh(i+vec2(1,0)), f.x), mix(fh(i+vec2(0,1)), fh(i+vec2(1,1)), f.x), f.y); }
-  float fbm(vec2 p){ return fn(p) * 0.55 + fn(p * 2.1 + 3.7) * 0.30 + fn(p * 4.3 + 9.1) * 0.15; }
+  ${COMMON}
   void main() {
-    // uv: x across -0.5..0.5 (card is 1 wide), y 0 at the root .. 1 at the top
+    // x across -0.5..0.5, y 0 at the root .. 1 at the tip
     vec2 p = vec2(vUv.x - 0.5, vUv.y);
     float t = uTime + vPh;
-    // noise scrolling upward, faster higher up: tongues rise and tear away
-    float n = fbm(vec2(p.x * 3.2, p.y * 2.2 - t * 2.6));
-    float n2 = fbm(vec2(p.x * 6.0 + 4.0, p.y * 4.0 - t * 4.1));
-    // wobble the column sideways more toward the tip
-    float wob = (n2 - 0.5) * 0.22 * p.y;
-    float x = p.x + wob;
-    // teardrop: wide at ~0.25, pinched to a point at the top, rounded base
-    float halfW = 0.34 * smoothstep(0.0, 0.18, p.y) * (1.0 - smoothstep(0.25, 1.0, p.y) * 0.92);
-    float body = 1.0 - smoothstep(halfW * 0.55, halfW, abs(x));
-    // the outline is eaten away by the noise, more so at the top
-    float erode = mix(0.18, 0.78, smoothstep(0.1, 0.95, p.y));
-    float f = body * smoothstep(erode - 0.18, erode + 0.12, n + (1.0 - p.y) * 0.35);
-    if (f < 0.01) discard;
-    // colour by "heat": the core (low, central) is near white, then yellow,
-    // orange and deep red at the ragged tips
-    float heat = clamp(f * (1.15 - p.y * 0.9) * (1.0 - abs(x) / max(halfW, 1e-3) * 0.6), 0.0, 1.0);
-    vec3 col = mix(vec3(0.55, 0.05, 0.0), vec3(1.0, 0.32, 0.03), smoothstep(0.05, 0.40, heat));
-    col = mix(col, vec3(1.0, 0.72, 0.22), smoothstep(0.40, 0.70, heat));
-    col = mix(col, vec3(1.0, 0.95, 0.75), smoothstep(0.72, 0.95, heat));
-    gl_FragColor = vec4(col * f * uGain, 1.0);
+    float free = smoothstep(0.08, 0.30, p.y);            // the root stays put
+    // the whole column wanders a little, more toward the tip
+    p.x += (fn(vec2(p.y * 3.0 - t * 2.0, vPh)) - 0.5) * 0.12 * p.y * free;
+    // noise stretched tall and scrolling up: tongues rise and tear away
+    float n  = fbm(vec2(p.x * 4.0, p.y * 1.2 - t * 3.4));
+    float n2 = fbm(vec2(p.x * 7.0 + 4.0, p.y * 2.4 - t * 5.2));
+    float x = p.x + (n2 - 0.5) * 0.20 * p.y * free;
+    // teardrop: widest low down, pinched to a point at the top, rounded base
+    float halfW = 0.33 * smoothstep(0.0, 0.14, p.y) * (1.0 - smoothstep(0.18, 1.0, p.y) * 0.95);
+    float body = 1.0 - smoothstep(halfW * 0.6, halfW, abs(x));
+    // the outline eats in from the top
+    // (hard: a soft erosion left a smooth bulb; the tongues ARE the look)
+    float erode = mix(0.22, 0.92, smoothstep(0.05, 0.90, p.y)) * mix(0.35, 1.0, free);
+    float f = body * smoothstep(erode - 0.06, erode + 0.05, n * 1.15 + (1.0 - p.y) * 0.22);
+    if (f < 0.02) discard;
+    // heat falls off with height and toward the edge; tips end red
+    float heat = clamp(f * (1.1 - p.y * 1.15) * (1.0 - abs(x) / max(halfW, 1e-3) * 0.55), 0.0, 1.0);
+    // four hard bands, like the flat-shaded art around it
+    const float w = 0.03;
+    vec3 col = vec3(0.80, 0.12, 0.02);
+    col = mix(col, vec3(1.00, 0.42, 0.06), smoothstep(0.25 - w, 0.25 + w, heat));
+    col = mix(col, vec3(1.00, 0.78, 0.30), smoothstep(0.50 - w, 0.50 + w, heat));
+    col = mix(col, vec3(1.00, 0.95, 0.80), smoothstep(0.75 - w, 0.75 + w, heat) * (1.0 - step(0.35, p.y)));
+    gl_FragColor = vec4(col * uGain * smoothstep(0.02, 0.12, f), 1.0);
     #include <fog_fragment>
   }
 `;
 
-// The card: 1 wide, 1 tall, root at y = 0 — scale sets the flame's size.
-export function makeFlameMaterial(THREE, { uTime, gain = 2.2 } = {}) {
+const GLOW_FRAG = /* glsl */`
+  uniform float uTime;
+  uniform float uGlow;
+  varying vec2 vUv;
+  varying float vPh;
+  varying float vAspect;
+  #include <common>
+  #include <fog_pars_fragment>
+  ${COMMON}
+  void main() {
+    // the card is centred on the flame; uv (0.5,0.5) is the halo's centre
+    vec2 q = (vUv - 0.5) * vec2(1.0, vAspect);          // round, whatever the card's shape
+    float t = uTime + vPh;
+    float r = length(q) * 2.0;
+    float halo = r < 1.0 ? (1.0 - r) * (1.0 - r) : 0.0;
+    vec3 col = vec3(1.0, 0.45, 0.12) * halo * 0.18 * flicker(t, vPh * 0.37) * uGlow;
+    // embers: three sparks lifting off the tip, drifting, cooling from yellow to red
+    for (int i = 0; i < 3; i++) {
+      float fi = float(i);
+      float k = t / 1.2 + fi * 0.37 + fh(vec2(vPh, fi)) * 0.5;
+      float life = fract(k), seed = floor(k) + fi * 7.1 + vPh;
+      vec2 ep = vec2((fh(vec2(seed, 1.0)) - 0.5) * 0.10 + sin(life * 6.0 + seed) * 0.05 * life,
+                     (0.12 + life * 0.62 - 0.5) * vAspect);
+      float d = length(q - ep);
+      float e = smoothstep(0.022, 0.0, d) * (1.0 - life) * step(0.15, fh(vec2(seed, 3.0)));
+      col += mix(vec3(1.0, 0.85, 0.35), vec3(0.9, 0.2, 0.03), life) * e * 1.6;
+    }
+    if (max(col.r, max(col.g, col.b)) < 0.002) discard;
+    gl_FragColor = vec4(col, 1.0);
+    #include <fog_fragment>
+  }
+`;
+
+function mk(THREE, vert, frag, uTime, extra) {
   const m = new THREE.ShaderMaterial({
-    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uGain: { value: gain } }]),
-    vertexShader: VERT, fragmentShader: FRAG,
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, extra]),
+    vertexShader: vert, fragmentShader: frag,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: true,
+    // Double-sided: the card is built facing the camera in the shader, but a
+    // mirrored parent (the character's hand bones) makes three flip the
+    // winding, and the held torch's flame was silently back-face culled.
+    side: THREE.DoubleSide,
   });
   m.uniforms.uTime = uTime;               // shared clock object, not a copy
   m.defines = { NO_RANGE_FOG: '' };
   return m;
 }
+export function makeFlameMaterial(THREE, { uTime, gain = 1.6 } = {}) {
+  return mk(THREE, VERT(true), FLAME_FRAG, uTime, { uGain: { value: gain } });
+}
+export function makeGlowMaterial(THREE, { uTime, glow = 1.0 } = {}) {
+  return mk(THREE, VERT(false), GLOW_FRAG, uTime, { uGlow: { value: glow } });
+}
+// The flame card: 1 wide, 1 tall, root at y = 0 — scale sets the flame's size.
 export function makeFlameGeometry(THREE) {
   const g = new THREE.PlaneGeometry(1, 1, 1, 4);
   g.translate(0, 0.5, 0);
   return g;
+}
+// The glow card: 1 x 1, centred — scale sets the halo's size.
+export function makeGlowGeometry(THREE) {
+  return new THREE.PlaneGeometry(1, 1);
 }

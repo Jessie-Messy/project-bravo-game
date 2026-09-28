@@ -8,7 +8,7 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildTown } from './render/buildings.js';
 import { buildCaveRock } from './render/cave-rock.js';
-import { makeFlameMaterial, makeFlameGeometry } from './render/flame.js';
+import { makeFlameMaterial, makeFlameGeometry, makeGlowMaterial, makeGlowGeometry } from './render/flame.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave, netCallGuards,
   netHousePlace, netHouseUpdate, netHouseRemove,
   netDropAdd, netDropTake, netCorpseFill, netCorpseTake, netCorpseHarvest, netTradeReq, netTradeAccept, netTradeOffer, netTradeConfirm, netTradeCancel,
@@ -3080,6 +3080,15 @@ const placedLanternMesh = makeMesh(new THREE.CylinderGeometry(2.5, 2.5, 8, 6), n
 const _flameClock = { value: 0 };
 const placedFlameMesh = makeMesh(makeFlameGeometry(THREE), makeFlameMaterial(THREE, { uTime: _flameClock }), 3000);
 placedFlameMesh.castShadow = false; placedFlameMesh.receiveShadow = false;
+// The halo and embers around each flame (render/flame.js GLOW): one draw.
+const placedGlowMesh = makeMesh(makeGlowGeometry(THREE), makeGlowMaterial(THREE, { uTime: _flameClock }), 3000);
+placedGlowMesh.castShadow = false; placedGlowMesh.receiveShadow = false;
+// Flame card size per unit of flame scale: width, height, and how far the
+// card's root sits below the flame point (into the torch head, so the base is
+// anchored). A lantern's flame lives inside its glass: no card, just the glow.
+const FLAME_CARD = { torch:[14,22,7], campfire:[9,14,4], lantern:[0,7,3] };
+// Wall torches read as candles against a 168-tall wall at floor-torch size.
+const WALL_TORCH_SCALE = 1.3;
 
 // ── HDR glow ──────────────────────────────────────────────────────
 // A colour like 0xffa040 converts to roughly (1.0, 0.36, 0.05) in linear, so
@@ -3193,7 +3202,7 @@ const PLACEABLES = {
   secure_chest: { label:'Secure Chest', emoji:'🧰', invKey:'secure_chest', mesh:()=>secureChestMesh,   y:6,  scale:3.0, flame:null,         light:false, surfaces:['house'] },
   // h28 → h45 ≈ 0.65m. Held torch was tuned separately (WEAPON_ADJUST); this is
   // the PLACED mesh, and it's what mounts on walls — 45u against a 168u wall.
-  torch:        { label:'Torch',        emoji:'🔥', invKey:'torch',        mesh:()=>torchMesh,         y:14, scale:1.6, flame:{y:30,s:1.0}, light:true,  surfaces:['ground','wall'], wallY:WALL_H*0.62,
+  torch:        { label:'Torch',        emoji:'🔥', invKey:'torch',        mesh:()=>torchMesh,         y:14, scale:1.9, flame:{y:30,s:1.0}, light:true,  surfaces:['ground','wall'], wallY:WALL_H*0.62,
                   burn:{ fuelSec:DAY_CYCLE_SEC, spent:'consume' } },
   // 24×20×24 → 84×70×84 ≈ 1.2m across, 1m tall. A proper stone hearth.
   hearth:       { label:'Hearth',       emoji:'🔥', invKey:'hearth',       mesh:()=>hearthMesh,        y:10, scale:3.5, flame:null,         light:true,  surfaces:['ground'] },
@@ -3243,8 +3252,10 @@ function placedFlameAt(o){
   if(!def) return { x:o.x, y:gy + 12, z:o.y };
   const s = def.scale, fy = def.flame ? def.flame.y : def.y * 1.4;
   if(o.face && FACE_DIR[o.face]){
-    const [ox, oy] = FACE_DIR[o.face], fl = (fy - def.y) * s;
-    return { x:o.x + ox*fl*Math.sin(WALL_TILT), y:gy + o.mountY + fl*Math.cos(WALL_TILT), z:o.y + oy*fl*Math.sin(WALL_TILT) };
+    const ws = s * (o.type==='torch' ? WALL_TORCH_SCALE : 1);
+    const [ox, oy] = FACE_DIR[o.face], fl = (fy - def.y) * ws;
+    // + 10 out from the face: the wall gets a clear hotspot, not an even wash
+    return { x:o.x + ox*(fl*Math.sin(WALL_TILT) + 10), y:gy + o.mountY + fl*Math.cos(WALL_TILT), z:o.y + oy*(fl*Math.sin(WALL_TILT) + 10) };
   }
   return { x:o.x, y:gy + fy*s, z:o.y };
 }
@@ -4075,10 +4086,18 @@ function rebuildPlacedObjects() {
   let nFlame=0;
   const capFlame=placedFlameMesh.instanceMatrix.count;
   // (x,y,z) is the flame's centre; the card's root sits a little below it.
-  const addFlame=(x,y,z,s)=>{
+  let nGlow=0;
+  const addFlame=(x,y,z,s,type)=>{
     if(nFlame>=capFlame) return;
-    _pos.set(x,y-4*s,z); _sc1.set(10*s,17*s,10*s); _m4.compose(_pos,_qId,_sc1);
-    placedFlameMesh.setMatrixAt(nFlame++,_m4);
+    const [cw,ch,cr]=FLAME_CARD[type]||[10,17,4];
+    const W=Math.max(cw,6)*s, H=ch*s;
+    if(cw>0){
+      _pos.set(x,y-cr*s,z); _sc1.set(cw*s,H,cw*s); _m4.compose(_pos,_qId,_sc1);
+      placedFlameMesh.setMatrixAt(nFlame++,_m4);
+    }
+    // glow card: 2.4x the flame's width, 2.6x its height, centred halfway up
+    _pos.set(x,y-cr*s+0.5*H,z); _sc1.set(2.4*W,2.6*H,1); _m4.compose(_pos,_qId,_sc1);
+    placedGlowMesh.setMatrixAt(nGlow++,_m4);
   };
   _placedCount.clear();
   const b=_obsBounds();
@@ -4099,6 +4118,8 @@ function rebuildPlacedObjects() {
     if(o.face && FACE_DIR[o.face]){
       // Wall mount: sit at the face height and lean out of the stone.
       const [ox,oy]=FACE_DIR[o.face];
+      const s = def.scale * (o.type==='torch' ? WALL_TORCH_SCALE : 1);
+      if(fscale>0 && o.type==='torch') fscale *= WALL_TORCH_SCALE;
       _eul.set(oy*WALL_TILT, 0, -ox*WALL_TILT);
       _q1.setFromEuler(_eul);
       const wGY = heightAt(o.x, o.y);
@@ -4108,7 +4129,7 @@ function rebuildPlacedObjects() {
       if(fscale>0){
         // Carry the flame along the tilted axis so it stays at the torch's head.
         const fl=(def.flame.y-def.y)*s, si=Math.sin(WALL_TILT), co=Math.cos(WALL_TILT);
-        addFlame(o.x+ox*fl*si, wGY+o.mountY+fl*co, o.y+oy*fl*si, fscale);
+        addFlame(o.x+ox*fl*si, wGY+o.mountY+fl*co, o.y+oy*fl*si, fscale, o.type);
       }
       continue;
     }
@@ -4119,12 +4140,12 @@ function rebuildPlacedObjects() {
     _pos.set(o.x, oGY + def.y*s, o.y); _sc1.set(s,s,s);
     _m4.compose(_pos,_qId,_sc1); mesh.setMatrixAt(n,_m4);
     _placedCount.set(mesh, n+1);
-    if(fscale>0) addFlame(o.x, oGY + def.flame.y*s, o.y, fscale);
+    if(fscale>0) addFlame(o.x, oGY + def.flame.y*s, o.y, fscale, o.type);
   }
   // Every registry mesh must be marked, including ones that drew nothing this
   // pass — otherwise a mesh keeps last window's count and ghosts stay on screen.
   for(const k in PLACEABLES){ const m=PLACEABLES[k].mesh(); markInst(m, _placedCount.get(m)||0); }
-  markInst(placedFlameMesh,nFlame);
+  markInst(placedFlameMesh,nFlame); markInst(placedGlowMesh,nGlow);
   rebuildWorldChests();
 }
 // World treasure chests are map features, not placed objects — drawn straight
@@ -4483,6 +4504,7 @@ function updateEnvironmentCycle(dt) {
   const hasTorch = player.weapon === 'torch' && (inv.torch || 0) > 0;
   const hasLantern = player.weapon === 'lantern' && (inv.lantern || 0) > 0;
 
+  playerLight.decay = 0;   // only the held torch falls off physically (set below)
   if (player.race === 'Vampire' && (inCave || inHouse || nightFactor > 0.01)) {
     // Vampire Night Vision: Sees in the dark with a glowing crimson/violet aura
     playerLight.intensity = 0.85;
@@ -4501,9 +4523,9 @@ function updateEnvironmentCycle(dt) {
     // hand — the light you spend the whole night looking at — was the only one
     // still flickering at the frame rate, which is to say not visibly at all.
     const flicker = flameFlicker(_fireU.value, 11.7);
-    playerLight.intensity = 0.9 * flicker;
-    playerLight.color.setHex(0xffaa44);
-    playerLight.distance = TILE * 9;
+    playerLight.intensity = 850 * flicker;   // the light you carry all night: brighter than a post torch
+    playerLight.color.setHex(0xff8a3a);
+    playerLight.distance = TILE * 6; playerLight.decay = 1.5;
   } else if (inCave || inHouse || nightFactor > 0.01) {
     // Dim fallback so players aren't completely blinded but need a light source
     playerLight.intensity = 0.35;
@@ -4515,11 +4537,9 @@ function updateEnvironmentCycle(dt) {
   // A held torch lights from its FLAME, up in your hand, not from your knees:
   // at +18 it lit the grass under you and left the torch hand in shadow.
   if (hasTorch && protag && protag.weaponSlot && protag.weaponSlot.children.length && protag.obj.visible) {
-    _heldBox.setFromObject(protag.weaponSlot.children[0]);
-    if (!_heldBox.isEmpty()) {
-      _heldBox.getCenter(_heldC);
-      playerLight.position.set(_heldC.x, _heldBox.max.y + 3, _heldC.z);
-    } else playerLight.position.set(player.x, heightAt(player.x,player.y) + 70, player.y);
+    let fm = null; protag.weaponSlot.children[0].traverse(o => { if(!fm && o.userData.heldFlame) fm = o; });
+    if (fm) { fm.getWorldPosition(_heldC); playerLight.position.set(_heldC.x, _heldC.y + 9, _heldC.z); }
+    else playerLight.position.set(player.x, heightAt(player.x,player.y) + 70, player.y);
   } else playerLight.position.set(player.x, heightAt(player.x,player.y) + (hasTorch ? 70 : 18), player.y);
   
   // Placed lights: campfires, forges, torches, hearths, lanterns
@@ -4559,10 +4579,15 @@ function updateEnvironmentCycle(dt) {
       let colorHex = 0xff7722;
       let dist = TILE * 6;
 
+      // Torches and arch flames fall off physically (decay 1.5) instead of a
+      // flat decay-0 floodlight: a hotspot at the base, soft edge, and pools
+      // that don't merge into one even field (torch critic r1). 380 matches the
+      // old 1.1 at one tile and is ~2.8x brighter at half a tile.
+      let decay = 0;
       if (type === 'arch') {
-        baseY = 62; baseInt = 1.0; colorHex = 0xffa040; dist = TILE * 7;
+        baseY = 62; baseInt = 520; colorHex = 0xff8a3a; dist = TILE * 6; decay = 1.5;
       } else if (isTorch) {
-        baseY = 28; baseInt = 1.1; colorHex = 0xff9944; dist = TILE * 7;
+        baseY = 28; baseInt = 520; colorHex = 0xff8a3a; dist = TILE * 6; decay = 1.5;
       } else if (isHearth) {
         baseY = 14; baseInt = 1.4; colorHex = 0xff6622; dist = TILE * 8;
       } else if (isLantern) {
@@ -4577,7 +4602,13 @@ function updateEnvironmentCycle(dt) {
       // inside rather than from below; the house lights keep their room height.
       pl.position.set(src.x, src.fy != null ? src.fy + 4 : heightAt(src.x, src.y) + baseY, src.y);
       pl.color.setHex(colorHex);
-      pl.distance = dist;
+      pl.distance = dist; pl.decay = decay;
+      if (decay > 0) {
+        // the flame moves, so the light does: shading on the grass swims
+        const ph = src.x * 0.013 + src.y * 0.021, t = _fireU.value;
+        pl.position.x += Math.sin(t * 9.1 + ph) * 1.5; pl.position.z += Math.sin(t * 7.7 + ph * 1.3) * 1.5;
+        pl.position.y += Math.sin(t * 11.3 + ph * 0.7);
+      }
 
       if (isTorch || isHearth || type === 'campfire') {
         // Was `0.85 + Math.random() * 0.3`, re-rolled every frame — see
@@ -5733,7 +5764,7 @@ function swapPlacedArt(inst, file, opts){
     // one model and wrongly on the next.
     if(opts.fire){
       geo.computeBoundingBox();
-      animateFire(mat, { uFireTime:_fireU, topY:geo.boundingBox.max.y, sway:opts.fire.sway });
+      animateFire(mat, { uFireTime:_fireU, topY:geo.boundingBox.max.y, sway:opts.fire.sway, hide:!!opts.fire.hide });
     }
   });
 }
@@ -5748,8 +5779,8 @@ function swapPlacedArt(inst, file, opts){
 // frame a second, where no amount of motion looks like anything. These sit
 // between the original timid values and that unverified bump — a flame that
 // licks rather than one that waves. One number each if it wants more or less.
-swapPlacedArt(campfireMesh,      'models/campfire.glb', {w:36, baseY:-3,  fire:{sway:2.0}});
-swapPlacedArt(torchMesh,         'models/torch.glb',    {h:36, baseY:-14, fire:{sway:1.6}});
+swapPlacedArt(campfireMesh,      'models/campfire.glb', {w:36, baseY:-3,  fire:{sway:2.0, hide:true}});
+swapPlacedArt(torchMesh,         'models/torch.glb',    {h:36, baseY:-14, fire:{sway:1.6, hide:true}});
 swapPlacedArt(placedLanternMesh, 'models/lantern.glb',  {h:18, baseY:-4,  fire:{sway:0.45}});
 
 // Shared template cache for armor pieces / quiver (cloned per attachment)
@@ -5951,13 +5982,18 @@ loadPropGeometry('models/torch.glb', {h:26, baseY:0}, (geo, mat)=>{
   // stays correct through the -90 degrees of Z above and through whatever the
   // hand bone does with it afterwards.
   geo.computeBoundingBox();
-  animateFire(mat, { uFireTime:_fireU, topY:geo.boundingBox.max.y, sway:1.5 });
+  animateFire(mat, { uFireTime:_fireU, topY:geo.boundingBox.max.y, sway:1.5, hide:true });
   grp.add(m);
   // The same fire card as the placed torches (render/flame.js) at the head
   // end. It billboards in WORLD space, so it burns upright whatever the hand
   // is doing with the shaft.
   const flame=new THREE.Mesh(makeFlameGeometry(THREE), makeFlameMaterial(THREE, { uTime:_fireU }));
-  flame.position.set(12,0,0); flame.scale.set(8,14,8); flame.frustumCulled=false;
+  flame.position.set(10,0,0); flame.scale.set(11,18,11); flame.frustumCulled=false;
+  flame.userData.heldFlame=true;
+  // centred half the flame's height above its root: 0.19 of a 2.6x-tall card
+  const glow=new THREE.Mesh(makeGlowGeometry(THREE).translate(0,0.19,0), makeGlowMaterial(THREE, { uTime:_fireU }));
+  glow.position.set(10,0,0);
+  glow.scale.set(2.4*11, 2.6*18, 1); glow.frustumCulled=false; grp.add(glow);
   grp.add(flame);
   weaponTemplates['torch']=grp; refreshHeldProp(true);
 });
