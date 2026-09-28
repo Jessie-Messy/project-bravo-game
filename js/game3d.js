@@ -1463,6 +1463,22 @@ function _rn(x, y){ const xi = Math.floor(x), yi = Math.floor(y); let fx = x - x
   return a + (b-a)*fx + (c-a)*fy + (a-b-c+d)*fx*fy; }
 function _rr(x, y){ const n = 1 - Math.abs(_rn(x, y)*2 - 1); return n*n; }
 const _sstep = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t*t*(3 - 2*t); };
+// Spurs: ridges that run straight out across the edge band and on up into the
+// outer range, keyed to the position ALONG the edge so a spur keeps its line.
+// The edge band's crest ran at an even height in front of the skirt, and the
+// two read as stacked tiers — a curtain, not a range (round-2 critic). Shared
+// by ridgeLift (the band) and outerGroundAt (the skirt) so a spur is one ridge.
+function _edgeSpur(along){ const s = _rr(along / 7.5 + 17.3, 4.1); return s * s; }
+// For a ridge tile: how far in from the world's OUTER boundary, and the
+// along-edge coordinate. null for the separators between regions.
+function _outerEdgeOf(tx, ty){
+  let x0, x1, y0, y1;
+  if(ty < DUNGEON_Y0 - 10){ x0 = 0; x1 = MAP_W - 1; y0 = 0; y1 = DUNGEON_Y0 - 11; }
+  else if(ty >= COAST_Y0){ x0 = COAST_X0; x1 = COAST_X0 + COAST_W - 1; y0 = -1e9; y1 = COAST_Y0 + COAST_H - 1; }
+  else return null;
+  const dx = Math.min(tx - x0, x1 - tx), dy = Math.min(ty - y0, y1 - ty);
+  return dx <= dy ? { db: dx, along: ty } : { db: dy, along: tx };
+}
 function ridgeLift(tx, ty){
   const i = ty*MAP_W + tx;
   if(map[ty][tx] === T.RIDGE){
@@ -1480,7 +1496,9 @@ function ridgeLift(tx, ty){
     // A river that reaches the rock cuts a gorge instead of running flat into
     // a wall (critic B8-7): the lift sags toward the water it would have met.
     const gorge = 0.18 + 0.82 * _sstep(1, 8, _ridgeDist.dWater[i]);
-    return (hr * (1 - Math.exp(-(d - 0.4) / 2.3)) + crag
+    const oe = sep === 1 ? _outerEdgeOf(tx, ty) : null;
+    const spur = oe && oe.db < 12 ? 320 * _edgeSpur(oe.along) * _sstep(0.5, 4, d) : 0;
+    return (hr * (1 - Math.exp(-(d - 0.4) / 2.3)) + crag + spur
          + deep * (280*_rr(tx/7.5, ty/7.5) + 160*_rn(tx/23, ty/23))) * gorge;
   }
   const d = _ridgeDist.dOut[i];
@@ -1611,9 +1629,16 @@ function outerGroundAt(X, Y){
   const base = heightAt(cx * TILE, cy * TILE);
   const de = Math.hypot(X - cx, Y - cy);
   if(de === 0) return base;
+  // Spurs: ridges that run straight out from the edge, climbing from the
+  // foothills into the high range. Without them the skirt was two flat tiers —
+  // a foothill band, then the peaks behind it — and read as a stacked curtain
+  // (round-2 critic). Keyed to the position ALONG the edge, so each spur keeps
+  // its line as it runs outward.
+  const spur = _edgeSpur(Math.abs(X - cx) >= Math.abs(Y - cy) ? Y : X);
   return base + 330 * (1 - Math.exp(-de / 6))
        + _sstep(2, 26, de) * (560 * _rr(X/13, Y/13) + 320 * _rn(X/37 + 2, Y/37 + 9))
-       + _sstep(1, 10, de) * 150 * _rr(X/5 + 3, Y/5 + 1);
+       + _sstep(1, 10, de) * 150 * _rr(X/5 + 3, Y/5 + 1)
+       + _sstep(1, 7, de) * (1 - _sstep(20, 34, de)) * 420 * spur * Math.pow(Math.min(1, de / 22), 0.6);
 }
 const skirtMesh = (() => {
   const x0 = -SKIRT_OUT, x1 = MAP_W + SKIRT_OUT, y0 = -SKIRT_OUT, y1 = MAP_H + SKIRT_OUT;
@@ -2991,7 +3016,7 @@ caveMesh.material.onBeforeCompile = (sh) => {
     {
       vec3 _upV = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
       float _top = smoothstep( 0.55, 0.9, dot( normal, _upV ) );
-      diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.20, 0.26, 0.13 ), _top * 0.8 );
+      diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 0.62, 0.78, 0.50 ), _top * 0.6 );   // a moss tint, not a green carpet
     }`);
 };
 caveMesh.material.customProgramCacheKey = () => 'cave-moss-v1';

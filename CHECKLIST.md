@@ -341,8 +341,8 @@ on the band's lower half, slope-based rock blend.
 - [x] G2-4 paths: blurred path field (4/2/1 kernel, diagonal links bridged) inside _warpedTileAt; grass follows
 - [x] G2-7 (interim) cave rock lighter + mossy tops (`cave-moss-v1`); real rock mesh still TODO
 - [~] G2-1 mountain band: horizontal strata striping replaced with soft fall-line gullies (ridge + skirt).
-      STILL OPEN: the two geometric tiers (foothill band, then the higher range) — needs spurs/ridges in
-      outerGroundAt that run toward the playfield and cross the tier seam
+      Tiers broken: `_edgeSpur(along)` spurs shared by ridgeLift (band) and outerGroundAt (skirt), so a
+      spur climbs from the band crest into the high range
 - [x] G2-dusk haze colour clamped to ~2.5x the surface's own brightness (fogColor = bright horizon at dusk
       lit the hills paler than the sky); range fog keeps the true horizon colour; far range dims to 7% at night
 - [ ] minor: far grass dark specks; near-plane clip in city_street; wall-top streaks
