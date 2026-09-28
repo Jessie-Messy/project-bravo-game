@@ -23,7 +23,9 @@ export function makeBarkTexture(THREE, { w = 64, h = 128 } = {}) {
   c.width = w; c.height = h;
   const x = c.getContext('2d');
 
-  x.fillStyle = '#6b5842';
+  // Lighter than it was (#6b5842): the near trunks sit in their own canopy's
+  // shade and read near-black, and jumped in colour at the far-LOD handoff.
+  x.fillStyle = '#8f7a60';
   x.fillRect(0, 0, w, h);
 
   // Vertical fissures. Random width and darkness, wrapped in X so the seam

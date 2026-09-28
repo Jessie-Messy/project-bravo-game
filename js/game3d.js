@@ -1468,7 +1468,13 @@ const _sstep = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a
 // The edge band's crest ran at an even height in front of the skirt, and the
 // two read as stacked tiers — a curtain, not a range (round-2 critic). Shared
 // by ridgeLift (the band) and outerGroundAt (the skirt) so a spur is one ridge.
-function _edgeSpur(along){ const s = _rr(along / 7.5 + 17.3, 4.1); return s * s; }
+function _edgeSpur(along){
+  // Spacing warped and heights varied, or the band read as a row of even,
+  // identical humps (round-3 critic): some spurs barely show, some tower.
+  const a = along + 9 * _rn(along / 23 + 5.1, 1.7);
+  const s = _rr(a / 7.5 + 17.3, 4.1);
+  return s * s * (0.35 + 1.1 * _rn(along / 13 + 2.2, 8.4));
+}
 // For a ridge tile: how far in from the world's OUTER boundary, and the
 // along-edge coordinate. null for the separators between regions.
 function _outerEdgeOf(tx, ty){
@@ -1497,7 +1503,7 @@ function ridgeLift(tx, ty){
     // a wall (critic B8-7): the lift sags toward the water it would have met.
     const gorge = 0.18 + 0.82 * _sstep(1, 8, _ridgeDist.dWater[i]);
     const oe = sep === 1 ? _outerEdgeOf(tx, ty) : null;
-    const spur = oe && oe.db < 12 ? 320 * _edgeSpur(oe.along) * _sstep(0.5, 4, d) : 0;
+    const spur = oe && oe.db < 12 ? 380 * _edgeSpur(oe.along) * _sstep(0.5, 4, d) : 0;
     return (hr * (1 - Math.exp(-(d - 0.4) / 2.3)) + crag + spur
          + deep * (280*_rr(tx/7.5, ty/7.5) + 160*_rn(tx/23, ty/23))) * gorge;
   }
@@ -1756,7 +1762,7 @@ const skirtMesh = (() => {
           vec3 _gn = normalize( ( vec4( vNormal, 0.0 ) * viewMatrix ).xyz );
           vec2 _nh = _gn.xz / max( length( _gn.xz ), 1e-3 );
           float gully = _sn( vec2( dot( vSkW.xz, vec2( -_nh.y, _nh.x ) ) / 70.0, vSkW.y / 180.0 ) ) * 0.7 + a * 0.3;
-          diffuseColor.rgb *= (0.80 + 0.26 * a + 0.10 * b) * (0.95 + 0.05 * strata) * (0.88 + 0.20 * gully);
+          diffuseColor.rgb *= (0.80 + 0.26 * a + 0.10 * b) * (0.95 + 0.05 * strata) * (0.94 + 0.10 * gully);
           // Snow, per pixel: a line broken by two octaves of noise, and only
           // where the slope is gentle enough for it to lie.
           vec3 _wn = normalize( ( vec4( vNormal, 0.0 ) * viewMatrix ).xyz );
@@ -2687,10 +2693,10 @@ terrMesh.material.onBeforeCompile = (shader) => {
         // face horizontally, and the whole range read as a layer cake (round-2
         // critic); streaks running downhill are what make a slope read as one.
         vec2 _nh = vWNrm.xz / max(length(vWNrm.xz), 1e-3);
-        float gully = _vn(vec2(dot(vWXZ, vec2(-_nh.y, _nh.x)) / 48.0, vWY / 140.0)) * 0.7 + _vn(vWXZ / 55.0 + 1.7) * 0.3;
+        float gully = _vn(vec2(dot(vWXZ, vec2(-_nh.y, _nh.x)) / 80.0, vWY / 200.0)) * 0.7 + _vn(vWXZ / 55.0 + 1.7) * 0.3;
         float crev = smoothstep(0.22, 0.04, _vn(vWXZ / 41.0 + 3.1)) * 0.6;
         vec3 rockCol = vec3(0.40, 0.365, 0.335) * (0.72 + m * 0.30 + rn1 * 0.22)
-                     * (0.94 + strata * 0.06) * (0.88 + gully * 0.20) * (1.0 - crev * 0.35);
+                     * (0.94 + strata * 0.06) * (0.94 + gully * 0.10) * (1.0 - crev * 0.35);
         diffuseColor.rgb = mix(diffuseColor.rgb, rockCol, rockF * 0.82);
 
         // Height tint: hollows stay lush and damp, tops dry out and pale off.
@@ -2769,7 +2775,7 @@ const trunkMesh = makeMesh(_trunkGeo,  new THREE.MeshStandardMaterial({map:barkT
 // The far trunks are stubs under their own canopy: lit from behind and in the
 // canopy's shadow, they read as a black comb under every clump (round-2
 // critic). A lighter tint and no received shadow keeps them reading as wood.
-trunkMesh.material.color.setHex(0xe8d8c0);
+trunkMesh.material.color.setHex(0xd4c6b0);
 trunkMesh.receiveShadow = false;
 const _canopyMat = new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0});
 _canopyMat.defines = Object.assign({}, _canopyMat.defines, { CAM_FADE: '' });   // see alphatest_fragment
@@ -3004,22 +3010,50 @@ stoneMesh.material.color.setRGB(1.45, 1.4, 1.32);   // warmer, lighter grey: the
 const caveMesh  = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({map:caveTex, normalMap:caveNrm, roughness:0.95, metalness:0.0}), nCave+8000);
 // cave rock dissolves out at the range edge; fogged to fog colour it stood on
 // the horizon as a pale slab, in front of land that only hazes (critic C-8)
-caveMesh.material.defines = { RANGE_DISSOLVE: '' };
-// Interim until cave exteriors get a real rock mesh (round-2 critic G2-7): from
-// mid-distance the massed box tops were a flat black slab. Lighter rock, and
-// the up-facing tops carry moss and grass, so from outside it reads as a
-// rocky hill, not a block. Inside a cave you are below the tops, so the walls
-// keep their darker rock.
-caveMesh.material.color.setRGB(1.3, 1.25, 1.2);
+// Cave rock seen from OUTSIDE (interim until the exteriors get a real rock
+// mesh). Three rounds of critic on it:
+//  - range-fogged, the massed walls stood on the horizon as a pale slab (C-8);
+//  - dithered out instead, the thin far sliver read as a dotted band;
+//  - left as they were, they were near-black slabs once the haze stopped
+//    lifting the whole frame (round 3).
+// So: haze only, like the land (NO_RANGE_FOG); rock toned up to the ridge's
+// value; and toward the range edge each wall SINKS into the ground over the
+// last stretch, so the mass lowers away instead of stippling or popping.
+// Culling (rebuildCave) reaches the fog's far end, past the sink.
+const _caveFade = { value: new THREE.Vector2(3000, 5000) };
+caveMesh.material.defines = { NO_RANGE_FOG: '' };
+// (the lift itself is in the shader: the cave texture averages ~45/255, built
+// for the dungeon's torchlit interiors — surface caves get it raised to the
+// ridge's rock value, the dungeon strip keeps its own)
 caveMesh.material.onBeforeCompile = (sh) => {
-  sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
-    {
+  sh.uniforms.uCaveFade = _caveFade;
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', `#include <common>
+      uniform vec2 uCaveFade;
+      varying float vCaveSurf;`)
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+      #ifdef USE_INSTANCING
+      {
+        vec3 _c = ( modelMatrix * instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
+        float _k = 1.0 - smoothstep( uCaveFade.x, uCaveFade.y, distance( _c.xz, cameraPosition.xz ) );
+        transformed.y = -0.5 + ( transformed.y + 0.5 ) * _k - ( 1.0 - _k ) * 0.06;   // flattened, then under the ground
+        vCaveSurf = _c.z < ${((DUNGEON_Y0 - 10) * TILE).toFixed(1)} || _c.z > ${(COAST_Y0 * TILE).toFixed(1)} ? 1.0 : 0.0;
+      }
+      #else
+        vCaveSurf = 0.0;
+      #endif`);
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', `#include <common>
+      varying float vCaveSurf;`)
+    .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+    if ( vCaveSurf > 0.5 ) {
+      diffuseColor.rgb *= vec3( 6.2, 6.0, 5.9 );   // ~0.03 linear -> the ridge rock's ~0.2
       vec3 _upV = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
       float _top = smoothstep( 0.55, 0.9, dot( normal, _upV ) );
-      diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 0.62, 0.78, 0.50 ), _top * 0.6 );   // a moss tint, not a green carpet
+      diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 0.86, 0.95, 0.78 ), _top * 0.5 );   // a hint of moss
     }`);
 };
-caveMesh.material.customProgramCacheKey = () => 'cave-moss-v1';
+caveMesh.material.customProgramCacheKey = () => 'cave-sink-v3';
 // Custom-tile boxes: one mesh for all custom obstacle tiles, per-instance color. transparent for glass aesthetics.
 const customMesh = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.6, metalness:0.0, transparent:true, opacity:0.85}), 4000);
 const ironMesh = makeMesh(new THREE.DodecahedronGeometry(STONE_R), new THREE.MeshStandardMaterial({color:0x6a564d, roughness:0.42, metalness:0.88, map:rockTex}), 1500);
@@ -3992,7 +4026,7 @@ function rebuildStones() {
     q.setFromEuler(eul);
     // Off the tile centre and in a wider range of sizes: dead-centred, near
     // identical boulders read as a grid of tiles from above (round-2 critic).
-    const px=tx*TILE+TILE/2+(h2-0.5)*TILE*0.5, pz=ty*TILE+TILE/2+(h3-0.5)*TILE*0.5, sz=0.6+h3*0.75;
+    const px=tx*TILE+TILE/2+(h2-0.5)*TILE*0.7, pz=ty*TILE+TILE/2+(h3-0.5)*TILE*0.7, sz=0.6+h3*0.75;
     _pos.set(px, heightAt(px, pz)+STONE_R*0.5*sz, pz);
     _sc1.set((0.85+h1*0.4)*sz, (0.7+h2*0.55)*sz, (0.85+h2*0.4)*sz);
     _m4.compose(_pos,q,_sc1); stoneMesh.setMatrixAt(i++,_m4);
@@ -15338,6 +15372,7 @@ function syncEntities(t){
   const _boom = CAM_R*camZoom;
   scene.fog.near = _boom + RD*0.55;
   scene.fog.far  = Math.hypot(Math.cos(camPitch)*_boom + RD*1.35, Math.sin(camPitch)*_boom);
+  _caveFade.value.set(scene.fog.near + (scene.fog.far - scene.fog.near)*0.35, scene.fog.far*0.92);
   let ei=0;
   for(const e of enemies){
     if(ei>=enemyPool.length)break;const si=ei,grp=enemyPool[ei++];

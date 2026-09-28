@@ -346,3 +346,16 @@ on the band's lower half, slope-based rock blend.
 - [x] G2-dusk haze colour clamped to ~2.5x the surface's own brightness (fogColor = bright horizon at dusk
       lit the hills paler than the sky); range fog keeps the true horizon colour; far range dims to 7% at night
 - [ ] minor: far grass dark specks; near-plane clip in city_street; wall-top streaks
+
+### Round-3 whole-tour critic (2026-09-27): 7.0/10 — fixes applied
+- [x] G3-1 black cave slabs: cave texture averages ~45/255 (built for the torchlit dungeon) → surface caves
+      (not the dungeon strip) lifted ~6x in the shader; haze only (NO_RANGE_FOG)
+- [x] G3-2 dotted horizon band (the dither dissolve): cave walls now SINK into the ground over the last
+      stretch of the range (`_caveFade`, vertex shader) instead of stippling
+- [x] G3-3 edge spurs: warped spacing, 0.35-1.45 height variety, taller in the band (380)
+- [x] G3-4 gully smears: half strength, wider
+- [x] G3-5 near trunks: bark #6b5842 → #8f7a60; far tint desaturated to d4c6b0
+- [x] G3-6 boulders: jitter ±0.35 tile
+- [ ] G3-7 dusk has no warm horizon band (Preetham sky tuning)
+- [ ] minor: Saltmere pale sand smear under a tree; trunk stubs through canopy sides (top view);
+      near-plane clipping in first person (city_street)
