@@ -81,7 +81,7 @@ export function animateFire(material, { uFireTime, topY = 36, sway = 1.0, hide =
           // (by height: the emissive map is not a clean mask on these models —
           // the outer flame layer barely glows in it and was left behind as
           // dark petals inside the new flame)
-          ${hide ? 'transformed = mix( transformed, vec3( 0.0, uFireTopY * 0.6, 0.0 ), max( step( 0.5, flame ), step( uFireTopY * 0.62, transformed.y ) ) );' : ''}
+          ${hide ? 'transformed = mix( transformed, vec3( 0.0, uFireTopY * 0.5, 0.0 ), max( step( 0.5, flame ), step( uFireTopY * 0.62, transformed.y ) ) );' : ''}
 
         }`);
 

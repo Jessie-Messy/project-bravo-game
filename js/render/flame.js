@@ -84,7 +84,7 @@ const FLAME_FRAG = /* glsl */`
     p.x += (fn(vec2(p.y * 3.0 - t * 2.0, vPh)) - 0.5) * 0.12 * p.y * free;
     // noise stretched tall and scrolling up: tongues rise and tear away
     float n  = fbm(vec2(p.x * 4.0, p.y * 1.2 - t * 3.4));
-    float n2 = fbm(vec2(p.x * 7.0 + 4.0, p.y * 2.4 - t * 5.2));
+    float n2 = fbm(vec2(p.x * 7.0 + 4.0, p.y * 2.4 - t * 4.0));
     float x = p.x + (n2 - 0.5) * 0.20 * p.y * free;
     // teardrop: widest low down, pinched to a point at the top, rounded base
     float halfW = 0.33 * smoothstep(0.0, 0.14, p.y) * (1.0 - smoothstep(0.18, 1.0, p.y) * 0.95);
@@ -92,17 +92,23 @@ const FLAME_FRAG = /* glsl */`
     // the outline eats in from the top
     // (hard: a soft erosion left a smooth bulb; the tongues ARE the look)
     float erode = mix(0.22, 0.92, smoothstep(0.05, 0.90, p.y)) * mix(0.35, 1.0, free);
+    // the edges burn away first: one central tongue, lower ones at the sides
+    // (equal spikes read as a paper crown)
+    erode += abs(x) / max(halfW, 1e-3) * 0.25 * free;
     float f = body * smoothstep(erode - 0.06, erode + 0.05, n * 1.15 + (1.0 - p.y) * 0.22);
     if (f < 0.02) discard;
     // heat falls off with height and toward the edge; tips end red
     float heat = clamp(f * (1.1 - p.y * 1.15) * (1.0 - abs(x) / max(halfW, 1e-3) * 0.55), 0.0, 1.0);
     // four hard bands, like the flat-shaded art around it
     const float w = 0.03;
-    vec3 col = vec3(0.80, 0.12, 0.02);
-    col = mix(col, vec3(1.00, 0.42, 0.06), smoothstep(0.25 - w, 0.25 + w, heat));
-    col = mix(col, vec3(1.00, 0.78, 0.30), smoothstep(0.50 - w, 0.50 + w, heat));
-    col = mix(col, vec3(1.00, 0.95, 0.80), smoothstep(0.75 - w, 0.75 + w, heat) * (1.0 - step(0.35, p.y)));
-    gl_FragColor = vec4(col * uGain * smoothstep(0.02, 0.12, f), 1.0);
+    vec3 col = vec3(0.60, 0.08, 0.01);
+    col = mix(col, vec3(0.95, 0.30, 0.04), smoothstep(0.25 - w, 0.25 + w, heat));
+    col = mix(col, vec3(1.00, 0.60, 0.12), smoothstep(0.50 - w, 0.50 + w, heat));
+    col = mix(col, vec3(1.00, 0.88, 0.55), smoothstep(0.85 - w, 0.85 + w, heat) * (1.0 - step(0.25, p.y)));
+    // Normal blending, premultiplied: additive washed all four bands out to
+    // cream once the halo and bloom were added on top (torch critic r2).
+    float a = smoothstep(0.02, 0.12, f);
+    gl_FragColor = vec4(col * uGain * a, a);
     #include <fog_fragment>
   }
 `;
@@ -126,12 +132,12 @@ const GLOW_FRAG = /* glsl */`
     // embers: three sparks lifting off the tip, drifting, cooling from yellow to red
     for (int i = 0; i < 3; i++) {
       float fi = float(i);
-      float k = t / 1.2 + fi * 0.37 + fh(vec2(vPh, fi)) * 0.5;
+      float k = t / 1.6 + fi * 0.37 + fh(vec2(vPh, fi)) * 0.5;
       float life = fract(k), seed = floor(k) + fi * 7.1 + vPh;
       vec2 ep = vec2((fh(vec2(seed, 1.0)) - 0.5) * 0.10 + sin(life * 6.0 + seed) * 0.05 * life,
-                     (0.12 + life * 0.62 - 0.5) * vAspect);
-      float d = length(q - ep);
-      float e = smoothstep(0.022, 0.0, d) * (1.0 - life) * step(0.15, fh(vec2(seed, 3.0)));
+                     0.15 + life * 0.65);            // q units: from the tip up the card
+      float d = length((q - ep) * vec2(1.0, 0.45));  // squashed along the path: a streak
+      float e = smoothstep(0.012, 0.0, d) * (1.0 - life) * step(0.15, fh(vec2(seed, 3.0)));
       col += mix(vec3(1.0, 0.85, 0.35), vec3(0.9, 0.2, 0.03), life) * e * 1.6;
     }
     if (max(col.r, max(col.g, col.b)) < 0.002) discard;
@@ -140,11 +146,12 @@ const GLOW_FRAG = /* glsl */`
   }
 `;
 
-function mk(THREE, vert, frag, uTime, extra) {
+function mk(THREE, vert, frag, uTime, extra, additive) {
   const m = new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, extra]),
     vertexShader: vert, fragmentShader: frag,
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: true,
+    transparent: true, depthWrite: false, fog: true,
+    blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending, premultipliedAlpha: !additive,
     // Double-sided: the card is built facing the camera in the shader, but a
     // mirrored parent (the character's hand bones) makes three flip the
     // winding, and the held torch's flame was silently back-face culled.
@@ -154,11 +161,11 @@ function mk(THREE, vert, frag, uTime, extra) {
   m.defines = { NO_RANGE_FOG: '' };
   return m;
 }
-export function makeFlameMaterial(THREE, { uTime, gain = 1.6 } = {}) {
-  return mk(THREE, VERT(true), FLAME_FRAG, uTime, { uGain: { value: gain } });
+export function makeFlameMaterial(THREE, { uTime, gain = 1.15 } = {}) {
+  return mk(THREE, VERT(true), FLAME_FRAG, uTime, { uGain: { value: gain } }, false);
 }
 export function makeGlowMaterial(THREE, { uTime, glow = 1.0 } = {}) {
-  return mk(THREE, VERT(false), GLOW_FRAG, uTime, { uGlow: { value: glow } });
+  return mk(THREE, VERT(false), GLOW_FRAG, uTime, { uGlow: { value: glow } }, true);
 }
 // The flame card: 1 wide, 1 tall, root at y = 0 — scale sets the flame's size.
 export function makeFlameGeometry(THREE) {

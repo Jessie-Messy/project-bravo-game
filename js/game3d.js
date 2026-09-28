@@ -3080,13 +3080,14 @@ const placedLanternMesh = makeMesh(new THREE.CylinderGeometry(2.5, 2.5, 8, 6), n
 const _flameClock = { value: 0 };
 const placedFlameMesh = makeMesh(makeFlameGeometry(THREE), makeFlameMaterial(THREE, { uTime: _flameClock }), 3000);
 placedFlameMesh.castShadow = false; placedFlameMesh.receiveShadow = false;
+placedFlameMesh.userData.fx = true;   // not additive any more: opt in to the AO-prepass exclusion
 // The halo and embers around each flame (render/flame.js GLOW): one draw.
 const placedGlowMesh = makeMesh(makeGlowGeometry(THREE), makeGlowMaterial(THREE, { uTime: _flameClock }), 3000);
 placedGlowMesh.castShadow = false; placedGlowMesh.receiveShadow = false;
 // Flame card size per unit of flame scale: width, height, and how far the
 // card's root sits below the flame point (into the torch head, so the base is
 // anchored). A lantern's flame lives inside its glass: no card, just the glow.
-const FLAME_CARD = { torch:[14,22,7], campfire:[9,14,4], lantern:[0,7,3] };
+const FLAME_CARD = { torch:[15,28,9], campfire:[10,17,5], lantern:[0,7,3] };
 // Wall torches read as candles against a 168-tall wall at floor-torch size.
 const WALL_TORCH_SCALE = 1.3;
 
@@ -4524,7 +4525,7 @@ function updateEnvironmentCycle(dt) {
     // still flickering at the frame rate, which is to say not visibly at all.
     const flicker = flameFlicker(_fireU.value, 11.7);
     playerLight.intensity = 850 * flicker;   // the light you carry all night: brighter than a post torch
-    playerLight.color.setHex(0xff8a3a);
+    playerLight.color.setHex(0xff7a2e);
     playerLight.distance = TILE * 6; playerLight.decay = 1.5;
   } else if (inCave || inHouse || nightFactor > 0.01) {
     // Dim fallback so players aren't completely blinded but need a light source
@@ -4585,9 +4586,9 @@ function updateEnvironmentCycle(dt) {
       // old 1.1 at one tile and is ~2.8x brighter at half a tile.
       let decay = 0;
       if (type === 'arch') {
-        baseY = 62; baseInt = 520; colorHex = 0xff8a3a; dist = TILE * 6; decay = 1.5;
+        baseY = 62; baseInt = 520; colorHex = 0xff7a2e; dist = TILE * 6; decay = 1.5;
       } else if (isTorch) {
-        baseY = 28; baseInt = 520; colorHex = 0xff8a3a; dist = TILE * 6; decay = 1.5;
+        baseY = 28; baseInt = 520; colorHex = 0xff7a2e; dist = TILE * 6; decay = 1.5;
       } else if (isHearth) {
         baseY = 14; baseInt = 1.4; colorHex = 0xff6622; dist = TILE * 8;
       } else if (isLantern) {
@@ -5875,7 +5876,9 @@ let WEAPON_ADJUST = {
   shield:  { pos: [0.9, -0.9, -5.8], rot: [0.188407346410207, 1.62840734641021, 2.71840734641021],    scale: 30 },
   // torch/lantern are the procedural objects built just below, not GLB imports,
   // so their scales are ~1-3 rather than the ~20-40 the models use.
-  torch:   { pos: [2, 6, 0],      rot: [1.61840734641021, -0.021592653589793, -1.78159265358979], scale: 1.5 },
+  // Upright in the idle pose (solved numerically: the shaft within a degree of
+  // vertical). It was carried nearly flat at hip height, "a dark baton".
+  torch:   { pos: [2, 6, 0],      rot: [-2.9, 2.9, 1.3], scale: 1.5 },
   lantern: { pos: [2, 16.9, 0.4], rot: [0, 0, -3.14159265358979],                                 scale: 3 },
   quiver:  { pos: [1.2, 16.9, -3.5], rot: [0.308407346410207, 0.428407346410207, -0.551592653589793], scale: 31 }   // arrows on the back with the bow
 };
@@ -5972,7 +5975,7 @@ function refreshHeldProp(force){
 loadPropGeometry('models/torch.glb', {h:26, baseY:0}, (geo, mat)=>{
   const grp=new THREE.Group();
   const m=new THREE.Mesh(geo, mat); m.castShadow=true;
-  m.rotation.z=-Math.PI/2; m.position.x=-13;   // lay along +X, grip at the middle
+  m.rotation.z=-Math.PI/2; m.position.x=-6;    // lay along +X, gripped low on the shaft
   // The HELD torch was the one fire in the game that never moved. Placed fires
   // get animateFire through swapPlacedArt, but this loads through
   // loadPropGeometry, which has no such hook — so the torch you actually carry
@@ -5988,12 +5991,12 @@ loadPropGeometry('models/torch.glb', {h:26, baseY:0}, (geo, mat)=>{
   // end. It billboards in WORLD space, so it burns upright whatever the hand
   // is doing with the shaft.
   const flame=new THREE.Mesh(makeFlameGeometry(THREE), makeFlameMaterial(THREE, { uTime:_fireU }));
-  flame.position.set(10,0,0); flame.scale.set(11,18,11); flame.frustumCulled=false;
+  flame.position.set(17,0,0); flame.scale.set(11,20,11); flame.frustumCulled=false;
   flame.userData.heldFlame=true;
   // centred half the flame's height above its root: 0.19 of a 2.6x-tall card
   const glow=new THREE.Mesh(makeGlowGeometry(THREE).translate(0,0.19,0), makeGlowMaterial(THREE, { uTime:_fireU }));
-  glow.position.set(10,0,0);
-  glow.scale.set(2.4*11, 2.6*18, 1); glow.frustumCulled=false; grp.add(glow);
+  glow.position.set(17,0,0);
+  glow.scale.set(2.4*11, 2.6*20, 1); glow.frustumCulled=false; grp.add(glow);
   grp.add(flame);
   weaponTemplates['torch']=grp; refreshHeldProp(true);
 });
