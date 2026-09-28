@@ -2824,7 +2824,7 @@ const _treeActors = Array.from({length:10}, makeTreeActor);
 function spawnFallingTree(tx,ty,tint){
   const a=_treeActors.find(x=>!x.active) || _treeActors[0];
   a.active=true; a.t=0; a.dur=0.8;
-  a.grp.position.set(tx*TILE+TILE/2, 0, ty*TILE+TILE/2);
+  a.grp.position.set(tx*TILE+TILE/2, heightAt(tx*TILE+TILE/2, ty*TILE+TILE/2), ty*TILE+TILE/2);
   treeLeanAxis(tx,ty,a.axis);
   a.startLean=(1 - 1/TREE_HP) * TREE_MAX_LEAN;        // continue from the hp=1 standing lean
   // White = show the bark/leaf maps unmodified; colour here multiplies them.
@@ -7235,7 +7235,7 @@ function buildGlbNpc(key, cfg, inner, animations, measured){
   inner.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false; } });
   if(cfg.tint) tintNpc(inner, cfg.tint);
   const obj=new THREE.Group(); obj.add(inner);
-  obj.position.set(cfg.pos.x,0,cfg.pos.y); obj.rotation.y=Math.PI;   // rest: face south
+  obj.position.set(cfg.pos.x,heightAt(cfg.pos.x,cfg.pos.y),cfg.pos.y); obj.rotation.y=Math.PI;   // rest: face south
   scene.add(obj);
   const mixer=new THREE.AnimationMixer(inner);
   const find=nm=>animations.find(c=>c.name===nm);
@@ -10695,7 +10695,7 @@ function handleContractClick(e){
   const paper=new THREE.Mesh(new THREE.PlaneGeometry(22,15),new THREE.MeshLambertMaterial({color:0xe8dcc0}));
   paper.position.set(0,30,1.6);
   g.add(l,rp,board,paper);
-  g.position.set(CONTRACT_BOARD.x,0,CONTRACT_BOARD.y);
+  g.position.set(CONTRACT_BOARD.x,heightAt(CONTRACT_BOARD.x,CONTRACT_BOARD.y),CONTRACT_BOARD.y);
   [l,rp,board].forEach(m=>{m.castShadow=true;});
   scene.add(g);
 }
@@ -13816,7 +13816,7 @@ function rebuildHouseProps() {
     const plaque = new THREE.Mesh(_hgSignPlaque, plaqueMat);
     plaque.position.set(0,38,2.1);
     grp.add(post, board, plaque);
-    grp.position.set(sp.x, 0, sp.z);
+    grp.position.set(sp.x, heightAt(sp.x, sp.z), sp.z);
     scene.add(grp);
     houseSignMeshes.push({grp, plaqueMat, house:h});
 
@@ -15281,19 +15281,19 @@ function syncEntities(t){
       horse.obj.position.set(player.x,heightAt(player.x,player.y),player.y);
       horse.obj.rotation.y=protag.obj.rotation.y;
       horse.mixer.update(adt);
-      protag.obj.position.y=horse.rideH;   // rider sits into the saddle
+      protag.obj.position.y+=horse.rideH;  // rider sits into the saddle (above the ground, not above y=0)
     }else if(standing){
-      horse.obj.position.set(player.horseX,0,player.horseY);
+      horse.obj.position.set(player.horseX,heightAt(player.horseX,player.horseY),player.horseY);
       horse.mixer.update(adt*0.35);        // lazy idle sway while it waits
     }
   }
   // Player corpse
-  if(G.corpse){corpseGrp.visible=true;corpseGrp.position.set(G.corpse.x,0,G.corpse.y);}
+  if(G.corpse){corpseGrp.visible=true;corpseGrp.position.set(G.corpse.x,heightAt(G.corpse.x,G.corpse.y),G.corpse.y);}
   else corpseGrp.visible=false;
   for(let i=0;i<guardPool.length;i++){const g=guards[i];if(!g||g.dead){guardPool[i].visible=false;continue;}
     const gd2=(g.x-player.x)*(g.x-player.x)+(g.y-player.y)*(g.y-player.y);
     if(gd2>RD2){guardPool[i].visible=false;continue;}
-    guardPool[i].visible=true;guardPool[i].position.set(g.x,0,g.y);
+    guardPool[i].visible=true;guardPool[i].position.set(g.x,heightAt(g.x,g.y),g.y);
     if(gd2<AD2){const gaf=g.attackCooldown-g.attackTimer;animateRig(guardPool[i],g.x,g.y,t,{turn:true,attack:(gaf>=0&&gaf<0.28)?1-gaf/0.28:0});}}
   for(const n of npcs) {
     const nd2=(n.position.x-player.x)*(n.position.x-player.x)+(n.position.z-player.y)*(n.position.z-player.y);
@@ -16420,7 +16420,10 @@ function syncRemotePlayers(t,dt){
     if(v.model){
       const m=v.model;
       m.obj.visible=visible;
-      m.obj.position.set(v.rx,st.onHorse?(horse?horse.rideH:50):0,v.rz);   // riders sit at saddle height
+      // On the ground — this was a flat y=0 from before the terrain had relief,
+      // so anyone standing on a hill rendered sunk to the chest. Riders sit at
+      // saddle height above it.
+      m.obj.position.set(v.rx,heightAt(v.rx,v.rz)+(st.onHorse?(horse?horse.rideH:50):0),v.rz);
       turnToward(m.obj, st.dir, dt, 'remote');         // face the server-synced dir
       if(m.pendingAttack&&m.actions.attack){            // server-validated swing
         m.pendingAttack=false;
@@ -16450,11 +16453,11 @@ function syncRemotePlayers(t,dt){
     if(v.horse){
       v.horse.obj.visible=wantsHorse;
       if(st.onHorse){
-        v.horse.obj.position.set(v.rx,0,v.rz);
+        v.horse.obj.position.set(v.rx,heightAt(v.rx,v.rz),v.rz);
         if(v.model) v.horse.obj.rotation.y=v.model.obj.rotation.y;
         if(_animate) v.horse.mixer.update(dt); else farMixerStep(v.horse, v.horse.mixer, dt);
       }else if(st.horseDown){
-        v.horse.obj.position.set(st.horseX,0,st.horseY);
+        v.horse.obj.position.set(st.horseX,heightAt(st.horseX,st.horseY),st.horseY);
         if(_animate) v.horse.mixer.update(dt*0.35); else farMixerStep(v.horse, v.horse.mixer, dt*0.35);
       }
     }

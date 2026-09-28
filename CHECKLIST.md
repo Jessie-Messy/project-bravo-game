@@ -110,7 +110,11 @@ Local game: `.claude/launch.json` → `bravo-dev` on :8127.
       animation-LOD radius the mixer was skipped entirely. Now `farMixerStep` / `farTick` step
       the right clip at FAR_ANIM_HZ (10 Hz), phase-jittered — mobs, rig mobs, NPCs, remote
       players, horses
-- [ ] U1b verify in real play at night + with many remotes (_dev.mpLoad) that 10 Hz reads OK
+- [x] U1b verified: 80 synthetic remotes at night, 20 animated + rest at 10 Hz, 11.6 ms median
+      (86 fps, 568 draws, 3.5M tris). FOUND A LIVE BUG doing it: remote players (and parked
+      horses, your rider, corpse, NPCs, guards, contract board, falling trees) were placed at
+      y=0 from the flat-world days — anyone on a hill rendered sunk to the chest for others.
+      All grounded with heightAt; `npm run test:grounding` pins it. ⚠ fix is in v0.20.0 LIVE
 
 ## Phase M — mob corpses, looting, harvesting meat & hides (user, 2026-09-26)
 Must land BEFORE P3 (taming needs meat). Today: no meat item, no cooking; mobs throw loot
