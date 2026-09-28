@@ -234,8 +234,10 @@ vec3 skyRamp( vec3 r ) {
 
 void main() {
   // -- One fetch, two signals: RED depth, GREEN silhouette ---------
-  vec2 mask = texture2D( uMaskMap, vMapUv ).rg;
-  float cov = mask.g;
+  vec3 mask = texture2D( uMaskMap, vMapUv ).rgb;
+  // BLUE thins the surface out where a river meets the edge ridge, so it
+  // shallows onto its bed instead of ending in a ruled line against the rock.
+  float cov = mask.g * mask.b;
   if ( cov <= 0.0 ) discard;   // outside the painted bank; nothing else to do
   float deep = mask.r;         // 0 at the bank, 1 three tiles in
 

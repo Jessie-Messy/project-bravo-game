@@ -2138,8 +2138,18 @@ function _bladeOnGrass(gx, gz){
   if(fx < 0 || fy < 0 || fx >= MAP_W || fy >= MAP_H) return false;   // never past the edge
   const tx = fx|0, ty = fy|0;
   const g0 = groundUnder[ty*MAP_W+tx];
-  return _warpedTileAt(fx, fy, (fx*TERR_PX)|0, (fy*TERR_PX)|0, g0) === T.GRASS;
+  if(_warpedTileAt(fx, fy, (fx*TERR_PX)|0, (fy*TERR_PX)|0, g0) !== T.GRASS) return false;
+  // Nothing grows under the water surface. The warped grass edge can reach a
+  // little past the water mesh's own feathered bank, and a blade there shows
+  // through the translucent foam as a pale ghost (critic C-10).
+  for(const [ox, oy] of _WET_PROBE){
+    const x = (fx + ox)|0, y = (fy + oy)|0;
+    if(x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) continue;
+    const t = map[y][x]; if(t === T.WATER || t === T.SHALLOWS) return false;
+  }
+  return true;
 }
+const _WET_PROBE = [[-0.5,0],[0.5,0],[0,-0.5],[0,0.5],[-0.35,-0.35],[0.35,-0.35],[-0.35,0.35],[0.35,0.35]];
 
 // _dev.grass({warpEdge:false}) turns the warped boundary off, so its effect can
 // be measured against the old behaviour with everything else held fixed.
@@ -4355,10 +4365,29 @@ function _sampleShore(fx, fy){
   const d=v0+(v1-v0)*ay;
   return d >= SHORE_TILES ? 1 : d/SHORE_TILES;
 }
+function _surfWet(x, y){ return _isWaterTile(map[y][x]); }
+// Where a river runs into the edge ridge the flat sheet met the coarse (2-tile)
+// terrain mesh in a straight ruled line (critic C-10) — carrying the water up
+// the gorge only moved the line. Instead the surface thins out over the last
+// three tiles before the rock, so the river shallows onto its bed and the
+// rock's edge is never drawn against it. 0 at the ridge, 1 three tiles out.
+function _ridgeFade(fx, fy){
+  const x=Math.min(MAP_W-1, Math.max(0, fx|0)), y=Math.min(MAP_H-1, Math.max(0, fy|0));
+  let d = _ridgeDist.dOut[y*MAP_W+x];
+  if(map[y][x] === T.RIDGE) d = 0;
+  if(d >= 5.5) return 1;
+  // bilinear over the four nearest tile centres, so the fade has no tile steps
+  const x0=Math.max(0,Math.floor(fx-0.5)), y0=Math.max(0,Math.floor(fy-0.5));
+  const x1=Math.min(MAP_W-1,x0+1), y1=Math.min(MAP_H-1,y0+1), ax=fx-0.5-x0, ay=fy-0.5-y0;
+  const D=(xx,yy)=> map[yy][xx]===T.RIDGE ? 0 : _ridgeDist.dOut[yy*MAP_W+xx];
+  const v = (D(x0,y0)*(1-ax)+D(x1,y0)*ax)*(1-ay) + (D(x0,y1)*(1-ax)+D(x1,y1)*ax)*ay;
+  const t = Math.min(1, Math.max(0, (v - 1.0) / 3.4));   // gone a tile short of the rock, full 4.4 out
+  return t*t*(3-2*t);
+}
 function buildWaterField(){
   const N=MAP_W*MAP_H;
   const bin=new Float32Array(N), tmp=new Float32Array(N), out=new Float32Array(N);
-  for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++) bin[y*MAP_W+x]=_isWaterTile(map[y][x])?1:0;
+  for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++) bin[y*MAP_W+x]=_surfWet(x,y)?1:0;
   for(let y=0;y<MAP_H;y++){ const r=y*MAP_W;          // horizontal pass
     for(let x=0;x<MAP_W;x++){ let s=0,n=0;
       for(let d=-WFIELD_R;d<=WFIELD_R;d++){ const xx=x+d; if(xx<0||xx>=MAP_W) continue; s+=bin[r+xx]; n++; }
@@ -4395,10 +4424,11 @@ function _sampleWField(fx, fy){          // bilinear; tile centres sit at +0.5
 // interior test has to clear a wider neighbourhood than the ground's.
 function _maskInterior(tx, ty){
   const R = WARP_R + WFIELD_R + 1;
-  const w0 = _isWaterTile(map[ty][tx]);
+  const w0 = _surfWet(tx, ty);
   for(let oy=-R;oy<=R;oy++){
-    const row=map[ty+oy]; if(!row) return false;
-    for(let ox=-R;ox<=R;ox++) if(_isWaterTile(row[tx+ox])!==w0) return false;
+    const yy=ty+oy; if(yy<0||yy>=MAP_H) return false;
+    for(let ox=-R;ox<=R;ox++){ const xx=tx+ox; if(xx<0||xx>=MAP_W) return false;
+      if(_surfWet(xx,yy)!==w0) return false; }
   }
   return true;
 }
@@ -4411,11 +4441,11 @@ function paintWaterMask(tx0, ty0, tx1, ty1){
   const w=(tx1-tx0+1)*WMASK_PX, h=(ty1-ty0+1)*WMASK_PX;
   const img = wMaskCtx.createImageData(w,h), d = img.data;
   for(let ty=ty0;ty<=ty1;ty++) for(let tx=tx0;tx<=tx1;tx++){
-    const w0 = _isWaterTile(map[ty][tx]);
+    const w0 = _surfWet(tx, ty);
     const interior = _maskInterior(tx,ty);
     for(let py=0;py<WMASK_PX;py++) for(let px=0;px<WMASK_PX;px++){
       const gx = tx*WMASK_PX+px, gy = ty*WMASK_PX+py;      // global — keeps noise stable
-      let a, sh;
+      let a, sh, fade = 255;
       if(interior){
         a = w0?255:0;
         // Provably saturated -- see the note on SHORE_TILES. Skipping the warp
@@ -4431,12 +4461,14 @@ function paintWaterMask(tx0, ty0, tx1, ty1){
         // Depth is sampled through the SAME warp offset as coverage, so the
         // shore ramp stays registered with the ragged bank it belongs to.
         sh = _sampleShore(fx+o[0], fy+o[1])*255;
+        if(w0 || a > 0) fade = _ridgeFade(fx, fy)*255;
       }
       const i=((gy-ty0*WMASK_PX)*w + (gx-tx0*WMASK_PX))*4;
       // RED   = distance from the bank: 0 at the contour, 1 three tiles in.
       // GREEN = coverage, the silhouette. Unchanged, and it must stay that way:
       //         the painted bank and the wading test both read this channel.
-      d[i]=sh; d[i+1]=d[i+2]=a; d[i+3]=255;
+      // BLUE  = fade toward the edge ridge (surface only; see _ridgeFade).
+      d[i]=sh; d[i+1]=a; d[i+2]=fade; d[i+3]=255;
     }
   }
   wMaskCtx.putImageData(img, tx0*WMASK_PX, ty0*WMASK_PX);
