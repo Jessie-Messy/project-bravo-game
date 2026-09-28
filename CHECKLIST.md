@@ -335,9 +335,12 @@ on the band's lower half, slope-based rock blend.
 - [x] G2-2 haze distance now subtracts the camera's height above ground (fog_fragment `_hazeD`)
 - [x] G2-5 ragged ridge edge takes PATH too, so roads end at the foot (world-data rebuilt)
 - [x] G2-8 boulders jittered off tile centre, 0.6-1.35 size, lighter warm grey
-- [ ] G2-6 snow = hard flat triangles on far range/foothill crest — per-fragment/noise
+- [x] G2-6 the 'snow triangles' were SKY through a crack: skirt edge vertices sat ~26 above the terrain's
+      edge (outerGroundAt clamps half a tile in) and a 3-tile skirt spanned 2-tile gorge dips. Edge vertices
+      now take the terrain's own min height across their span (-2) + polygonOffset. Skirt snow also per-pixel.
 - [x] G2-4 paths: blurred path field (4/2/1 kernel, diagonal links bridged) inside _warpedTileAt; grass follows
 - [x] G2-7 (interim) cave rock lighter + mossy tops (`cave-moss-v1`); real rock mesh still TODO
 - [ ] G2-1 mountain band reads as a stacked curtain — cross-tier ridges, kill stripe noise
-- [ ] G2-dusk dusk_vista reads as full night with inverted aerial perspective — check haze at night
+- [x] G2-dusk haze colour clamped to ~2.5x the surface's own brightness (fogColor = bright horizon at dusk
+      lit the hills paler than the sky); range fog keeps the true horizon colour; far range dims to 7% at night
 - [ ] minor: far grass dark specks; near-plane clip in city_street; wall-top streaks

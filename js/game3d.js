@@ -277,7 +277,17 @@ THREE.ShaderChunk.fog_fragment = `
   // frame went milky (round-2 critic: city_far, forest_far, coast_far). The
   // camera's height above the ground band comes straight off the distance.
   float _hazeD = max( 0.0, vFogDepth - max( 0.0, cameraPosition.y - 160.0 ) * 1.15 );
-  fogFactor = max( fogFactor, min( HAZE_CAP, 1.0 - exp( - _hazeD / 13000.0 ) ) );
+  float _hazeF = min( HAZE_CAP, 1.0 - exp( - _hazeD / 13000.0 ) );
+  // The haze is light scattered by the air, so it can't be much brighter than
+  // the land it lies over. fogColor is the sky's HORIZON colour, which at dusk
+  // is the brightest thing in the frame — mixed in as haze it lit the dark
+  // hills up paler than the sky (round-2 critic: "inverted aerial perspective").
+  // By day the clamp is > 1 and changes nothing. The RANGE fog still goes to
+  // the true horizon colour, so the world's far edge still melts into the sky.
+  float _lp = dot( gl_FragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+  float _lf = dot( fogColor, vec3( 0.2126, 0.7152, 0.0722 ) ) + 1e-4;
+  vec3 _hazeCol = fogColor * min( 1.0, ( _lp * 2.5 + 0.06 ) / _lf );
+  gl_FragColor.rgb = mix( gl_FragColor.rgb, _hazeCol, _hazeF );
   gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
 #endif
 `;
@@ -1619,7 +1629,30 @@ const skirtMesh = (() => {
   // No skirt quad lies wholly inside a terrain mesh. Sunk ones there poked
   // up through the finer mesh between its vertices as thin dark slivers.
   const hole    = (X, Y) => inMain(X, Y) || inCoast(X, Y);
+  // A vertex ON a mesh's edge sinks only a hair (the polygon offset below keeps
+  // it from z-fighting the terrain). Sunk the full 30 it opened a crack along
+  // the crest: looking up at the edge ridge you saw sky through thin white
+  // triangles between the terrain's last row and the skirt (round-2 critic —
+  // they were taken for snow).
+  const onEdge = (X, Y) => (inMain(X, Y) && (X === 0 || X === MAP_W || Y === 0 || Y === TERRAIN_MAP_H))
+                        || (inCoast(X, Y) && (X === COAST_X0 || X === COAST_X0 + COAST_W || Y === COAST_Y0 || Y === COAST_Y0 + COAST_H));
   const heightOf = (X, Y) => {
+    // The terrain mesh's own edge height. outerGroundAt clamps to half a tile
+    // INSIDE the map and adds its climb from there, which put the skirt's edge
+    // ~26 above the terrain's — a vertical step with nothing in it.
+    // And the LOWEST of it across this vertex's span: the terrain is finer than
+    // the skirt, and where the edge dips between skirt vertices (a river gorge)
+    // a skirt interpolated between two higher samples stood above it, a step
+    // up with sky showing through. A step DOWN behind the crest is hidden.
+    if(onEdge(X, Y)){
+      const alongX = (Y === 0 || Y === MAP_H || Y === TERRAIN_MAP_H || Y === COAST_Y0 || Y === COAST_Y0 + COAST_H);
+      let lo = Infinity;
+      for(let t = -SKIRT_STEP; t <= SKIRT_STEP; t += 0.25){
+        const sx = alongX ? X + t : X, sy = alongX ? Y : Y + t;
+        lo = Math.min(lo, heightAt(Math.min(Math.max(sx, 0), MAP_W - 0.001) * TILE, Math.min(Math.max(sy, 0), MAP_H - 0.001) * TILE));
+      }
+      return lo - 2;
+    }
     if(inMain(X, Y) || inCoast(X, Y)) return outerGroundAt(X, Y) - 30;
     return outerGroundAt(X, Y);
   };
@@ -1660,9 +1693,9 @@ const skirtMesh = (() => {
     // Conifer cover on the gentler, lower slopes — below the tree line only.
     const forest = _sstep(0.70, 0.88, up) * (1 - _sstep(520, 760, h + (n1 - 0.5) * 200));
     r += (FOREST[0]*tone - r) * forest; g += (FOREST[1]*tone - g) * forest; b += (FOREST[2]*tone - b) * forest;
-    // Snow only on the true peaks, thinned where it is too steep to lie.
-    const snow = _sstep(SNOW_LO, SNOW_HI, h + (n1 - 0.5) * 260) * _sstep(0.45, 0.7, up);
-    r += (SNOW[0] - r) * snow; g += (SNOW[1] - g) * snow; b += (SNOW[2] - b) * snow;
+    // Snow is NOT here any more: per vertex on this coarse mesh it drew hard
+    // flat white triangles (round-2 critic). The fragment shader below lays it
+    // per pixel from world height, normal and noise.
     col[p] = r; col[p+1] = g; col[p+2] = b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -1672,7 +1705,8 @@ const skirtMesh = (() => {
   // them as pure fog colour. They still get the shared aerial haze (see
   // fog_fragment near the top of this file), so they lighten and cool with
   // distance by the same rule as the terrain they continue.
-  const mat = new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0.96, metalness:0 });
+  const mat = new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0.96, metalness:0,
+    polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });   // loses to the terrain where they meet
   mat.defines = { NO_RANGE_FOG: '' };
   // The same world-space rock detail as the terrain's steep faces (strata by
   // height, broken by noise), or the near slopes read as grey plastic next to
@@ -1694,6 +1728,12 @@ const skirtMesh = (() => {
           float a = _sn(vSkW.xz / 90.0), b = _sn(vSkW.xz / 23.0 + 4.1);
           float strata = 0.5 + 0.5 * sin(vSkW.y * 0.06 + a * 5.0 + b * 1.5);
           diffuseColor.rgb *= (0.80 + 0.26 * a + 0.10 * b) * (0.88 + 0.16 * strata);
+          // Snow, per pixel: a line broken by two octaves of noise, and only
+          // where the slope is gentle enough for it to lie.
+          vec3 _wn = normalize( ( vec4( vNormal, 0.0 ) * viewMatrix ).xyz );
+          float lie = smoothstep( 0.45, 0.72, _wn.y );
+          float snowF = smoothstep( ${SNOW_LO.toFixed(1)}, ${SNOW_HI.toFixed(1)}, vSkW.y + ( a - 0.5 ) * 260.0 + ( b - 0.5 ) * 110.0 ) * lie;
+          diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.74, 0.78, 0.84 ), snowF * 0.9 );
         }`);
   };
   const m = new THREE.Mesh(geo, mat);
@@ -1761,7 +1801,9 @@ const farRange = (() => {
 })();
 function updateFarRange(){
   farRange.position.set(camera.position.x, 0, camera.position.z);
-  farRange.material.color.setScalar(0.18 + 0.82 * _envDayF);
+  // Unlit, so it is dimmed by hand; at 0.18 it still stood out paler than the
+  // night sky behind it (round-2 critic).
+  farRange.material.color.setScalar(0.07 + 0.93 * _envDayF);
 }
 
 let coastSurface = null;
@@ -2626,8 +2668,11 @@ terrMesh.material.onBeforeCompile = (shader) => {
         // (the ordinary relief tops out at ${TERRAIN_AMP}). A cool off-white,
         // never pure white, so it doesn't compete with the clouds; thinned on
         // steep faces where snow can't lie; the noise breaks the snow line.
-        float snowF = smoothstep(${SNOW_LO.toFixed(1)}, ${SNOW_HI.toFixed(1)}, vWY + (m - 0.5) * 260.0) * (1.0 - rockF * 0.55);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.84, 0.87, 0.92), snowF * 0.92);
+        // Steep crests shed it almost entirely and the line is soft: on the
+        // 2-tile ridge mesh a hard line on a steep facet drew a flat white
+        // triangle at every peak tip (round-2 critic).
+        float snowF = smoothstep(${SNOW_LO.toFixed(1)}, ${(SNOW_HI+250).toFixed(1)}, vWY + (m - 0.5) * 260.0 + (rn1 - 0.5) * 120.0) * (1.0 - rockF * 0.85);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.80, 0.83, 0.88), snowF * 0.85);
       }`);
 };
 // Wooden planks for bridge decks
