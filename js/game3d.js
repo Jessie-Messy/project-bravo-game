@@ -271,7 +271,13 @@ THREE.ShaderChunk.fog_fragment = `
   #ifndef HAZE_CAP
     #define HAZE_CAP 0.52
   #endif
-  fogFactor = max( fogFactor, min( HAZE_CAP, 1.0 - exp( - vFogDepth / 13000.0 ) ) );
+  // Measured from where the camera would be at head height, not from the
+  // camera: a high camera looks DOWN through thin air, but by raw distance the
+  // nearest ground was already thousands of units into the haze and the whole
+  // frame went milky (round-2 critic: city_far, forest_far, coast_far). The
+  // camera's height above the ground band comes straight off the distance.
+  float _hazeD = max( 0.0, vFogDepth - max( 0.0, cameraPosition.y - 160.0 ) * 1.15 );
+  fogFactor = max( fogFactor, min( HAZE_CAP, 1.0 - exp( - _hazeD / 13000.0 ) ) );
   gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
 #endif
 `;
@@ -1084,8 +1090,60 @@ function _warpedTileAt(fx, fy, px, py, g0){
   let tx = Math.floor(fx+dx), ty = Math.floor(fy+dy);
   if(tx<0) tx=0; else if(tx>=MAP_W) tx=MAP_W-1;
   if(ty<0) ty=0; else if(ty>=MAP_H) ty=MAP_H-1;
-  const g = groundUnder[ty*MAP_W+tx];
-  return groundStamps[g] ? g0 : g;      // never warp into custom pixel art
+  let g = groundUnder[ty*MAP_W+tx];
+  if(groundStamps[g]) return g0;        // never warp into custom pixel art
+  // Paths: a one-tile path running diagonally was a staircase of tiles from
+  // above (round-2 critic). Near a path, path-ness comes from a blurred path
+  // field instead, which fills the staircase's inner corners and trims its
+  // outer ones into a band. Grass placement reads this same function, so no
+  // blades grow on the filled corners.
+  if(!_pathNear) _buildPathField();
+  if(_pathNear[ty*MAP_W+tx]){
+    const pf = _samplePathField(fx+dx, fy+dy);
+    if(pf > 0.40) g = T.PATH;
+    else if(g === T.PATH) g = _pathBeside[ty*MAP_W+tx];
+  }
+  return g;
+}
+let _pathNear = null, _pathField = null, _pathBeside = null;
+function _buildPathField(){
+  const N = MAP_W*MAP_H, bin = new Float32Array(N);
+  _pathNear = new Uint8Array(N); _pathField = new Float32Array(N); _pathBeside = new Uint8Array(N);
+  for(let i=0;i<N;i++) bin[i] = groundUnder[i] === T.PATH ? 1 : 0;
+  // A path that steps only corner-to-corner would fall apart into pads once
+  // blurred; bridge every diagonal-only link through one side tile first.
+  for(let y=0;y<MAP_H-1;y++) for(let x=0;x<MAP_W;x++){
+    if(groundUnder[y*MAP_W+x] !== T.PATH) continue;
+    for(const dx of [-1, 1]){ const xx = x+dx; if(xx<0||xx>=MAP_W) continue;
+      if(groundUnder[(y+1)*MAP_W+xx] !== T.PATH) continue;
+      const a = y*MAP_W+xx, b = (y+1)*MAP_W+x;
+      if(groundUnder[a] === T.PATH || groundUnder[b] === T.PATH) continue;
+      if(groundUnder[a] === T.GRASS) bin[a] = 1; else if(groundUnder[b] === T.GRASS) bin[b] = 1; } }
+  for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++){
+    let s=0, n=0, near=0, beside=T.GRASS;
+    for(let oy=-1;oy<=1;oy++){ const yy=y+oy; if(yy<0||yy>=MAP_H) continue;
+      for(let ox=-1;ox<=1;ox++){ const xx=x+ox; if(xx<0||xx>=MAP_W) continue;
+        // weights 4 / 2 / 1: a straight one-tile path keeps 0.5 at its centre,
+        // a staircase's inner and outer corners both land near 0.31
+        const wgt = ox===0&&oy===0 ? 4 : (ox===0||oy===0 ? 2 : 1);
+        const v = bin[yy*MAP_W+xx]; s += v*wgt; n += wgt; if(v) near = 1;
+        else if(ox*ox+oy*oy === 1) beside = groundUnder[yy*MAP_W+xx]; } }
+    const i = y*MAP_W+x;
+    _pathField[i] = s/n;
+    // only flat, open ground may be claimed or given back — never water, walls, sand edits
+    const g = groundUnder[i];
+    _pathNear[i] = near && (g === T.PATH || g === T.GRASS) ? 1 : 0;
+    _pathBeside[i] = beside === T.PATH ? T.GRASS : beside;
+  }
+}
+function _samplePathField(fx, fy){          // bilinear; tile centres at +0.5
+  const x=fx-0.5, y=fy-0.5;
+  let x0=Math.floor(x), y0=Math.floor(y); const ax=x-x0, ay=y-y0;
+  let x1=x0+1, y1=y0+1;
+  if(x0<0)x0=0; if(y0<0)y0=0; if(x1>MAP_W-1)x1=MAP_W-1; if(y1>MAP_H-1)y1=MAP_H-1; if(x0>MAP_W-1)x0=MAP_W-1; if(y0>MAP_H-1)y0=MAP_H-1;
+  const f=_pathField, r0=y0*MAP_W, r1=y1*MAP_W;
+  const v0=f[r0+x0]+(f[r0+x1]-f[r0+x0])*ax, v1=f[r1+x0]+(f[r1+x1]-f[r1+x0])*ax;
+  return v0+(v1-v0)*ay;
 }
 // True when a warped lookup anywhere inside this tile is guaranteed to return g0
 // — i.e. the whole reachable neighbourhood shares one ground type. Lets the bulk
@@ -2014,12 +2072,15 @@ for(const t of [wallTex, wallNrm]) t.repeat.set(1, 1.75);
 
 // Bark — vertical fissured ridges. Trees were flat brown/green cylinders and
 // cones with no texture at all, which is what made the forest read as plastic.
+// Brighter than it was (#4a3220 base): under the canopy and against the light
+// the old albedo rendered as a near-black comb under every clump (round-2
+// critic, a regression the ambient/haze retune exposed). Still dark brown.
 const barkTex = makeCanvasTex(128,256,(x,w,h)=>{
-  x.fillStyle='#4a3220'; x.fillRect(0,0,w,h);
+  x.fillStyle='#6a4a30'; x.fillRect(0,0,w,h);
   for(let i=0;i<160;i++){                                   // ridges running with the grain
     const cx=Math.random()*w, wd=2+Math.random()*9;
     const t=0.62+fbm(cx/9,0,16,3)*0.75;
-    x.fillStyle=`rgb(${(104*t)|0},${(72*t)|0},${(44*t)|0})`;
+    x.fillStyle=`rgb(${(146*t)|0},${(104*t)|0},${(66*t)|0})`;
     x.beginPath(); x.moveTo(cx,0);
     let px=cx; for(let y=0;y<=h;y+=16){ px+=(Math.random()-0.5)*5; x.lineTo(px,y); }
     for(let y=h;y>=0;y-=16){ px+=(Math.random()-0.5)*3; x.lineTo(px+wd,y); }
@@ -2626,6 +2687,11 @@ const _trunkGeo  = makeTrunk(THREE, { height:TRUNKH, top:9, bottom:12, seed:4242
 // Tinted toward grey-brown: the bare bark read as near-black maroon at range,
 // the darkest thing in every vista (critic C-6).
 const trunkMesh = makeMesh(_trunkGeo,  new THREE.MeshStandardMaterial({map:barkTex, normalMap:barkNrm, roughness:0.94, metalness:0.0, color:0xb8aa98}), nTree+4000);
+// The far trunks are stubs under their own canopy: lit from behind and in the
+// canopy's shadow, they read as a black comb under every clump (round-2
+// critic). A lighter tint and no received shadow keeps them reading as wood.
+trunkMesh.material.color.setHex(0xe8d8c0);
+trunkMesh.receiveShadow = false;
 const _canopyMat = new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0});
 _canopyMat.defines = Object.assign({}, _canopyMat.defines, { CAM_FADE: '' });   // see alphatest_fragment
 const topMesh   = makeMesh(_canopyGeo, _canopyMat, nTree+4000);
@@ -2855,10 +2921,26 @@ function updateFallingTrees(dt){
 }
 // Window panels removed for performance. Stained glass is now custom tiles.
 const stoneMesh = makeMesh(new THREE.DodecahedronGeometry(STONE_R),      new THREE.MeshStandardMaterial({map:rockTex, normalMap:rockNrm, roughness:0.92, metalness:0.0}), nStone+4000);
+stoneMesh.material.color.setRGB(1.45, 1.4, 1.32);   // warmer, lighter grey: they read as black holes in the grass
 const caveMesh  = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({map:caveTex, normalMap:caveNrm, roughness:0.95, metalness:0.0}), nCave+8000);
 // cave rock dissolves out at the range edge; fogged to fog colour it stood on
 // the horizon as a pale slab, in front of land that only hazes (critic C-8)
 caveMesh.material.defines = { RANGE_DISSOLVE: '' };
+// Interim until cave exteriors get a real rock mesh (round-2 critic G2-7): from
+// mid-distance the massed box tops were a flat black slab. Lighter rock, and
+// the up-facing tops carry moss and grass, so from outside it reads as a
+// rocky hill, not a block. Inside a cave you are below the tops, so the walls
+// keep their darker rock.
+caveMesh.material.color.setRGB(1.3, 1.25, 1.2);
+caveMesh.material.onBeforeCompile = (sh) => {
+  sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+    {
+      vec3 _upV = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
+      float _top = smoothstep( 0.55, 0.9, dot( normal, _upV ) );
+      diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.20, 0.26, 0.13 ), _top * 0.8 );
+    }`);
+};
+caveMesh.material.customProgramCacheKey = () => 'cave-moss-v1';
 // Custom-tile boxes: one mesh for all custom obstacle tiles, per-instance color. transparent for glass aesthetics.
 const customMesh = makeMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.6, metalness:0.0, transparent:true, opacity:0.85}), 4000);
 const ironMesh = makeMesh(new THREE.DodecahedronGeometry(STONE_R), new THREE.MeshStandardMaterial({color:0x6a564d, roughness:0.42, metalness:0.88, map:rockTex}), 1500);
@@ -3826,11 +3908,14 @@ function rebuildStones() {
     if(map[ty][tx]!==T.STONE) continue;
     if(!tileInView(tx,ty)) continue;
     // deterministic per-tile rotation + size so boulders don't look stamped
-    const h1=_terrNoise(tx*7,ty*13), h2=_terrNoise(tx*31,ty*3);
+    const h1=_terrNoise(tx*7,ty*13), h2=_terrNoise(tx*31,ty*3), h3=_terrNoise(tx*17,ty*29);
     eul.set((h1-0.5)*0.4, h1*Math.PI*2, (h2-0.5)*0.35);
     q.setFromEuler(eul);
-    _pos.set(tx*TILE+TILE/2, heightAt(tx*TILE+TILE/2, ty*TILE+TILE/2)+STONE_R*0.55, ty*TILE+TILE/2);
-    _sc1.set(0.85+h1*0.4, 0.7+h2*0.55, 0.85+h2*0.4);
+    // Off the tile centre and in a wider range of sizes: dead-centred, near
+    // identical boulders read as a grid of tiles from above (round-2 critic).
+    const px=tx*TILE+TILE/2+(h2-0.5)*TILE*0.5, pz=ty*TILE+TILE/2+(h3-0.5)*TILE*0.5, sz=0.6+h3*0.75;
+    _pos.set(px, heightAt(px, pz)+STONE_R*0.5*sz, pz);
+    _sc1.set((0.85+h1*0.4)*sz, (0.7+h2*0.55)*sz, (0.85+h2*0.4)*sz);
     _m4.compose(_pos,q,_sc1); stoneMesh.setMatrixAt(i++,_m4);
   }
   markInst(stoneMesh,i);

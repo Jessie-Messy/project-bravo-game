@@ -1010,10 +1010,12 @@ export function ridgeZone(tx, ty) {
 }
 // The band's inner edge wanders 0-3 tiles further in, so the foot of the range
 // is not a ruled line (critic C-10: seen square-on, a river ran into a rock
-// wall along a perfectly straight seam). Only natural ground is taken — grass,
-// trees, stone, sand — so a road, a river, a portal or a building that reaches
-// the edge keeps its tiles, and a river leaves a notch: its gorge.
-const _RAG_TAKES = new Set([T.GRASS, T.TREE, T.STONE, T.SAND]);
+// wall along a perfectly straight seam). Natural ground and paths are taken —
+// a road that ran into a notch in the band was lifted with the foothills and
+// painted straight up the rock face (round-2 critic), so a road ends at the
+// foot of the range instead. A river, a portal or a building that reaches the
+// edge keeps its tiles, and a river leaves a notch: its gorge.
+const _RAG_TAKES = new Set([T.GRASS, T.TREE, T.STONE, T.SAND, T.PATH]);
 function _ragNoise(u) {                         // smooth 1-D value noise, 0..1
   const h = n => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
   const i = Math.floor(u), f = u - i, t = f * f * (3 - 2 * f);

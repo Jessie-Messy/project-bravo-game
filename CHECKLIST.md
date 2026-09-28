@@ -329,3 +329,15 @@ on the band's lower half, slope-based rock blend.
       doors (atlas `_signTex`, `SHOP_SIGNS`), barrels + crates at trades, flower boxes, benches;
       props are player colliders (buildTown returns `props`). Merlon UVs: already world-space via wallMesh's shader — the
       critic's "stretched" note looks mistaken; recheck only if seen in game.
+
+### Round-2 whole-tour critic (2026-09-27): 6.5/10 — items (g3_* shots)
+- [x] G2-3 trunks: bark albedo was very dark (not shadows — measured); lighter bark, far-trunk tint e8d8c0 + no received shadow
+- [x] G2-2 haze distance now subtracts the camera's height above ground (fog_fragment `_hazeD`)
+- [x] G2-5 ragged ridge edge takes PATH too, so roads end at the foot (world-data rebuilt)
+- [x] G2-8 boulders jittered off tile centre, 0.6-1.35 size, lighter warm grey
+- [ ] G2-6 snow = hard flat triangles on far range/foothill crest — per-fragment/noise
+- [x] G2-4 paths: blurred path field (4/2/1 kernel, diagonal links bridged) inside _warpedTileAt; grass follows
+- [x] G2-7 (interim) cave rock lighter + mossy tops (`cave-moss-v1`); real rock mesh still TODO
+- [ ] G2-1 mountain band reads as a stacked curtain — cross-tier ridges, kill stripe noise
+- [ ] G2-dusk dusk_vista reads as full night with inverted aerial perspective — check haze at night
+- [ ] minor: far grass dark specks; near-plane clip in city_street; wall-top streaks
