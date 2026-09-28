@@ -316,6 +316,9 @@ export async function createComposer({ THREE, renderer, scene, camera, settings,
   build(settings);
 
   return {
+    // Debug: the live EffectComposer (null on the passthrough), so a pass can
+    // be toggled from the console — _dev.gfx / A-B checks.
+    get composer() { return composer; },
     // deltaTime is forwarded straight through. None of the passes in this
     // chain animate off it in r160 — it exists for things like AfterimagePass
     // — so the ms-vs-seconds question the host would otherwise have to answer

@@ -4197,6 +4197,11 @@ function updateObstacles() {
     wallDirty=treeDirty=stoneDirty=ironDirty=caveDirty=customDirty=waterDirty=bridgeDirty=placedObjectsDirty=true;
     _grassDirty=true;
   }
+  // The water sheet is four vertices: re-windowed EVERY frame, never queued.
+  // Staggered sixth in line below, newly visible river had no water for ~6
+  // frames after every turn, and the carved channel — twenty-plus units deep
+  // and dark — flashed through as a black blink (reported on v0.21.0).
+  rebuildWater(); waterDirty=false;
   // Rebuild at most one obstacle type per frame. Re-windowing all seven at
   // once (esp. thousands of cave/tree instances) caused a stutter every few
   // tiles of movement; staggering spreads it over ~7 frames (~0.1s), and the
@@ -4207,7 +4212,6 @@ function updateObstacles() {
   else if(stoneDirty) { rebuildStones();     stoneDirty=false;  }
   else if(ironDirty)  { rebuildIron();       ironDirty=false;   }
   else if(caveDirty)  { rebuildCave();       caveDirty=false;   }
-  else if(waterDirty) { rebuildWater();      waterDirty=false;  }
   else if(bridgeDirty){ rebuildBridges();    bridgeDirty=false; }
   else if(customDirty){ rebuildCustomTiles();customDirty=false; }
   else if(placedObjectsDirty){ rebuildPlacedObjects();placedObjectsDirty=false; }
@@ -4741,7 +4745,9 @@ waterMesh.frustumCulled = false;   // corners rewritten per rebuild → stale au
 scene.add(waterMesh);
 let waterDirty = true;
 function rebuildWater() {
-  const b=_obsBounds();
+  // Out to the fog's far end, like the caves: land is drawn that far, so the
+  // river must be too, or it ends in a hard line while its banks carry on.
+  const b=_obsBounds(Math.max(_view.far, scene.fog ? scene.fog.far : 0));
   // Cover the render window only — a full-map plane would cost a transparent
   // full-screen pass everywhere, including deserts with no water in sight.
   const x0=b.tx0*TILE, x1=(b.tx1+1)*TILE, z0=b.ty0*TILE, z1=(b.ty1+1)*TILE;
@@ -6643,6 +6649,10 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
       fogNear:scene.fog.near, fogFar:scene.fog.far, sunDir:_sunDir.toArray().map(v=>+v.toFixed(3)) });
   },
   // NOT setTier — that name is already the weapon-tier command.
+  // Toggle one post pass by name for an A/B check: _dev.pass('GTAOPass', false)
+  pass(name, on){ const c = rndr && rndr.composer; if(!c) return 'no composer';
+    const p = c.passes.find(q => q.constructor.name === name); if(!p) return c.passes.map(q => q.constructor.name).join(',');
+    if(on !== undefined) p.enabled = !!on; return name + ' enabled=' + p.enabled; },
   gfxTier(name){ if(name) setTier(name);
     return JSON.stringify({tier:getTier(), passes:rndr?rndr.passes():['(passthrough)'],
       pixelRatio:renderer.getPixelRatio(), size:renderer.getSize(new THREE.Vector2()).toArray()}); },
@@ -17038,6 +17048,12 @@ function refreshFxList(){
   // depthWrite:false already keeps water out of the depth buffer, but the
   // prepass uses an override material that ignores that.
   fxGroup.add(waterMesh);
+  // Grass too. A blade is thinner than anything screen-space AO can resolve,
+  // so on ultra GTAO read a field as a solid mass of occluders and laid a dark
+  // blanket over every meadow — the "grass shadows way too much" report on
+  // v0.21.0 (grass casts no real shadows at all). Ground, trees and buildings
+  // keep their AO.
+  fxGroup.add(grassMesh);
   // Water is land for haze purposes (see terrMesh): distance haze, no range fog.
   if(waterMesh.material && !(waterMesh.material.defines||{}).NO_RANGE_FOG){
     waterMesh.material.defines = Object.assign({}, waterMesh.material.defines, { NO_RANGE_FOG: '' });
