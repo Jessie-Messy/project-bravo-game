@@ -356,6 +356,6 @@ on the band's lower half, slope-based rock blend.
 - [x] G3-4 gully smears: half strength, wider
 - [x] G3-5 near trunks: bark #6b5842 → #8f7a60; far tint desaturated to d4c6b0
 - [x] G3-6 boulders: jitter ±0.35 tile
-- [ ] G3-7 dusk has no warm horizon band (Preetham sky tuning)
+- [x] G3-7 dusk warmth: sky turbidity/rayleigh/mie pushed harder by horizonF² — amber sun-side glow, noon untouched
 - [ ] minor: Saltmere pale sand smear under a tree; trunk stubs through canopy sides (top view);
       near-plane clipping in first person (city_street)

@@ -580,9 +580,13 @@ export function createSky({ THREE, renderer, scene, settings }){
     // useless to us — it divides sunPosition.y by 450000 and we pass a unit
     // vector (as the official three example does), so it pins at 1.0 and every
     // dusk cue has to come from these four ramps instead.
-    su.turbidity.value        = 2.2 + 6.8 * horizonF;
-    su.rayleigh.value         = 0.9 + 2.9 * horizonF;
-    su.mieCoefficient.value   = 0.0045 + 0.0110 * horizonF;
+    // Pushed harder toward the horizon (round-3 critic: dusk was a cool
+    // grey-lilac with no warm band; the sun-side glow was cream, not amber).
+    // Squared, so golden hour warms without touching mid-afternoon.
+    const hf2 = horizonF * horizonF;
+    su.turbidity.value        = 2.2 + 6.8 * horizonF + 3.0 * hf2;
+    su.rayleigh.value         = 0.9 + 2.9 * horizonF + 1.8 * hf2;
+    su.mieCoefficient.value   = 0.0045 + 0.0110 * horizonF + 0.008 * hf2;
     su.mieDirectionalG.value  = 0.80 + 0.11 * horizonF;
     su.sunPosition.value.copy(sunDir);
 
