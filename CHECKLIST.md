@@ -210,7 +210,8 @@ cap or KTX2 textures). Ask the user before raising it.
       revived in place; remote players saw a fainted pet standing still; wild cats lured toward
       pet owners and E-feed stole [E]; no pet XP from server-mob kills; remote/slot model
       skeletons leaked (_disposeModel). Wild cats are now immune (wildlife, not a target).
-  - [ ] [critic-low] cat idle = walk clip frame 0 (may be mid-stride) — pick a better held frame
+  - [x] [critic-low] cat idle held at 0.84 s of the walk clip (`idleAt`), where all four paws sit
+        lowest (measured in-engine: frame 0 was among the WORST — a paw lifted)
   - [ ] [critic-low] server accepts pet:'cat' without the owner having one (cosmetic) (cfg sane, save/load round-trip, pet never targets players) + critic pass
 
 ## Phase C — graphics critic loop (grass, background trees, buildings)

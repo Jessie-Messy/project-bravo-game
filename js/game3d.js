@@ -5257,7 +5257,9 @@ const MOB_MODELS = {
   // about 4x taller than it stands once the clip poses it, so at 13 the cat
   // rendered 8 units tall — lost in the grass. 52 lands it ~32 tall, a quarter
   // of the player, which reads as a cat. (Measured with _dev.modelOf.)
-  cat:           {file:'Calico_Cat_Pet.glb', h:52, clips:{ walk:/unreal take/i, idle:/unreal take/i }, idleScale:0},
+  // idleAt: the walk frame held for idle. Frame 0 was mid-stride (critic);
+  // 0.84 s is where all four paws sit lowest — measured in-engine, see HANDOFF.
+  cat:           {file:'Calico_Cat_Pet.glb', h:52, clips:{ walk:/unreal take/i, idle:/unreal take/i }, idleScale:0, idleAt:0.84},
 };
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
@@ -6856,13 +6858,14 @@ function buildMobModel(type){
   // invisible while turning snapped in ~25ms; with an angular-velocity ceiling it
   // becomes a visible spin every time a mob spawns, respawns or is re-slotted.
   // `fresh` makes the first frame snap instead of turn.
-  const inst = { type, obj, mixer, actions, cur:null, atkUntil:0, lx:null, lz:null, fresh:true };
+  const inst = { type, obj, mixer, actions, cur:null, atkUntil:0, lx:null, lz:null, fresh:true, idleAt: mm.idleAt };
   return inst;
 }
 function setModelAnim(inst, name){
   if (inst.cur===name || !inst.actions[name]) return;
   if (inst.cur && inst.actions[inst.cur]) inst.actions[inst.cur].fadeOut(0.18);
   inst.actions[name].reset().fadeIn(0.18).play();
+  if (name === 'idle' && inst.idleAt != null) inst.actions.idle.time = inst.idleAt;   // a held frame, not frame 0
   inst.cur=name;
 }
 // Ground speed (world units/sec) at which a walk/gallop clip plays at 1.0x and the
