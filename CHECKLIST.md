@@ -367,5 +367,6 @@ on the band's lower half, slope-based rock blend.
       talus foot, crags, mossy ledges); dungeon keeps its boxes; torches still mount; test:caverock
 - [ ] TORCHES (owner: "they suck… the animation sucks and the light source sucks, it looks wonky") —
       critic loop: flame animation + light source (flicker, falloff, colour, placement)
-- [ ] minor: Saltmere pale sand patch under a tree; trunk stubs through canopies (top view);
-      first-person camera clipping into buildings
+- [x] minor: sand warmer/darker (184,156,106 — lit beaches read as snow); first-person near plane 3
+      (props and door leaves sliced open at 10); top-view trunk "stubs" are perspective (trunks of trees
+      at the frame edge seen from the side) — correct geometry, left as is

@@ -848,7 +848,7 @@ const TILE_COLORS = {
   // colour you see THROUGH the water surface, and the surface shader is drawn
   // over it, so painting it near-WATER made the wadeable strip indistinguishable
   // from the drop-off and there was no visual cue for where you could walk.
-  [T.SAND]:         [201,178,133], [T.SHALLOWS]: [86,128,146],
+  [T.SAND]:         [184,156,106],   // warmer + darker: at 201,178,133 lit beaches read as snow [T.SHALLOWS]: [86,128,146],
   [T.DOCK]:         [122,80,48],   [T.CLIFF]:    [124,116,104],
   // Scree: a touch warmer and darker than CLIFF so the edge band reads as
   // weathered mountainside; the terrain shader adds rock on the steep faces and
@@ -15712,6 +15712,10 @@ function syncEntities(t){
     // moved you, so view and movement cannot disagree.
     const eye = _camGY + CHAR_H * FP_EYE_FRAC;
     const cp = Math.cos(fpPitch);
+    // The eye is a body-radius from any wall you walk up to, and the door
+    // leaves and props stand in the street: at the orbit camera's near plane
+    // of 10 they sliced open in first person. 3 still leaves a 4000:1 range.
+    if(camera.near !== 3){ camera.near = 3; camera.updateProjectionMatrix(); }
     camera.position.set(player.x, eye, player.y);
     camera.lookAt(
       player.x - Math.sin(camAngle) * 1000 * cp,
@@ -15719,6 +15723,7 @@ function syncEntities(t){
       player.y - Math.cos(camAngle) * 1000 * cp
     );
   } else {
+    if(camera.near !== 10){ camera.near = 10; camera.updateProjectionMatrix(); }
     // Orbit: camAngle spins around the player, camPitch tilts from ground level
     // (0.06) to straight overhead (1.54) at constant radius.
     const horiz = Math.cos(camPitch) * CAM_R * camZoom;
