@@ -23,6 +23,42 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-28 — DEPLOYED v0.21.0 to production (for testing)
+
+Everything in the 2026-09-27 entries below went live together:
+- the rebuilt buildings, shop signs and props;
+- the horizon, water, AO and path fixes;
+- the mountain spurs and haze/dusk work;
+- the grounding fix (other players were sunk into hills on v0.20.0).
+
+**Backups first** in `/home/ubuntu/bravo-backups/`: `bravo-server-20260928-040832.tgz` and
+`medieval-client-20260928-040832.tgz`.
+
+**Deploy order:**
+1. Tests and budgets: 9 test files green, 7.96/12 MB.
+2. Platform `npm run build`: every patch anchor matched and it ships v0.21.0.
+3. Output audit:
+   - no `.bat`, `.shots`, `.md` (except the vendored library READMEs), `.env` or `.py` files;
+   - the origin IP is not in the build;
+   - the built `index.html` is byte-identical to live.
+4. **Server first:** only `world-data.json` had changed (the ragged ridge now takes paths). Its md5
+   matches live.
+5. Then the client: tar extracted over `/home/ubuntu/orion-platform/public/games/medieval`.
+
+**Verified:**
+- Boot log shows `[orion-auth] ticket verification active` (no dev bypass), SQLite, and 48 mobs.
+- Through nginx over HTTPS, all new files return 200 and the new-code markers are present.
+- Through Cloudflare, `build-info.js` serves v0.21.0 with `Cache-Control: no-cache`.
+- The live page boots to v0.21.0, signed in, with 1 online.
+- No model changed, so no Cloudflare purge was needed.
+
+**Pre-existing and harmless:** live `index.html` still carries a `<script type="importmap">`. The
+CSP blocks it and logs one console error. The build rewrites bare specifiers, so it's unused;
+removing it from the platform template would silence the error.
+
+**Checking the host:** use `--resolve orionsyndicateguild.org:443:127.0.0.1` over HTTPS. Plain
+HTTP 301s, and the first `server_name` in sites-enabled is an `example.com` placeholder, which 404s.
+
 ### 2026-09-27 (evening) — round-2 whole-world critic fixes (NOT yet deployed)
 
 The round-2 critic scored the world 6.5/10 and raised 8 items. All are fixed; #7 is an interim fix.
