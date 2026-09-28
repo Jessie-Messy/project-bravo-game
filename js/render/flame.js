@@ -99,7 +99,7 @@ const FLAME_FRAG = /* glsl */`
     // flame never bobs tall-squat-tall
     erode *= mix(0.8, 1.0, clamp(abs(x) / max(halfW, 1e-3), 0.0, 1.0));
     float centre = 1.0 - clamp(abs(x) / max(halfW, 1e-3), 0.0, 1.0);
-    float f = body * smoothstep(erode - 0.06, erode + 0.05, n * 1.15 + (1.0 - p.y) * 0.22 + centre * 0.16);
+    float f = body * smoothstep(erode - 0.06, erode + 0.05, n * 1.15 + (1.0 - p.y) * 0.22 + centre * 0.16 * (1.0 - smoothstep(0.7, 0.95, p.y)));   // (not at the tip: it spun a needle)
     if (f < 0.02) discard;
     // heat falls off with height and toward the edge; tips end red
     float heat = clamp(f * (1.1 - p.y * 1.15) * (1.0 - abs(x) / max(halfW, 1e-3) * 0.55), 0.0, 1.0);

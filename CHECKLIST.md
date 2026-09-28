@@ -365,8 +365,10 @@ on the band's lower half, slope-based rock blend.
 - [x] ultra "grass shadows way too much": GTAO treated blades as occluders → grass out of the AO prepass
 - [x] cave exteriors: surface caves are one continuous rock heightfield (js/render/cave-rock.js, 3 samples/tile,
       talus foot, crags, mossy ledges); dungeon keeps its boxes; torches still mount; test:caverock
-- [ ] TORCHES (owner: "they suck… the animation sucks and the light source sucks, it looks wonky") —
-      critic loop: flame animation + light source (flicker, falloff, colour, placement)
+- [x] TORCHES — critic loop PASS 8/10 (3 → 5 → 6.5 → 7.5 → 8). Lights at the flame (were buried at a
+      fixed y), physical falloff + jitter; procedural flame card + glow/embers (render/flame.js), model's own
+      flame collapsed (fire.js hide); held torch upright, flame drawn (fog chunk + mirrored-bone culling bugs).
+      Polish left: pale rim on the torch head at point-blank range
 - [x] minor: sand warmer/darker (184,156,106 — lit beaches read as snow); first-person near plane 3
       (props and door leaves sliced open at 10); top-view trunk "stubs" are perspective (trunks of trees
       at the frame edge seen from the side) — correct geometry, left as is

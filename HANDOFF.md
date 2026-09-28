@@ -23,6 +23,34 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-28 (later) — owner's short list after v0.21.0 (NOT yet deployed)
+
+- **Water blinking black:** the water sheet was re-windowed in the one-per-frame obstacle stagger. After
+  a turn, newly visible river had no water for ~6 frames, and the dark carved channel flashed through.
+  It is now rebuilt every frame, out to the fog's far end.
+- **Ultra "grass shadows":** GTAO treated grass blades as solid occluders. `grassMesh` is now in fxGroup
+  (excluded from the AO prepass). `_dev.pass(name, on)` toggles a post pass for A/B checks.
+- **Cave exteriors:** js/render/cave-rock.js builds a heightfield over surface CAVE_WALL tiles (the dungeon
+  keeps its boxes) and `rebuildCaveRock` rebuilds it on editor edits. Rock shading is sampled in the
+  face's plane and blended as samples, not coordinates. Test: `test:caverock`.
+- **Torches (critic loop PASS 8/10):**
+  - Every placed light's PointLight sat at a constant height measured from y=0, so it was buried on
+    hills. Lights now sit at the flame (`placedFlameAt`), and the cave-mouth arches are grounded.
+  - js/render/flame.js adds an upright flame card (normal blending, premultiplied, four colour bands,
+    eroded by noise scrolling upward) and a GLOW card (halo flickering with the light, embers).
+  - fire.js `hide` collapses the GLB's own flame by height, and the collapsed geometry renders as char.
+  - Lights use decay 1.5, intensity 520 (held 850), colour 0xff7a2e, and position jitter.
+  - Wall torches are 1.3x, with the light 10u off the face. Torch scale went 1.6 → 1.9.
+  - The held torch is upright (`WEAPON_ADJUST.torch.rot` [-2.9, 2.9, 1.3], solved numerically) and
+    gripped low. Its flame had never rendered: the fog chunk needs `mvPosition`, and the mirrored hand
+    bones back-face culled it, so the card is now DoubleSide.
+  - Note: placed torches burn out after a game day; `_dev.relight` needs wood, `_dev.removePlaced(i)`
+    clears them.
+- **Minor:**
+  - Sand is 184,156,106.
+  - The first-person near plane is 3 (orbit 10).
+  - The "trunk stubs" in top view are perspective, left as is.
+
 ### 2026-09-28 — DEPLOYED v0.21.0 to production (for testing)
 
 Everything in the 2026-09-27 entries below went live together:
