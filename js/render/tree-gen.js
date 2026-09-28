@@ -92,7 +92,7 @@ function at(arr, lvl) {
 // `t` is 0 at the base of the parent and 1 at its tip.
 function profileMult(kind, t) {
   switch (kind) {
-    case 'cone':  return 1 - 0.85 * t;
+    case 'cone':  return Math.min(0.75, 1 - 0.90 * Math.pow(t, 0.9));   // (0.85 linear: a ragged column, r4; uncapped, the lowest limbs hung past every crown, r5)
     case 'pine':  return Math.max(0.10, 1 - Math.pow(Math.abs(t - 0.34) / 0.66, 1.6));
     case 'round': return 0.42 + 0.58 * Math.sin(Math.PI * Math.min(1, 0.18 + t * 0.88));
     default:      return 1;
@@ -313,7 +313,10 @@ export function generateTree(THREE, params = {}, seed = 1) {
       const radial = Math.PI * 2 * (radialOff + c / kids);
       _qTmp.setFromAxisAngle(_up, radial);
       _q.multiply(_qTmp);
-      _qTmp.setFromAxisAngle(new THREE.Vector3(1, 0, 0), childAngle * rrange(0.75, 1.25));
+      // A cone's top limbs sweep UP, so the crown closes to a point instead of
+      // ending in a flat, torn-looking top (tree critic r4).
+      const sweep = (at(P.profile, lvl) === 'cone' && t > 0.78) ? 0.55 : 1;
+      _qTmp.setFromAxisAngle(new THREE.Vector3(1, 0, 0), childAngle * sweep * rrange(0.75, 1.25));
       _q.multiply(_qTmp);
 
       // A child is never thicker than the parent it leaves — that reads as a
@@ -356,7 +359,10 @@ export function generateTree(THREE, params = {}, seed = 1) {
       _qTmp.setFromAxisAngle(new THREE.Vector3(1, 0, 0), L.angle * rrange(0.6, 1.4));
       _q.multiply(_qTmp);
 
-      const size = L.size * rrange(0.75, 1.25);
+      // Smaller leaves on shorter branches: the short limbs at a conifer's top
+      // carried full-size sprays and the tip read as a torn flag (tree critic r4).
+      const nominal = at(P.length, branch.level) || branch.length;
+      const size = L.size * rrange(0.75, 1.25) * Math.max(0.2, Math.min(1, branch.length / nominal));   // (0.45 still fanned the leader like a palm, r5)
       quad(p, _q, size, 0);
       if (L.cross) quad(p, _q, size, Math.PI / 2);
     }

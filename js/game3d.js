@@ -9,6 +9,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildTown } from './render/buildings.js';
 import { buildCaveRock } from './render/cave-rock.js';
 import { findBridgeSpans, extendBridgeSpans, shapeBridgeSpans, makeDeckLookup, buildBridges } from './render/bridges.js';
+import { buildCaveMouths } from './render/cave-mouth.js';
 import { makeFlameMaterial, makeFlameGeometry, makeGlowMaterial, makeGlowGeometry } from './render/flame.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave, netCallGuards,
   netHousePlace, netHouseUpdate, netHouseRemove,
@@ -1987,6 +1988,7 @@ const _m4  = new THREE.Matrix4();
 const _pos = new THREE.Vector3();
 const _qId = new THREE.Quaternion();
 const _sc1 = new THREE.Vector3(1,1,1);
+const _sc2 = new THREE.Vector3(1,1,1);
 const _q1  = new THREE.Quaternion();     // scratch: per-instance rotation
 const _eul = new THREE.Euler();
 
@@ -2206,23 +2208,50 @@ const barkTex = makeCanvasTex(128,256,(x,w,h)=>{
   }
 });
 // Foliage — clumped needle masses so the canopy has depth instead of a flat cone.
+// Leaf CLUSTERS, each a knot of small leaves lit from above with a shadowed
+// underside, with dark gaps between them. The old texture scattered big
+// random ellipses, which read as camouflage print on every crown (tree
+// critic r1); clusters are what a canopy actually looks like from 20 tiles.
 const leafTex = makeCanvasTex(256,256,(x,w,h)=>{
-  // Lifted from #24471f / (58,112,46): canopies read as flat near-black
-  // masses at play distance (critic C-7).
-  x.fillStyle='#2e5826'; x.fillRect(0,0,w,h);
-  for(let i=0;i<520;i++){
-    const cx=Math.random()*w, cy=Math.random()*h, r=5+Math.random()*17;
-    const t=0.55+fbm(cx/16,cy/16,12,3)*0.95;
-    x.fillStyle=`rgba(${(70*t)|0},${(128*t)|0},${(52*t)|0},.85)`;
-    x.beginPath(); x.ellipse(cx,cy,r,r*(0.5+Math.random()*0.45),Math.random()*3,0,Math.PI*2); x.fill();
+  x.fillStyle='#284c22'; x.fillRect(0,0,w,h);
+  let seed=91; const rnd=()=>(seed=(seed*16807)%2147483647)/2147483647;
+  const leaf=(cx,cy,r,l)=>{ const rot=rnd()*3.1; for(const ox of [-w,0,w]) for(const oy of [-h,0,h]){
+    x.fillStyle=`rgb(${(64+74*l)|0},${(104+86*l)|0},${(40+38*l)|0})`;
+    x.beginPath(); x.ellipse(cx+ox,cy+oy,r,r*0.62,rot,0,Math.PI*2); x.fill(); } };
+  for(let c=0;c<46;c++){
+    const cx=rnd()*w, cy=rnd()*h, cr=12+rnd()*14;
+    // shadow under the cluster, then its leaves, lighter toward the top
+    x.fillStyle='rgba(12,26,10,.35)'; x.beginPath(); x.ellipse(cx,cy+cr*0.35,cr*1.05,cr*0.8,0,0,Math.PI*2); x.fill();
+    for(let i=0;i<34;i++){
+      const a=rnd()*Math.PI*2, d=Math.sqrt(rnd())*cr, lx=cx+Math.cos(a)*d, ly=cy+Math.sin(a)*d*0.85;
+      const up=1-(ly-(cy-cr))/(2*cr);                       // 1 at the cluster's top
+      leaf(lx,ly,2.6+rnd()*3.2, Math.max(0,Math.min(1,0.25+up*0.75+(rnd()-0.5)*0.25)));
+    }
   }
-  for(let i=0;i<180;i++){                                   // sunlit tips
-    const cx=Math.random()*w, cy=Math.random()*h;
-    x.fillStyle='rgba(168,210,120,.20)';
-    x.beginPath(); x.ellipse(cx,cy,3+Math.random()*7,2+Math.random()*4,Math.random()*3,0,Math.PI*2); x.fill();
-  }
-  grain(x,w,h,10,0.09);
+  grain(x,w,h,10,0.07);
 });
+// Conifer needles: drooping branch rows, a lit upper edge of short needle
+// strokes and a dark band under each row. The cones wore the broadleaf
+// texture before: "camouflage-print party hats" (tree critic r1).
+const needleTex = makeCanvasTex(128,128,(x,w,h)=>{
+  // (lifted from #1f3d22 with the row shadow halved: the cones sat ~40% darker
+  // than the broadleaves beside them and read as cut-outs, tree critic r7)
+  x.fillStyle='#2b5230'; x.fillRect(0,0,w,h);
+  let seed=17; const rnd=()=>(seed=(seed*16807)%2147483647)/2147483647;
+  const rows=6, rh=h/rows;
+  for(let r=0;r<rows;r++){
+    const y0=r*rh;
+    x.fillStyle='rgba(8,20,10,.24)'; x.fillRect(0,y0+rh*0.72,w,rh*0.28);        // shadow under the row
+    for(let i=0;i<150;i++){
+      const px=rnd()*w, py=y0+rnd()*rh*0.7, len=4+rnd()*7, l=0.35+(1-(py-y0)/(rh*0.7))*0.55+rnd()*0.15;
+      x.strokeStyle=`rgb(${(40+60*l)|0},${(78+80*l)|0},${(46+44*l)|0})`; x.lineWidth=1+rnd()*0.8;
+      const a=Math.PI*0.5+(rnd()-0.5)*1.1;                                       // drooping: mostly down
+      for(const ox of [-w,0,w]){ x.beginPath(); x.moveTo(px+ox,py); x.lineTo(px+ox+Math.cos(a)*len,py+Math.sin(a)*len); x.stroke(); }
+    }
+  }
+  grain(x,w,h,8,0.06);
+});
+needleTex.wrapS = needleTex.wrapT = THREE.RepeatWrapping;
 const barkNrm = normalFromTex(barkTex, 2.4);
 // 0.8, not 1.8: the normal map is derived from the overlapping leaf ellipses,
 // and at full strength every ellipse edge became a ridge — the "fish-scale"
@@ -2803,7 +2832,7 @@ wallMesh.material.customProgramCacheKey = () => 'wall-worlduv-v2';
 // Stacked-skirt canopy and flared trunk instead of a bare cone on a cylinder.
 // Both merge down to ONE geometry each, so this is the same two draw calls the
 // primitives cost — the tier count is free.
-const _canopyGeo = makeConiferCanopy(THREE, { height:TOPH, radius:TILE*0.72, tiers:4, seed:20260801 });
+const _canopyGeo = makeConiferCanopy(THREE, { height:TOPH, radius:TILE*0.72, tiers:6, seed:20260801 });
 const _trunkGeo  = makeTrunk(THREE, { height:TRUNKH, top:9, bottom:12, seed:4242 });
 // Tinted toward grey-brown: the bare bark read as near-black maroon at range,
 // the darkest thing in every vista (critic C-6).
@@ -2811,16 +2840,27 @@ const trunkMesh = makeMesh(_trunkGeo,  new THREE.MeshStandardMaterial({map:barkT
 // The far trunks are stubs under their own canopy: lit from behind and in the
 // canopy's shadow, they read as a black comb under every clump (round-2
 // critic). A lighter tint and no received shadow keeps them reading as wood.
-trunkMesh.material.color.setHex(0xd4c6b0);
+trunkMesh.material.color.setHex(0xc9c6c2);   // (cooler: read red-brown next to the near bark, tree r4)
 trunkMesh.receiveShadow = false;
+trunkMesh.userData.fx = true;   // (and out of the AO prepass: their feet were a black band, tree r3)
 const _canopyMat = new THREE.MeshStandardMaterial({map:leafTex, normalMap:leafNrm, roughness:0.88, metalness:0.0});
 _canopyMat.defines = Object.assign({}, _canopyMat.defines, { CAM_FADE: '' });   // see alphatest_fragment
-const topMesh   = makeMesh(_canopyGeo, _canopyMat, nTree+4000);
+const _needleMat = new THREE.MeshStandardMaterial({map:needleTex, roughness:0.9, metalness:0.0});
+_needleMat.defines = { CAM_FADE: '' };
+const topMesh   = makeMesh(_canopyGeo, _needleMat, nTree+4000);
 // A broadleaf crown for the species that are not conifers. SHARES the material
 // with the cone above on purpose: the canopy wind patch and the leaf texture
 // live there, so sharing is what stops the two halves of the forest drifting
 // apart in everything except the shape they are supposed to differ in.
-const _canopyBroadGeo = makeBroadleafCanopy(THREE, { height:TOPH, radius:TILE*0.80, lobes:5, seed:20260902 });
+// Radius 0.68 of a tile (was 0.80), matched to the near crowns, which are now
+// squeezed to ~0.50 of the tree's height (tree-lod.js). What breaks a grove
+// up is not a narrow crown but the understory: see _isBush.
+// And only the upper 80% of the canopy box, on a trunk that runs up to meet it
+// (_placeFarTree): a full-height crown on a short trunk read as a poplar, the
+// same shape as the conifers beside it (tree critic r3).
+const BROAD_CROWN = 0.80;   // (0.72 put every low-tier broadleaf on a lollipop stick)
+const _canopyBroadGeo = makeBroadleafCanopy(THREE, { height:TOPH*BROAD_CROWN, radius:TILE*0.68, lobes:6, seed:20260902 });
+_canopyBroadGeo.translate(0, TOPH*(1-BROAD_CROWN)*0.5, 0);
 const topBroadMesh = makeMesh(_canopyBroadGeo, _canopyMat, nTree+4000);
 // three defines USE_INSTANCING_COLOR from the presence of this buffer alone and
 // multiplies it into the diffuse — no material flag needed. Same mechanism the
@@ -2842,8 +2882,41 @@ topBroadMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array
 // `transformed` here is in the cone's own local space — which is exactly what
 // we want to bend, and it keeps leaning (felled) trees correct for free.
 const _windU = { value: 0 };
+// The tree sink's window: the last 13% of the tree draw distance, so a
+// grove is whole until it is nearly at the edge. On the cave walls' window
+// (from 35% of the fog range) horizon groves stood half-sunk as dark hedge
+// strips (tree critic r2). Set per frame from _view.far.
+const _treeFade = { value: new THREE.Vector2(3000, 4000) };
 const WIND_AMP = 7.0;   // world units of tip travel at full sway
-topMesh.material.onBeforeCompile = (shader) => {
+// Sink a far tree into the ground as it nears the range edge (see below the
+// canopy wind). Local units; the instance scale is ~1, and the whole tree is
+// under TRUNKH + TOPH, so that much takes any part of it below the ground.
+const _TREE_SINK = `
+      #ifdef USE_INSTANCING
+      {
+        vec3 _tc = ( modelMatrix * instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
+        float _tk = 1.0 - smoothstep( uCaveFade.x, uCaveFade.y, distance( _tc.xz, cameraPosition.xz ) );
+        transformed.y -= ( 1.0 - _tk ) * ${(TRUNKH + TOPH + 20).toFixed(1)};
+      }
+      #endif`;
+// The canopy patch is shared by the cone and the broadleaf crown (separate
+// materials now, for the needle texture). Besides the wind and the range sink
+// it shades each crown: darker low down, lighter at the crown top and on faces
+// toward the sky. A flat-lit crown read as a cut-out (tree critic r1).
+const _canopyPatch = (shader) => {
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying float vCanH;\nvarying float vCanUp;')
+    .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+      vCanH = clamp((position.y + ${(TOPH*0.5).toFixed(2)}) / ${TOPH.toFixed(2)}, 0.0, 1.0);
+      vCanUp = objectNormal.y;`);
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', '#include <common>\nvarying float vCanH;\nvarying float vCanUp;')
+    .replace('#include <color_fragment>', `#include <color_fragment>
+      diffuseColor.rgb *= mix(0.66, 1.14, vCanH) * (0.86 + 0.26 * clamp(vCanUp, 0.0, 1.0));
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.10, 1.06, 0.84), vCanH * 0.5);`);
+  _canopyPatchWind(shader);
+};
+const _canopyPatchWind = (shader) => {
   shader.uniforms.uWindTime = _windU;
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', '#include <common>\nuniform float uWindTime;')
@@ -2861,7 +2934,26 @@ topMesh.material.onBeforeCompile = (shader) => {
         float w = hFrac * hFrac * ${WIND_AMP.toFixed(1)};
         transformed.x += sway * w;
         transformed.z += sway * w * 0.6;
-      }`);
+      }
+      ${_TREE_SINK}`);
+  shader.uniforms.uCaveFade = _treeFade;
+  shader.vertexShader = shader.vertexShader.replace('uniform float uWindTime;', 'uniform float uWindTime;\nuniform vec2 uCaveFade;');
+};
+_canopyMat.onBeforeCompile = _canopyPatch;
+_needleMat.onBeforeCompile = _canopyPatch;
+// The far forest used to RANGE-fog: toward the edge of the draw window every
+// tree faded to the fog colour — the pale horizon — so groves at ~4000 stood
+// on the green land as white ghosts (tree critic r1; found by raycast: far
+// canopy instances). Like the cave walls (C-8) they now take the haze only and
+// sink into the ground over the last stretch of the range instead, so a grove
+// lowers away rather than bleaching or popping.
+_canopyMat.defines.NO_RANGE_FOG = ''; _needleMat.defines.NO_RANGE_FOG = '';
+trunkMesh.material.defines = Object.assign({}, trunkMesh.material.defines, { NO_RANGE_FOG: '' });
+trunkMesh.material.onBeforeCompile = (shader) => {
+  shader.uniforms.uCaveFade = _treeFade;
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nuniform vec2 uCaveFade;')
+    .replace('#include <begin_vertex>', `#include <begin_vertex>\n${_TREE_SINK}`);
 };
 
 // ── Near-LOD forest (procedural branch geometry) ──────────────────
@@ -2880,6 +2972,20 @@ const nearForest = QS.nearTrees > 0
       anisotropy: QS.anisotropy || 4,
     })
   : null;
+// Leaf cards out of the GTAO prepass, like the grass: the prepass draws them
+// with their raw card normals, not the crown normals the leaf shader uses, and
+// read whole sprays of cards as fully occluded — pure black shards (tree r2).
+// (NOT the bark. Excluded, a branch still receives the AO computed for whatever
+// the prepass saw behind it, and one close to the camera drew as a solid black
+// slab in first person — tree r3/r4, found by toggling GTAO.)
+if(nearForest) for(const sp of nearForest.species) sp.leaf.userData.fx = true;
+// Each near tree its own shade. One flat material colour per species made a
+// single-species grove one colour, and it read as a hedge (tree critic r2).
+// Broadleaves a little brighter than the conifers: they read darker, backwards.
+if(nearForest) for(const sp of nearForest.species){
+  sp.leaf.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(NEAR_TREES_CAP*3).fill(1), 3);
+  if(sp.def.leafKind !== 'needle') sp.leaf.material.color.multiplyScalar(1.12);
+}
 
 // Is there open water within a couple of tiles? Cheap enough to call per tree
 // during a window rebuild, and it is what puts birch on the riverbanks.
@@ -2956,6 +3062,16 @@ const _farByBiome = (() => {
 function farSpeciesIdx(tx, ty){
   const list = _farByBiome[biomeAt(tx, ty)] || _farByBiome.__all;
   return list[Math.floor(_gHash(tx, ty, 21) * list.length) % list.length];
+}
+// About one broadleaf tile in five is UNDERSTORY: a low bush where a tree
+// would be, drawn with the broadleaf crown squashed down to the ground. With a
+// full tree on every tile a broadleaf grove was one unbroken hedge-topped mass
+// (tree critic r1-r3); the bushes open the canopy into separate crowns and
+// give the grove a lower storey, and the tile still visibly holds what blocks
+// it and can still be chopped. Conifer stands keep a tree on every tile — they
+// already separate, and a spruce thicket is dense.
+function _isBush(tx, ty){
+  return _gHash(tx, ty, 31) < 0.20 && farIsBroadleaf(tx, ty);
 }
 // Needle species get the cone, everything else the broadleaf crown.
 function farIsBroadleaf(tx, ty){
@@ -3942,12 +4058,15 @@ function _treePlace(tx, ty, atBase){
   // canopy placed separately by the caller.
   const hp=(resourceHp[ty]&&resourceHp[ty][tx])||TREE_HP;
   const leanFrac=1 - hp/TREE_HP;
-  const jx=(_gHash(tx,ty,11)-0.5)*TILE*0.34;
-  const jz=(_gHash(tx,ty,12)-0.5)*TILE*0.34;
+  // More jitter and height spread than before, and one tree in ~9 an emergent
+  // standing well above the rest: groves read as one even hedge (critic r1).
+  const jx=(_gHash(tx,ty,11)-0.5)*TILE*0.50;
+  const jz=(_gHash(tx,ty,12)-0.5)*TILE*0.50;
   const cx=tx*TILE+TILE/2+jx, cz=ty*TILE+TILE/2+jz;
   const gy=heightAt(cx,cz);
-  const sw=0.80+_gHash(tx,ty,13)*0.46;
-  const sh=0.76+_gHash(tx,ty,14)*0.58;
+  const emergent=_gHash(tx,ty,16)<0.11 ? 1.28 : 1;
+  const sw=(0.78+_gHash(tx,ty,13)*0.50)*(emergent>1?1.12:1);
+  const sh=(0.66+_gHash(tx,ty,14)*0.72)*emergent;
   _sc1.set(sw,sh,sw);
   _yQ.setFromAxisAngle(_gUp, _gHash(tx,ty,15)*Math.PI*2);
   return { cx, cz, gy, sw, sh, leanFrac };
@@ -3959,8 +4078,12 @@ function _treePlace(tx, ty, atBase){
 let _farNeedleN = 0, _farBroadN = 0;
 function _placeFarTree(tx, ty, i){
   const P=_treePlace(tx,ty,false);
-  const th=TRUNKH*P.sh, oh=TOPH*P.sh;
+  const bush=_isBush(tx,ty);
+  if(bush){ _sc1.set(P.sw*0.95, P.sh*0.36, P.sw*0.95); P.leanFrac=0; }   // (a leaning bush is just odd)
+  const th=bush ? 2 : TRUNKH*P.sh, oh=TOPH*_sc1.y;
   const broad = farIsBroadleaf(tx,ty);
+  // a broadleaf's crown starts higher (BROAD_CROWN), so its trunk is longer
+  const tk = broad && !bush ? 1 + TOPH*(1-BROAD_CROWN)/TRUNKH + 0.08 : 1;
   const top = broad ? topBroadMesh : topMesh;
   const ti  = broad ? _farBroadN++ : _farNeedleN++;
   if(ti >= top.instanceMatrix.count){ if(broad) _farBroadN--; else _farNeedleN--; return; }
@@ -3968,9 +4091,10 @@ function _placeFarTree(tx, ty, i){
     treeLeanAxis(tx,ty,_leanAxis);
     _leanQ.setFromAxisAngle(_leanAxis, P.leanFrac*TREE_MAX_LEAN);
     _leanQ.multiply(_yQ);                  // spin first, then topple
-    _leanOff.set(0,th/2,0).applyQuaternion(_leanQ);
+    _leanOff.set(0,th*tk/2,0).applyQuaternion(_leanQ);
     _pos.set(P.cx+_leanOff.x,P.gy+_leanOff.y,P.cz+_leanOff.z);
-    _m4.compose(_pos,_leanQ,_sc1); trunkMesh.setMatrixAt(i,_m4);
+    _sc2.set(_sc1.x, _sc1.y*tk, _sc1.z);
+    _m4.compose(_pos,_leanQ,_sc2); trunkMesh.setMatrixAt(i,_m4);
     _leanOff.set(0,th+oh/2,0).applyQuaternion(_leanQ);
     _pos.set(P.cx+_leanOff.x,P.gy+_leanOff.y,P.cz+_leanOff.z);
     _m4.compose(_pos,_leanQ,_sc1); top.setMatrixAt(ti,_m4);
@@ -3978,8 +4102,11 @@ function _placeFarTree(tx, ty, i){
     // Sunk a little: the flared trunk base must bury itself in the slope or
     // an uphill tree shows daylight under its upper side.
     _pos.set(P.cx,P.gy+th/2-3,P.cz);
-    _m4.compose(_pos,_yQ,_sc1); trunkMesh.setMatrixAt(i,_m4);
-    _pos.set(P.cx,P.gy+th+oh/2-3,P.cz);
+    if(bush) _sc2.set(0.3,0.05,0.3); else _sc2.set(_sc1.x, _sc1.y*tk, _sc1.z);
+    _pos.y = P.gy + th*tk/2 - 3;
+    _m4.compose(_pos,_yQ,_sc2);
+    trunkMesh.setMatrixAt(i,_m4);
+    _pos.set(P.cx,P.gy+th+oh/2-(bush?8:3),P.cz);
     _m4.compose(_pos,_yQ,_sc1); top.setMatrixAt(ti,_m4);
   }
   const c=farTintFor(tx,ty,_farTintTmp), ci=ti*3;
@@ -4009,6 +4136,8 @@ function _placeNearTree(tx, ty){
     _m4.compose(_pos,_yQ,_sc1);
   }
   sp.bark.setMatrixAt(n,_m4); sp.leaf.setMatrixAt(n,_m4);
+  { const v = 0.86 + _gHash(tx, ty, 22) * 0.28, w = (_gHash(tx, ty, 23) - 0.5) * 0.16, a = sp.leaf.instanceColor.array, ci = n*3;
+    a[ci] = v*(1+w); a[ci+1] = v; a[ci+2] = v*(1-w); }
   const packed=ty*MAP_W+tx;
   sp.bark.userData.instTile[n]=packed;
   sp.leaf.userData.instTile[n]=packed;
@@ -4039,10 +4168,17 @@ function rebuildTrees() {
   for(let ty=b.ty0;ty<=b.ty1;ty++) for(let tx=b.tx0;tx<=b.tx1;tx++) {
     if(map[ty][tx]!==T.TREE) continue;
     if(!tileInView(tx,ty)) continue;
-    if(nearBudget>0 && nCand<_nearCandT.length){
+    // Conifers never take branch geometry: the stacked-skirt cone reads as a
+    // conifer at every range, and six critic rounds on the generated ones went
+    // fern → torn flag → skeleton (tree critic r1–r6). The budget goes to the
+    // broadleaves, where branches are the point — and no conifer pops at a swap.
+    if(nearBudget>0 && nCand<_nearCandT.length && !_isBush(tx,ty) && farIsBroadleaf(tx,ty)){
       const ccx=tx*TILE+TILE/2, ccz=ty*TILE+TILE/2;
-      const dx=ccx-player.x, dz=ccz-player.y;
-      const d2=dx*dx+dz*dz;
+      // nearer of the player and the camera: measured from the player alone,
+      // trees right in front of a third-person camera stayed cones while
+      // branch trees stood behind them (tree critic r1)
+      const dx=ccx-player.x, dz=ccz-player.y, ex=ccx-camera.position.x, ez=ccz-camera.position.z;
+      const d2=Math.min(dx*dx+dz*dz, ex*ex+ez*ez);
       if(d2<NEAR_R2){ _nearCandT[nCand]=ty*MAP_W+tx; _nearCandD[nCand]=d2; nCand++; continue; }
     }
     if(far<farCap){ _placeFarTree(tx,ty,far); far++; }
@@ -4077,6 +4213,7 @@ function rebuildTrees() {
   if(nearForest) for(const sp of nearForest.species){
     markInst(sp.bark,sp._n); markInst(sp.leaf,sp._n);
     sp.bark.userData.instTile.length=sp._n;
+    sp.leaf.instanceColor.needsUpdate=true;
     sp.leaf.userData.instTile.length=sp._n;
     sp.bark.computeBoundingSphere(); sp.leaf.computeBoundingSphere();
   }
@@ -4179,6 +4316,11 @@ function rebuildPlacedObjects() {
   // Every registry mesh must be marked, including ones that drew nothing this
   // pass — otherwise a mesh keeps last window's count and ghosts stay on screen.
   for(const k in PLACEABLES){ const m=PLACEABLES[k].mesh(); markInst(m, _placedCount.get(m)||0); }
+  // the cave-mouth torches burn with the same flame (they never go out)
+  for(const f of archFlamePts){
+    const tx=Math.floor(f.x/TILE), ty=Math.floor(f.z/TILE);
+    if(tx>=b.tx0&&tx<=b.tx1&&ty>=b.ty0&&ty<=b.ty1) addFlame(f.x, f.y, f.z, 1.0, 'torch');   // (1.6 read as a sticker twice the shaft: critic r1)
+  }
   markInst(placedFlameMesh,nFlame); markInst(placedGlowMesh,nGlow);
   rebuildWorldChests();
 }
@@ -4246,26 +4388,25 @@ _caveRockMat.onBeforeCompile = (sh) => {
     .replace('#include <color_fragment>', `#include <color_fragment>
       {
         vec3 wn = normalize( ( vec4( vNormal, 0.0 ) * viewMatrix ).xyz );
-        // Height folded into the lookup: sampled on XZ alone, the noise ran
-        // straight down every face and read as vertical drapery.
-        // On a steep face, sample in the face's own plane (along it, and up):
-        // XZ alone ran straight down every cliff as vertical drapery.
-        vec2 ft = normalize(vec2(-wn.z, wn.x) + 1e-4);
-        float steep = 1.0 - smoothstep(0.35, 0.75, wn.y);
-        // Blend the two SAMPLES, never the coordinates: mixing coordinates
-        // compressed the noise wherever a face was half-steep and printed
-        // zigzag contour bands.
-        vec2 qa = vRkW.xz, qb = vec2(dot(vRkW.xz, ft), vRkW.y * 1.6);
-        float a = mix(_rv(qa / 70.0),       _rv(qb / 70.0),       steep);
-        float b = mix(_rv(qa / 17.0 + 4.1), _rv(qb / 17.0 + 4.1), steep);
-        float c = mix(_rv(qa / 5.0 + 9.3),  _rv(qb / 5.0 + 9.3),  steep);
-        vec2 nh = wn.xz / max(length(wn.xz), 1e-3);
-        // No height strata here (they printed contour bands on the faces) and
-        // only a whisper of fall-line streaking: blotchy rock, broken by the
-        // geometry's own ledges, is what reads as stone at this scale.
-        float gully = _rv(vec2(dot(vRkW.xz, vec2(-nh.y, nh.x)) / 60.0, vRkW.y / 160.0));
-        vec3 rock = vec3(0.27, 0.25, 0.225) * (0.62 + 0.52 * a + 0.20 * b + 0.12 * c)
-                  * (0.94 + 0.10 * gully);
+        // TRIPLANAR: three axis-aligned projections blended by the normal.
+        // The face-plane lookup it replaces (along the face, and up) turned
+        // with every change of facing, so on a curved face — the cave-mouth
+        // portals worst of all — the noise wrapped into concentric contour
+        // rings like burl wood, and down the cliffs it ran as wood grain
+        // (cave mouth critic r1). An axis-aligned projection cannot ring.
+        vec3 tw = pow(abs(wn), vec3(4.0)); tw /= (tw.x + tw.y + tw.z);
+        #define _TRI(q) (tw.x * _rv((q).zy) + tw.y * _rv((q).xz) + tw.z * _rv((q).xy))
+        float a = _TRI(vRkW / 70.0);
+        float b = _TRI(vRkW / 17.0 + 4.1);
+        float c = _TRI(vRkW / 5.0 + 9.3);
+        // a faint fall-line gully, stretched only 1.6x down the face (it was
+        // 2.7x, and read as grain)
+        float gully = _TRI(vRkW * vec3(1.0, 0.62, 1.0) / 60.0 + 2.3);
+        // more contrast in the mid and fine octaves, and the lows pulled into
+        // dark crevices: with the triplanar lookup the rock went soft, "grey
+        // felt" (cave mouth critic r2)
+        vec3 rock = vec3(0.27, 0.25, 0.225) * (0.52 + 0.46 * a + 0.34 * b + 0.22 * c)
+                  * (0.90 + 0.16 * gully) * mix(0.86, 1.0, smoothstep(0.10, 0.50, c * 0.5 + b * 0.5));   // (0.72 over 0.18-0.42 printed dalmatian spots)
         // steep faces a shade darker and cooler than ledges: reads as relief
         rock *= mix(vec3(0.86, 0.88, 0.92), vec3(1.0), smoothstep(0.2, 0.7, wn.y));
         // what faces the sky carries moss and a little turf
@@ -4275,7 +4416,7 @@ _caveRockMat.onBeforeCompile = (sh) => {
         diffuseColor.rgb = rock;
       }`);
 };
-_caveRockMat.customProgramCacheKey = () => 'cave-rock-v1';
+_caveRockMat.customProgramCacheKey = () => 'cave-rock-v2-tri';
 let caveRockMesh = null;
 function rebuildCaveRock(){
   if(caveRockMesh){ scene.remove(caveRockMesh); caveRockMesh.geometry.dispose(); caveRockMesh = null; }
@@ -4623,7 +4764,9 @@ function updateEnvironmentCycle(dt) {
       // old 1.1 at one tile and is ~2.8x brighter at half a tile.
       let decay = 0;
       if (type === 'arch') {
-        baseY = 62; baseInt = 520; colorHex = 0xff7a2e; dist = TILE * 6; decay = 1.5;
+        // the cave-mouth torches: softer and warmer than a placed torch, or
+        // they tinted the rock pink (cave mouth critic r1)
+        baseY = 62; baseInt = 310; colorHex = 0xffae5c; dist = TILE * 4; decay = 1.5;
       } else if (isTorch) {
         baseY = 28; baseInt = 520; colorHex = 0xff7a2e; dist = TILE * 6; decay = 1.5;
       } else if (isHearth) {
@@ -6595,6 +6738,8 @@ window._dev={player, inv, G, skills, placedObjects, drops, map, T, resourceHp, e
   skyGain:(v)=>sky.setGain(v),
   clouds:(v)=>sky.setClouds(v),
   shadowFit(b){ if(b!==undefined) _shadowFitOn=!!b; return _shadowFitOn; },
+  // The far forest's sink window and the draw reach it is keyed to, for A/B shots.
+  treeFade(){ return { from:Math.round(_treeFade.value.x), to:Math.round(_treeFade.value.y), viewFar:Math.round(_view.far), fogNear:Math.round(scene.fog.near), fogFar:Math.round(scene.fog.far) }; },
   macro(v){ if(v!==undefined) _macroU.value=v; return _macroU.value; },
   slope(v){ if(v!==undefined) _slopeU.value=v; return _slopeU.value; },
   terrain(wx,wz){ const x=wx??player.x, z=wz??player.y;
@@ -7985,32 +8130,41 @@ const corpseGrp = new THREE.Group();
 }
 corpseGrp.visible = false; scene.add(corpseGrp);
 
-// ── Cave entrance arches ──────────────────────────────────────────
-// The generator carves a walkable CAVE_ENTRANCE tile at each cave mouth,
-// but dark floor between dark wall boxes is invisible in 3D. Mark every
-// mouth with a stone arch + flickering torches so it reads as a doorway.
-const archFlames = [];
-const archLightSrcs = [];   // world positions of arch flames → fed to the light pool
+// ── Cave mouths ───────────────────────────────────────────────────
+// The generator carves a walkable CAVE_ENTRANCE tile outside each cave mouth,
+// in front of a gap in the cliff line. That gap is where the portal goes: a
+// rock overhang across the whole gap, mine props inside and a torch on each
+// jamb (render/cave-mouth.js). It replaces a 58-tall stone arch over one tile
+// of a three-tile gap — half the character's height, lit by additive balls.
+const archFlames = [];      // (the old arch's flame balls: none now; animateArches is a no-op)
+const archLightSrcs = [];   // world positions of the mouth torches → fed to the light pool
+const archFlamePts = [];    // ...and their flame cards (drawn with the placed torches')
 {
-  const pillarGeo = new THREE.BoxGeometry(7, 56, 10);
-  const lintelGeo = new THREE.BoxGeometry(TILE+18, 9, 12);
-  const flameGeo  = new THREE.SphereGeometry(4, 7, 6);
-  const stoneMat  = new THREE.MeshLambertMaterial({color:0x7a7264});
-  for (let ty=0; ty<480; ty++) for (let tx=0; tx<MAP_W; tx++) {
+  const mouths = [];
+  for (let ty=0; ty<DUNGEON_Y0-6; ty++) for (let tx=0; tx<MAP_W; tx++) {
     if (map[ty][tx]!==T.CAVE_ENTRANCE) continue;
-    const cx=tx*TILE+TILE/2, cz=ty*TILE+TILE/2, gy=heightAt(cx, cz);   // (were at absolute y: sunk on any hill)
-    const pl=new THREE.Mesh(pillarGeo,stoneMat), pr=new THREE.Mesh(pillarGeo,stoneMat);
-    pl.position.set(cx-TILE/2-4, gy+28, cz); pr.position.set(cx+TILE/2+4, gy+28, cz);
-    pl.castShadow=pr.castShadow=true;
-    const lintel=new THREE.Mesh(lintelGeo,stoneMat);
-    lintel.position.set(cx, gy+58, cz); lintel.castShadow=true;
-    const fl=new THREE.Mesh(flameGeo,hdrGlow(new THREE.MeshBasicMaterial({
-      color:0xffa040, transparent:true, blending:THREE.AdditiveBlending, depthWrite:false}), FLAME_GAIN));
-    const fr=fl.clone(); fr.material=fl.material.clone();
-    fl.position.set(cx-TILE/2-4, gy+62, cz); fr.position.set(cx+TILE/2+4, gy+62, cz);
-    scene.add(pl,pr,lintel,fl,fr); archFlames.push(fl,fr);
-    archLightSrcs.push({x:cx, y:cz, fy:gy+62});
+    // Which way is the cave: the side whose neighbour is cave floor.
+    let d = null;
+    for (const [dx,dz] of [[0,1],[0,-1],[1,0],[-1,0]])
+      if (map[ty+dz]?.[tx+dx]===T.CAVE_FLOOR) { d=[dx,dz]; break; }
+    if (!d) continue;
+    // The gap: the run of floor tiles across the wall line, through the tile
+    // in front of the entrance.
+    const wx=tx+d[0], wy=ty+d[1], ux=-d[1], uz=d[0];
+    const open = (k) => { const t=map[wy+uz*k]?.[wx+ux*k]; return t===T.CAVE_FLOOR||t===T.CAVE_ENTRANCE; };
+    let k0=0, k1=0; while (k0>-3 && open(k0-1)) k0--; while (k1<3 && open(k1+1)) k1++;
+    const kc=(k0+k1)/2;
+    const mx=(wx+ux*kc)*TILE+TILE/2, mz=(wy+uz*kc)*TILE+TILE/2;
+    mouths.push({ mx, mz, dx:d[0], dz:d[1], halfW:(k1-k0+1)*TILE/2, gy:terrain.heightAt(mx, mz) });
   }
+  const _mc = h => { const c=new THREE.Color(); c.setHex(h, THREE.SRGBColorSpace); return [c.r,c.g,c.b]; };
+  const cm = buildCaveMouths(THREE, mouths, { TILE, height:CAVEH, noise:(x,y)=>_rn(x,y),
+    colors:{ post:_mc(0x8a6b4c), beam:_mc(0x7a5d40), iron:_mc(0x2b2b2b), lag:_mc(0x5e4630), board:_mc(0x4a3826) } });
+  const rock = new THREE.Mesh(cm.rock, _caveRockMat);
+  const wood = new THREE.Mesh(cm.wood, bridgeWoodMesh.material);
+  for (const m of [rock, wood]) { m.castShadow = m.receiveShadow = true; scene.add(m); }
+  for (const f of cm.flames) { archFlamePts.push(f); archLightSrcs.push({ x:f.x, y:f.z, fy:f.y + 6 }); }
+  console.log('[world]', mouths.length, 'cave mouths');
 }
 function animateArches(t) {
   for (let i=0;i<archFlames.length;i++) {
@@ -15623,6 +15777,7 @@ function syncEntities(t){
   scene.fog.near = _boom + RD*0.55;
   scene.fog.far  = Math.hypot(Math.cos(camPitch)*_boom + RD*1.35, Math.sin(camPitch)*_boom);
   _caveFade.value.set(scene.fog.near + (scene.fog.far - scene.fog.near)*0.35, scene.fog.far*0.92);
+  if(_view.far > 0) _treeFade.value.set(_view.far*0.86, _view.far*0.99);
   let ei=0;
   for(const e of enemies){
     if(ei>=enemyPool.length)break;const si=ei,grp=enemyPool[ei++];

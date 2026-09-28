@@ -73,7 +73,10 @@ export function makeConiferCanopy(THREE, { height = 100, radius = 34, tiers = 4,
     // Radius falls off faster than linearly, so the lower skirts stay broad and
     // the top tapers to a point. A linear falloff just rebuilds a cone.
     // The bottom skirt splays slightly past the nominal radius.
-    const r = radius * (1.10 - t * t * 0.92) * (0.88 + rand() * 0.24);
+    // Near-linear falloff to a quarter at the leader: the squared falloff kept
+    // every tier nearly as wide as the last, and stacked they read as cypress
+    // topiary (tree critic r2).
+    const r = radius * (1.05 - t * 0.80) * (0.90 + rand() * 0.20);
 
     // Skirts are WIDE AND FLAT — roughly as tall as they are wide, not taller.
     // The first attempt used 0.46*height falling to 0.33, which made each tier a
@@ -97,8 +100,19 @@ export function makeConiferCanopy(THREE, { height = 100, radius = 34, tiers = 4,
     // cap it was using 2% of. Roughly doubling the facets doubles that to 38k —
     // still less than a single near-LOD tree, which is 2,032.
     const seg = Math.max(13, 24 - i * 3);
-    const g = new THREE.ConeGeometry(r, h, seg, 1, true);   // open-ended: the base cap is never visible
-    roughenCone(g, rand, 0.11 + t * 0.05);
+    const g = new THREE.ConeGeometry(r, h, seg, 2, true);   // open-ended: the base cap is never visible
+    // The middle ring pushed out, so each skirt bows and its rim droops rather
+    // than running straight from the whorl to the tips.
+    // The rim is scalloped — a dozen dips, radial ±12% — so the hem of each
+    // skirt isn't a ruler line (tree critic r7). Same vertices, no cost.
+    { const p = g.attributes.position, ph = rand() * 6.283;
+      for(let k = 0; k < p.count; k++){
+        const y = p.getY(k);
+        if(Math.abs(y) < 1e-3){ p.setX(k, p.getX(k) * 1.16); p.setZ(k, p.getZ(k) * 1.16); p.setY(k, -h * 0.08); }
+        else if(y < -h * 0.49){ const a = Math.atan2(p.getZ(k), p.getX(k)), s = 1 + 0.12 * Math.sin(a * 12 + ph);
+          p.setX(k, p.getX(k) * s); p.setZ(k, p.getZ(k) * s); }
+      } }
+    roughenCone(g, rand, 0.06 + t * 0.04);
     g.rotateY(rand() * Math.PI * 2);                        // decorrelate tier outlines
     g.translate(0, y, 0);
     parts.push(g);

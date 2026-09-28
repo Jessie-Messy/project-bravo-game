@@ -78,32 +78,33 @@ export function makeLeafTexture(THREE, kind = 'broadleaf', { size = 128 } = {}) 
   const S = size;
   const rand = (a, b) => a + Math.random() * (b - a);
 
-  if (kind === 'needle') {
-    // Central rachis running bottom-centre to top-centre, needles fanning off
-    // it. Needles shorten toward the tip so the spray comes to a point.
-    x.strokeStyle = '#b9c9a6';                 // rachis — a tint, see the header
-    x.lineWidth = S * 0.022;
-    x.beginPath();
-    x.moveTo(S * 0.5, S);
-    x.lineTo(S * 0.5, S * 0.06);
-    x.stroke();
+  // Every shape is drawn twice: first fat and nearly transparent (well under
+  // the material's alphaTest, so never visible), then for real. The canvas is
+  // transparent BLACK around the leaves, and mipmapping averaged that black
+  // into every edge — each leaf wore a dark outline, "oval scales" (tree
+  // critic r3). The halo puts the leaf's own colour under its edges instead.
+  const halo = (draw) => { x.save(); x.globalAlpha = 0.05; draw(2.2); x.restore(); draw(1); };
 
-    for (let i = 0; i < 62; i++) {
-      const t = i / 62;                       // 0 at base, 1 at tip
-      const y = S * (1 - t * 0.94);
-      const len = S * 0.30 * (1 - t * 0.70) * rand(0.7, 1.15);
-      const droop = S * 0.10 * t;
-      // shade 0.55..1.0 remapped into 0.62..1.0 of a light neutral-green, so the
-      // per-needle variation survives the multiply instead of being crushed.
-      const shade = 0.55 + Math.random() * 0.45;
-      const v = 0.62 + 0.38 * ((shade - 0.55) / 0.45);
-      x.strokeStyle = `rgb(${Math.round(206 * v)},${Math.round(228 * v)},${Math.round(182 * v)})`;
-      x.lineWidth = S * rand(0.012, 0.022);
-      for (const dir of [-1, 1]) {
-        x.beginPath();
-        x.moveTo(S * 0.5, y);
-        x.lineTo(S * 0.5 + dir * len, y + droop + rand(-2, 6));
-        x.stroke();
+  if (kind === 'needle') {
+    // Tufts, not a frond. This was a central rachis with needles either side
+    // — a fern frond, and a branch of them read as tree-ferns and palms at
+    // close range (tree critic r4, r5). Now a column of bottle-brush tufts
+    // (short needles radiating from each), narrowing toward the tip, with no
+    // line down the middle for the eye to read as a stem.
+    const tufts = 26;
+    for (let i = 0; i < tufts; i++) {
+      const t = i / tufts;                                   // 0 at base, 1 at tip
+      const w = S * 0.30 * (1 - t * 0.75);                   // the spray narrows to a point
+      const cx = S * 0.5 + rand(-w, w) * 0.55, cy = S * (0.96 - t * 0.9);
+      const r = S * rand(0.07, 0.12) * (1 - t * 0.5);
+      for (let j = 0; j < 14; j++) {
+        const a = rand(0, Math.PI * 2), l = r * rand(0.5, 1.0);
+        // shade remapped into 0.62..1.0 of a light neutral green, so the
+        // variation survives the multiply by the species colour
+        const v = 0.62 + 0.38 * Math.random();
+        x.strokeStyle = `rgb(${Math.round(206 * v)},${Math.round(228 * v)},${Math.round(182 * v)})`;
+        const lw = S * rand(0.010, 0.018), ex = cx + Math.cos(a) * l, ey = cy + Math.sin(a) * l * 0.8 + l * 0.25;
+        halo((k) => { x.lineWidth = lw * k; x.beginPath(); x.moveTo(cx, cy); x.lineTo(ex, ey); x.stroke(); });
       }
     }
   } else {
@@ -139,9 +140,8 @@ export function makeLeafTexture(THREE, kind = 'broadleaf', { size = 128 } = {}) 
       x.translate(cx, cy);
       x.rotate(rot);
       x.fillStyle = g;
-      x.beginPath();
-      x.ellipse(0, 0, leafW * rand(0.6, 1.1) * 0.5, leafH * rand(0.7, 1.15) * 0.5, 0, 0, Math.PI * 2);
-      x.fill();
+      const ew = leafW * rand(0.6, 1.1) * 0.5, eh = leafH * rand(0.7, 1.15) * 0.5;
+      halo((k) => { x.beginPath(); x.ellipse(0, 0, ew * (k > 1 ? 1.35 : 1), eh * (k > 1 ? 1.35 : 1), 0, 0, Math.PI * 2); x.fill(); });
       // Midrib, so a leaf is not a flat blob when it fills the screen.
       // Was rgba(30,52,20) — nearly black, and multiplied by the leaf colour it
       // became a black vein across every leaf. It only has to read as slightly
@@ -178,7 +178,7 @@ export const SPECIES = [
     label: 'Pine',
     biome: 'highland',
     seed: 10241,
-    barkColor: 0x7a6247,
+    barkColor: 0xa4876a,   // (lifted: it multiplies the #8f7a60 bark texture, and landed near-black — tree critic r1)
     leafColor: 0x7fa254,
     leafKind: 'needle',
     params: {
@@ -188,16 +188,16 @@ export const SPECIES = [
       taper:      [0.88, 0.94, 0.95],
       sections:   [9, 5, 3],
       segments:   [7, 5, 4],
-      children:   [22, 0, 0],
+      children:   [34, 0, 0],     // (22: a sparse bottle-brush once the crown was a cone, tree r4)
       start:      [0.30, 0.3, 0.2],
-      profile:    ['pine', 'flat'],
+      profile:    ['cone', 'flat'],   // ('pine' — widest a third up — read as a column; tree critic r4)
       // Pine branches sit close to horizontal and sweep up at the ends; the
       // growth force below does the sweeping.
       angle:      [1.25, 0.6, 0.7],
       gnarliness: [0.03, 0.10, 0.18],
       twist:      [0.03, 0.05, 0],
       force: { direction: [0, 1, 0], strength: 0.10 },
-      leaves: { count: 4, size: 66, angle: 0.16, start: 0.06, cross: true },
+      leaves: { count: 16, size: 34, angle: 0.16, start: 0.06, cross: true },   // (4x66, 7x40 fronds — r2, r3; 12x26 tufts skeletal — r6)
     },
   },
   {
@@ -205,7 +205,7 @@ export const SPECIES = [
     label: 'Spruce',
     biome: 'highland',
     seed: 55127,
-    barkColor: 0x6a5540,
+    barkColor: 0x957c62,
     leafColor: 0x5f8c48,
     leafKind: 'needle',
     params: {
@@ -215,7 +215,7 @@ export const SPECIES = [
       taper:      [0.9, 0.94, 0.95],
       sections:   [10, 5, 3],
       segments:   [7, 5, 4],
-      children:   [26, 0, 0],
+      children:   [38, 0, 0],
       start:      [0.10, 0.25, 0.2],
       profile:    ['cone', 'flat'],
       // Spruce droops: branches angle DOWN past horizontal, and the growth
@@ -224,7 +224,7 @@ export const SPECIES = [
       gnarliness: [0.03, 0.09, 0.16],
       twist:      [0.04, 0.05, 0],
       force: { direction: [0, 1, 0], strength: 0.035 },
-      leaves: { count: 4, size: 74, angle: 0.16, start: 0.05, cross: true },
+      leaves: { count: 16, size: 36, angle: 0.16, start: 0.05, cross: true },
     },
   },
   {
@@ -232,7 +232,7 @@ export const SPECIES = [
     label: 'Oak',
     biome: 'lowland',
     seed: 7731,
-    barkColor: 0x6f5a41,
+    barkColor: 0x9c8466,
     leafColor: 0x6f9440,
     leafKind: 'broadleaf',
     params: {
@@ -244,14 +244,17 @@ export const SPECIES = [
       segments:   [8, 6, 5, 4],
       children:   [4, 3, 4, 0],
       profile:    ['round', 'round', 'flat'],
-      start:      [0.35, 0.25, 0.2, 0.2],
+      // The crown is the top half: limbs start halfway up the trunk and spread
+      // wide. With them low and the width capped (tree-lod.js) every oak was
+      // a tall narrow column — "poplars" (tree critic r3).
+      start:      [0.50, 0.25, 0.2, 0.2],
       // Wide, spreading crown: big branch angles and a weak upward force, so
       // limbs go out before they go up.
-      angle:      [0.85, 0.75, 0.7, 0.6],
+      angle:      [1.0, 0.8, 0.7, 0.6],
       gnarliness: [0.10, 0.16, 0.22, 0.28],
       twist:      [0.06, 0.08, 0.06, 0],
       force: { direction: [0, 1, 0], strength: 0.05 },
-      leaves: { count: 5, size: 48, angle: 0.42, start: 0.08, cross: true },
+      leaves: { count: 9, size: 28, angle: 0.42, start: 0.35, cross: true },
     },
   },
   {
@@ -270,7 +273,7 @@ export const SPECIES = [
       sections:   [9, 5, 3],
       segments:   [7, 5, 4],
       children:   [9, 4, 0],
-      start:      [0.42, 0.25, 0.2],
+      start:      [0.50, 0.25, 0.2],
       profile:    ['round', 'flat'],
       angle:      [0.72, 0.7, 0.65],
       // Birch is the whippy one: high gnarliness on the thin upper branches
@@ -278,7 +281,7 @@ export const SPECIES = [
       gnarliness: [0.09, 0.20, 0.3],
       twist:      [0.05, 0.07, 0],
       force: { direction: [0, 1, 0], strength: 0.13 },
-      leaves: { count: 5, size: 40, angle: 0.38, start: 0.08, cross: true },
+      leaves: { count: 9, size: 24, angle: 0.38, start: 0.08, cross: true },
     },
   },
 ];

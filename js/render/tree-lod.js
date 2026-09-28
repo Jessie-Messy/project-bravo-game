@@ -63,11 +63,24 @@ export function buildNearForest(THREE, opts) {
     const k = targetHeight / Math.max(1, g.height);
     g.bark.scale(k, k, k);
     g.leaf.scale(k, k, k);
+    // ...and WIDTH. Only height was matched: the generated oak came out 244
+    // across — five tiles, on trees one tile apart — so a near grove was one
+    // continuous mass, and every tree shrank to a quarter of its width at the
+    // swap to the far crown (tree critic r3, measured). Squeeze each crown
+    // to ~0.50 of the height; the far crowns are sized to meet it.
+    g.leaf.computeBoundingBox();
+    const lb = g.leaf.boundingBox, cw = Math.max(lb.max.x - lb.min.x, lb.max.z - lb.min.z);
+    const kw = Math.min(1, targetHeight * 0.50 / Math.max(1, cw));   // (0.40 read as poplars)
+    g.bark.scale(kw, 1, kw); g.leaf.scale(kw, 1, kw);
     g.bark.computeBoundingSphere();
     g.leaf.computeBoundingSphere();
+    crownNormals(g.leaf);
 
     const barkMat = new THREE.MeshStandardMaterial({
       map: barkTex, color: sp.barkColor, roughness: 0.95, metalness: 0.0,
+      // Branch tubes are open-ended: cut by the near plane in first person,
+      // their insides drew as unlit black slabs (tree critic r3).
+      side: THREE.DoubleSide,
     });
     const leafMat = new THREE.MeshStandardMaterial({
       map: leafTexFor(sp.leafKind), color: sp.leafColor,
@@ -80,7 +93,7 @@ export function buildNearForest(THREE, opts) {
     // so a camera boom ending inside a tree shows the player, not leaves.
     leafMat.defines = Object.assign({}, leafMat.defines, { CAM_FADE: '' });
 
-    applyWind(THREE, leafMat, windUniform, targetHeight, 'leaf-' + sp.id);
+    applyWind(THREE, leafMat, windUniform, targetHeight, 'leaf-' + sp.id, 1.0, true);
     // Branches sway too, just far less — a canopy that moves while the limbs
     // holding it stay rigid reads as the leaves sliding off the tree.
     applyWind(THREE, barkMat, windUniform, targetHeight, 'bark-' + sp.id, 0.35);
@@ -118,9 +131,36 @@ export function buildNearForest(THREE, opts) {
 // height fraction. Generated trees start at y=0 and grow up, so the fraction is
 // just y/height — simpler, and correct all the way down to the roots, where the
 // old version was only ever correct within the canopy.
-function applyWind(THREE, material, windUniform, height, cacheKey, scale = 1.0) {
+// Leaf cards shaded as a CROWN. Each card kept its own flat normal, and a
+// double-sided card seen from behind had it flipped by three — so a canopy
+// lit leaf by leaf, half its cards dark whichever way the sun came, and the
+// grove read as one near-black mass with no lit side and no shaded side
+// (tree critic r1). Pointing every normal out from the crown's centre (a
+// little flattened, crowns are wider than tall), and NOT flipping it for back
+// faces, shades the whole crown like the solid it reads as: bright toward the
+// sun, dark underneath. The standard foliage trick.
+function crownNormals(geo) {
+  geo.computeBoundingBox();
+  const bb = geo.boundingBox, pos = geo.attributes.position, nrm = geo.attributes.normal;
+  const cx = (bb.min.x + bb.max.x) / 2, cz = (bb.min.z + bb.max.z) / 2;
+  const cy = bb.min.y + (bb.max.y - bb.min.y) * 0.55;
+  for (let i = 0; i < pos.count; i++) {
+    let x = pos.getX(i) - cx, y = (pos.getY(i) - cy) * 1.35, z = pos.getZ(i) - cz;
+    const l = Math.hypot(x, y, z) || 1; x /= l; y /= l; z /= l;
+    // a quarter of the card's own normal survives, so the crown isn't a smooth ball
+    let ox = nrm.getX(i), oy = nrm.getY(i), oz = nrm.getZ(i);
+    if (ox * x + oy * y + oz * z < 0) { ox = -ox; oy = -oy; oz = -oz; }
+    const nx = x * 0.75 + ox * 0.25, ny = y * 0.75 + oy * 0.25, nz = z * 0.75 + oz * 0.25, nl = Math.hypot(nx, ny, nz) || 1;
+    nrm.setXYZ(i, nx / nl, ny / nl, nz / nl);
+  }
+  nrm.needsUpdate = true;
+}
+
+function applyWind(THREE, material, windUniform, height, cacheKey, scale = 1.0, crown = false) {
   const AMP = 7.0 * scale;
   material.onBeforeCompile = (shader) => {
+    if (crown) shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_begin>',
+      THREE.ShaderChunk.normal_fragment_begin.replace('normal *= faceDirection;', '/* crown normals: never flipped */'));
     shader.uniforms.uWindTime = windUniform;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nuniform float uWindTime;')

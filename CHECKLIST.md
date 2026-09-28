@@ -379,6 +379,19 @@ on the band's lower half, slope-based rock blend.
       night. heightAt wraps the deck; bed carved under bridges; widening drowns island trees. test:bridges
       Left: submerged pier head faintly visible through shore foam (it IS under the water); bare deck edge
       where one bridge meets the cliff (no kicker board)
-- [ ] TREES — "need some love" (owner, 2026-09-28). Critic loop on near + far trees.
-- [ ] CAVE ENTRANCES — the cave mouths (owner, 2026-09-28). Critic loop; they sit in the new rock mesh.
-- [ ] polish: pale rim on the torch head at point-blank range; critic review of the cave rock mesh
+- [x] TREES — critic 4.5 → 6.0 → 7.0 → 7.2 → 7.3 → 7.3 → PASS 7.7. Pale "ghost" groves were RANGE FOG (far trees
+      now haze-only and sink over the last 13% of the tree draw distance); near crowns were 5 tiles wide (now width-
+      normalised) so groves were one hedge; ~20% of broadleaf tiles are low understory bushes; crown normals on leaf
+      cards (lit/shaded sides); leaf textures redrawn (clusters; halo against black mip fringe); conifers get a needle
+      texture, 6 bowed scalloped tiers and NEVER near-LOD (generated conifers failed 6 rounds); broadleaf crowns in
+      the top half on longer trunks; per-tree tint; leaf cards out of GTAO (bark back IN — out, it drew black slabs).
+      Left (minor): first person under a canopy is dusky + dither stipple; horizon grove strips (sink toggle test)
+- [x] CAVE ENTRANCES — critic 6.8 → 7.1 → 7.3 → PASS 7.6. js/render/cave-mouth.js: rock portal across the whole
+      gap in the cliffs' material (soffit 148→172, 1.8 tiles deep, seamless shared edges), two mine-prop frames
+      under it with lagging + a boarded sheet, torch sconces on the jambs (flame cards + light pool). Replaces a
+      58-tall box arch. test:cavemouth. Left (minor): portal rock could take strata / flat shading
+- [x] cave rock mesh critic review — folded into the cave-mouth loop: face-plane noise printed contour rings and
+      wood grain; the rock material is now triplanar with more contrast
+- [ ] polish: pale rim on the torch head at point-blank range
+- [ ] polish (from the tree loop): first person under a canopy is dusky + dither stipple; horizon grove strips
+- [ ] iron-ore nodes render near-black and read as holes (cave critic) — gameplay resource, owner's call on look

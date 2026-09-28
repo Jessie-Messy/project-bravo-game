@@ -23,6 +23,69 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-28 (night) — trees and cave mouths (NOT yet deployed)
+
+**Trees:** owner, "the trees need some love". The critic loop went 4.5 → 6.0 → 7.0 → 7.2 → 7.3 → 7.3 → **PASS
+at 7.7**. What was wrong, and the fixes:
+- **Pale "ghost" groves at mid distance.** This was RANGE fog: toward the edge of the window every far tree
+  faded to the pale horizon colour. A raycast confirmed the far-canopy instances.
+  - Far canopies and trunks are now haze-only (NO_RANGE_FOG).
+  - They SINK into the ground over the last 13% of `_view.far` (`_treeFade`, `_TREE_SINK`).
+  - `_dev.treeFade()` reports the window.
+- **Groves read as one hedge.** Measured: the near-LOD crowns were 137–244 wide (the oak was five tiles) on trees
+  one tile apart.
+  - tree-lod.js now normalises crown WIDTH to 0.50 × height, and the far broadleaf radius (0.68 tile) meets it.
+  - About 20% of broadleaf tiles are low understory bushes (`_isBush`: the broadleaf crown squashed on the ground).
+  - Jitter is ±0.25 tile, the height spread 0.66–1.38, and ~11% of trees are emergents at 1.28×.
+- **No lit or shaded side to the crowns.**
+  - Near leaf cards use CROWN normals (pointing out from the crown centre, never flipped on back faces:
+    `crownNormals` plus a `normal_fragment_begin` patch).
+  - Far canopies shade by height and by up-facing (`_canopyPatch`).
+- **Leaf textures.**
+  - The far leaf texture is redrawn as lit leaf clusters.
+  - The near textures draw every leaf over a faint halo, so mipmaps don't fringe the edges black.
+- **Conifers.**
+  - They have their own needle texture, 6 bowed tiers with drooping rims, and scalloped hems.
+  - They NEVER take near-LOD branch geometry: six rounds of generated conifers went fern → torn flag →
+    skeleton, and the cone read right at every range.
+- **Broadleaves.**
+  - Crowns are the top half (oak limbs start at 50%, leaves at 35%).
+  - Far crowns fill the upper 80% of the canopy box on a longer trunk.
+  - Each tree gets its own tint (a near-LOD instanceColor).
+- **AO.**
+  - Near leaf cards are out of the GTAO prepass (the prepass made pure-black shards from them).
+  - Bark is back IN: excluded, a close branch drew as a solid black slab in first person.
+  - Far trunks are out.
+- **Near-LOD candidates** are measured from the nearer of the player and the camera.
+- **Left (minor):**
+  - first person under a canopy is dusky, with dither stipple;
+  - distant groves at the horizon read as flat dark strips.
+
+**Cave mouths:** owner, "cave entrances". Critic loop 6.8 → 7.1 → 7.3 → **PASS at 7.6**.
+- **The old arch** was 58 tall against a 126-tall character, spanned one tile of a three-tile gap, and was lit by
+  additive balls.
+- **js/render/cave-mouth.js** (new) builds, for each mouth:
+  - a rock PORTAL in the cliffs' own material across the whole gap:
+    - the soffit arches from 148 to 172 and falls into jambs;
+    - it is 1.8 tiles deep;
+    - the crest rides to the cliff tops;
+    - the noise tapers to zero on shared edges, so the faces never crack apart;
+    - each grid is wound by its intended facing;
+  - two timber mine frames under the overhang, with close-set lagging, stringers and a boarded sheet over the
+    lagging (a steep upward view through a gap otherwise found the open canyon sky past the portal's back edge);
+  - a torch sconce on each jamb.
+- **Game side:**
+  - Mouths are detected in game3d from the CAVE_ENTRANCE tile's floor-side neighbour and the run of floor across
+    the wall line.
+  - The torches draw with the placed-torch flame cards (`archFlamePts` in rebuildPlacedObjects).
+  - They light the pool as 'arch': 310, colour #ffae5c, 4 tiles.
+- **Rock material (cliffs too):**
+  - The face-plane noise printed contour rings and wood grain; it is now TRIPLANAR.
+  - The octaves have more contrast, with a mild crevice darkening.
+  - Cache key `cave-rock-v2-tri`.
+- **Test:** `test:cavemouth` (12 checks): head clearance across the gap, the soffit faces down, the torches sit
+  outside on the jambs, and no NaN.
+
 ### 2026-09-28 (evening) — bridges remade (NOT yet deployed)
 
 Owner: "remake the bridges across the water". The critic loop went 6.5 → 7.2 → **PASS at 7.6**.

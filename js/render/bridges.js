@@ -187,7 +187,7 @@ export function makeDeckLookup(spans, { TILE, W, H }) {
 // Geometry accumulator: hexahedra from 8 corners, per-face UVs along the
 // face's own edges (so wood grain runs down every beam), vertex colour with
 // a wet band at and below the waterline.
-class Acc {
+export class Acc {      // (also used by render/cave-mouth.js)
   constructor(uvScale, waterY) { this.p = []; this.n = []; this.u = []; this.c = []; this.i = []; this.s = uvScale; this.wy = waterY; }
   // v: [b0,b1,b2,b3,t0,t1,t2,t3], each [x,y,z]; bottom and top in the same order.
   hex(v, col) {
