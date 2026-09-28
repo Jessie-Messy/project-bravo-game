@@ -281,7 +281,9 @@ Round 1 (baseline shots `.shots/base_*.jpg`), ranked worst first:
       cov *= mask.b). The band's inner edge now wanders 0-3 tiles (world.js `ridgeRagged`,
       natural ground only, so roads/rivers/portals keep their tiles and rivers leave a gorge
       notch). server/world-data.json rebuilt — ⚠ ships with the next SERVER deploy too
-- [ ] [critic] C-11 Contact darkening under trees/walls (AO in the terrain splat)
+- [x] [critic] C-11 Contact darkening baked into the ground AND carried into the grass blades
+      standing on it (`_aoOccluders`/`_aoAt`): walls/cave walls box falloff 0.7 tile, trees
+      round 0.78, stones 0.52
 - [x] [critic] C-12 Grass on biome boundaries keeps full height (ragged cliffs)
 Mountain guidance (critic): 3 rings (foothills #6f8575 haze .35, mid #8d9fae .55, far
 #a9b9c9 .75 w/ snow #dde5ee above 70%), peaks 1–6° above horizon never >8°, base 25% fades

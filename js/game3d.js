@@ -1120,6 +1120,37 @@ function _tileIsInterior(tx, ty, g0){
 // different grain from the mainland at the same world position — and would make
 // an edit near a surface boundary repaint one side with a different pattern.
 // Only the destination offset is surface-relative.
+// Contact darkening, baked into the ground (critic C-11): the soil under a
+// tree's crown, at the foot of a wall and round a boulder is darker than open
+// ground, and without it everything stood ON the terrain rather than IN it.
+// Per tile, the 3x3 neighbourhood's occluders; per pixel, a soft falloff —
+// box-shaped for walls, round for trunks and stones. 1 = unoccluded.
+const _AO_BOX = new Set([T.WALL, T.CAVE_WALL, T.STAINED_GLASS]);
+function _aoOccluders(tx, ty){
+  let occ = null;
+  for(let oy=-1; oy<=1; oy++){ const row = map[ty+oy]; if(!row) continue;
+    for(let ox=-1; ox<=1; ox++){ const t = row[tx+ox];
+      if(t === undefined) continue;
+      if(_AO_BOX.has(t)) (occ || (occ = [])).push(0, tx+ox, ty+oy);
+      else if(t === T.TREE) (occ || (occ = [])).push(1, tx+ox, ty+oy);
+      else if(t === T.STONE || t === T.ORE_IRON) (occ || (occ = [])).push(2, tx+ox, ty+oy);
+    } }
+  return occ;
+}
+function _aoAt(occ, fx, fy){
+  let ao = 1;
+  for(let k=0; k<occ.length; k+=3){
+    const kind = occ[k], x = occ[k+1], y = occ[k+2];
+    if(kind === 0){
+      const dx = Math.max(x - fx, 0, fx - (x+1)), dy = Math.max(y - fy, 0, fy - (y+1));
+      const d = Math.hypot(dx, dy); if(d < 0.7){ const t = d/0.7; ao *= 1 - 0.40*(1 - t*t*(3-2*t)); }
+    } else {
+      const d = Math.hypot(fx - x - 0.5, fy - y - 0.5), r0 = kind === 1 ? 0.15 : 0.1, r1 = kind === 1 ? 0.78 : 0.52;
+      if(d < r1){ const t = Math.max(0, (d - r0)/(r1 - r0)); ao *= 1 - (kind === 1 ? 0.36 : 0.28)*(1 - t*t*(3-2*t)); }
+    }
+  }
+  return ao;
+}
 function paintTerrainRegion(tx0, ty0, tx1, ty1, surface) {
   const sf = surface || _mainSurface;
   tx0=Math.max(sf.tx0,tx0); ty0=Math.max(sf.ty0,ty0);
@@ -1142,6 +1173,7 @@ function paintTerrainRegion(tx0, ty0, tx1, ty1, surface) {
     // Interior tiles can't be changed by the warp, so skip it for the bulk of
     // the map and only pay for the boundary pixels that actually bend.
     const interior = _tileIsInterior(tx, ty, g0);
+    const occ = _aoOccluders(tx, ty);
     for (let py = 0; py < TERR_PX; py++) for (let px = 0; px < TERR_PX; px++) {
       const gx = tx*TERR_PX+px, gy = ty*TERR_PX+py;    // global — keeps the noise stable
       let cr=br, cg=bg, cb=bb, isWater=isWater0;
@@ -1152,6 +1184,7 @@ function paintTerrainRegion(tx0, ty0, tx1, ty1, surface) {
       // Water used to be exempt so the sheet stayed flat and read as water.
       // It is a riverbed now, and a bed wants grain like every other surface.
       const noise = (_terrNoise(gx, gy) - 0.5) * (isWater ? 10 : 18);
+      if(occ && !isWater){ const ao = _aoAt(occ, (gx+0.5)/TERR_PX, (gy+0.5)/TERR_PX); cr*=ao; cg*=ao; cb*=ao; }
       const i = ((gy-oy)*W + (gx-ox)) * 4;
       let v;
       v=cr+noise; d[i]  = v<0?0:v>255?255:v;
@@ -2340,6 +2373,8 @@ function rebuildGrass(){
       const gR = 0.74 + tp*0.22, gG = 0.90 + tp*0.16, gB = 0.66 + tp*0.18;
       const sR = 1.42 + tp*0.18, sG = 1.16 + tp*0.14, sB = 0.42 + tp*0.10;
       const cr = gR + (sR-gR)*dry, cg = gG + (sG-gG)*dry, cb = gB + (sB-gB)*dry;
+      // the ground's contact darkening, carried up into the blades that hide it
+      const gOcc = _aoOccluders(tx, ty);
       // Dry drifts stand taller. Colour alone reads as paint; it is the height
       // that makes a drift look like a different plant.
       const patchH = 0.82 + dry*0.85;
@@ -2378,7 +2413,8 @@ function rebuildGrass(){
         // floating over it as a separate green.
         // Per-tuft jitter on top of the per-tile patch colour: a field where
         // every blade in a tile is the same shade reads as a carpet.
-        const c = i*3, jv = 0.9 + r3[0]*0.2, jh = (r3[1]-0.5)*0.08;
+        const c = i*3, jh = (r3[1]-0.5)*0.08;
+        const jv = (0.9 + r3[0]*0.2) * (gOcc ? _aoAt(gOcc, gx/TILE, gz/TILE) : 1);
         _gCArr[c] = cr*jv*(1+jh); _gCArr[c+1] = cg*jv; _gCArr[c+2] = cb*jv*(1-jh);
         i++;
       }
