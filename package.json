@@ -19,7 +19,8 @@
     "test:buildings": "node tools/test/buildings.mjs",
     "test:grounding": "node tools/test/grounding.mjs",
     "test:caverock": "node tools/test/caverock.mjs",
-    "test": "npm run test:dressing && npm run test:world && npm run test:jewelry && npm run test:tiers && npm run test:portals && npm run test:corpses && npm run test:pets && npm run test:buildings && npm run test:grounding && npm run test:caverock"
+    "test:bridges": "node tools/test/bridges.mjs",
+    "test": "npm run test:dressing && npm run test:world && npm run test:jewelry && npm run test:tiers && npm run test:portals && npm run test:corpses && npm run test:pets && npm run test:buildings && npm run test:grounding && npm run test:caverock && npm run test:bridges"
   },
   "dependencies": {
     "@gltf-transform/core": "^4.5.0",

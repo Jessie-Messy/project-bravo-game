@@ -8,6 +8,7 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildTown } from './render/buildings.js';
 import { buildCaveRock } from './render/cave-rock.js';
+import { findBridgeSpans, extendBridgeSpans, shapeBridgeSpans, makeDeckLookup, buildBridges } from './render/bridges.js';
 import { makeFlameMaterial, makeFlameGeometry, makeGlowMaterial, makeGlowGeometry } from './render/flame.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave, netCallGuards,
   netHousePlace, netHouseUpdate, netHouseRemove,
@@ -1292,6 +1293,7 @@ function buildTerrainImage(){ paintTerrainRegion(0,0,MAP_W-1,TERRAIN_MAP_H-1,_ma
 // left alone — a river that swallows a bridge is worse than a narrow one — and
 // the city and dungeon strip are excluded outright.
 const RIVER_WIDEN_R = 3;      // tiles added to each bank (~6 tiles wider overall)
+let BRIDGE_SPANS = [];        // render/bridges.js spans, planned just below
 {
   const src = [];
   for(let ty = 0; ty < MAP_H; ty++) src.push(map[ty].slice());
@@ -1315,7 +1317,29 @@ const RIVER_WIDEN_R = 3;      // tiles added to each bank (~6 tiles wider overal
       if(near){ map[ty][tx] = T.WATER; widened++; }
     }
   }
+  // Trees and boulders only stand where they were, so the flood left them as
+  // islands in the new channel — trunks standing in the river beside the
+  // bridges (bridge critic r1). One pass on a snapshot: a tree with water on
+  // four or more of its eight sides goes under. (One pass, so a riverside wood
+  // loses its wet fringe, not the whole wood.)
+  {
+    const snap = []; for(let ty = 0; ty < MAP_H; ty++) snap.push(map[ty].slice());
+    const wet = t => t === T.WATER || t === T.BRIDGE;
+    for(let ty = 1; ty < DUNGEON_Y0 - 6; ty++) for(let tx = 1; tx < MAP_W - 1; tx++){
+      const t = snap[ty][tx]; if(t !== T.TREE && t !== T.STONE) continue;
+      let n = 0;
+      for(let oy = -1; oy <= 1; oy++) for(let ox = -1; ox <= 1; ox++) if((ox || oy) && wet(snap[ty+oy][tx+ox])) n++;
+      if(n >= 4){ map[ty][tx] = T.WATER; widened++; }
+    }
+  }
   console.log('[world] rivers widened by', RIVER_WIDEN_R, 'tiles —', widened, 'tiles flooded');
+  // ...and the bridges widen with them. Skipped above, every bridge was left a
+  // raft mid-river with the road ending at the bank (v0.22.0 and before).
+  // `src` still has each bridge's ends on dry road, which is how a span knows
+  // which way it crosses.
+  BRIDGE_SPANS = findBridgeSpans(map, T, src);
+  const nb = extendBridgeSpans(map, T, BRIDGE_SPANS);
+  console.log('[world]', BRIDGE_SPANS.length, 'bridges carried bank to bank —', nb, 'deck tiles added');
 }
 
 buildGroundUnder();          // must precede the first bake — the painter reads it
@@ -1387,7 +1411,9 @@ const TERRAIN_AMP = 210;
 const RIVER_MAX_DEPTH = 130;  // world units below the surface at the deepest
 function riverDepth(tx, ty){
   const here = map[ty] && map[ty][tx];
-  if(here !== T.WATER) return 0;
+  // Under a bridge too: the river runs on beneath the deck (flat, it was a
+  // submerged causeway across the channel).
+  if(here !== T.WATER && here !== T.BRIDGE) return 0;
   let dry = Infinity;
   const R = 5;
   for(let oy = -R; oy <= R; oy++){
@@ -1543,7 +1569,13 @@ const terrain = createHeightField({
   bedAt: riverDepth,
   liftAt: ridgeLift,
 });
-const heightAt = terrain.heightAt;
+// The ground you stand on: the bridge deck where there is one, else the land.
+// Everything that stands on the world reads this, so feet, NPCs, drops and
+// placed objects ride the arch. (terrain.heightAt is the bare land, bed and
+// all — the bridge builder stands its piers on that.)
+shapeBridgeSpans(BRIDGE_SPANS, { TILE, groundAt: terrain.heightAt, waterY: 2 });
+let _deckAt = makeDeckLookup(BRIDGE_SPANS, { TILE, W: MAP_W, H: MAP_H });
+const heightAt = (wx, wz) => { const d = _deckAt(wx, wz); return d !== null ? d : terrain.heightAt(wx, wz); };
 
 // ── Water depth & wading ──────────────────────────────────────────
 // The water plane sits at y=2 and the bed is carved below it, so depth is just
@@ -2318,6 +2350,7 @@ function _bladeOnGrass(gx, gz){
   const tx = fx|0, ty = fy|0;
   const g0 = groundUnder[ty*MAP_W+tx];
   if(_warpedTileAt(fx, fy, (fx*TERR_PX)|0, (fy*TERR_PX)|0, g0) !== T.GRASS) return false;
+  if(_deckAt(gx, gz) !== null) return false;     // not up through a bridge's landing
   // Nothing grows under the water surface. The warped grass edge can reach a
   // little past the water mesh's own feathered bank, and a blade there shows
   // through the translucent foam as a pale ghost (critic C-10).
@@ -4322,6 +4355,7 @@ function updateObstacles() {
   // and dark — flashed through as a black blink (reported on v0.21.0).
   rebuildWater(); waterDirty=false;
   if(caveRockDirty){ rebuildCaveRock(); caveRockDirty=false; }
+  if(bridgeStructDirty){ replanBridges(); bridgeStructDirty=false; }
   // Rebuild at most one obstacle type per frame. Re-windowing all seven at
   // once (esp. thousands of cave/tree instances) caused a stutter every few
   // tiles of movement; staggering spreads it over ~7 frames (~0.1s), and the
@@ -4550,6 +4584,9 @@ function updateEnvironmentCycle(dt) {
 
   // Cave-mouth arch torches glow too (one light per archway)
   for (const a of archLightSrcs) lightSources.push({ type: 'arch', x: a.x, y: a.y, fy: a.fy });
+  // Bridge lanterns: only worth a light slot after dark.
+  bridgeGlowMat.emissiveIntensity = 2.2 * nightFactor;
+  if (nightFactor > 0.15) for (const a of bridgeLampSrcs) lightSources.push({ type: 'bridge_lamp', x: a.x, y: a.y, fy: a.fy });
 
   // House interior light sources at night
   if (G.placedHouses) {
@@ -4597,6 +4634,8 @@ function updateEnvironmentCycle(dt) {
         baseY = 24; baseInt = 1.2 * nightFactor; colorHex = 0xffeedd; dist = TILE * 8;
       } else if (type === 'campfire') {
         baseY = 6; baseInt = 1.3; colorHex = 0xff7722; dist = TILE * 7;
+      } else if (type === 'bridge_lamp') {
+        baseY = 50; baseInt = 260; colorHex = 0xffa850; dist = TILE * 5; decay = 1.5;
       }
 
       // At the flame, a touch above it so the torch's own head is lit from
@@ -4904,12 +4943,15 @@ function rebuildWater() {
 // Bridges used to be just a tinted tile *under* the animated water plane,
 // making them nearly invisible. Now each BRIDGE tile gets a raised plank
 // deck, with wooden rails along every edge that borders open water.
+//
+// ⚠ Since the bridge remake these instanced decks draw the coast's DOCKs only;
+// river bridges are whole structures (render/bridges.js, below).
 let nBridge=0;
 // DOCK counts here too: a pier is a bridge over the sea by another name, and
 // without a raised deck it would be a tinted tile UNDER the water surface —
 // which is exactly how bridges used to be nearly invisible.
 for (let ty=0;ty<MAP_H;ty++) for (let tx=0;tx<MAP_W;tx++)
-  if(map[ty][tx]===T.BRIDGE||map[ty][tx]===T.DOCK) nBridge++;
+  if(map[ty][tx]===T.DOCK) nBridge++;
 const deckMesh = new THREE.InstancedMesh(
   new THREE.BoxGeometry(TILE,4,TILE),
   new THREE.MeshStandardMaterial({map:bridgeTex, roughness:0.85, metalness:0.0}), nBridge+800);
@@ -4928,7 +4970,7 @@ function rebuildBridges() {
   const rail=(x,z,q)=>{ if(ri>=rCap)return; _pos.set(x,8.5,z); _sc1.set(1,1,1); _m4.compose(_pos,q,_sc1); railMesh.setMatrixAt(ri++,_m4); };
   for (let ty=b.ty0;ty<=b.ty1&&di<dCap;ty++) for (let tx=b.tx0;tx<=b.tx1&&di<dCap;tx++) {
     const dt=map[ty][tx];
-    if(dt!==T.BRIDGE&&dt!==T.DOCK) continue;
+    if(dt!==T.DOCK) continue;
     const cx=tx*TILE+TILE/2, cz=ty*TILE+TILE/2;
     _pos.set(cx,2.5,cz); _sc1.set(1,1,1); _m4.compose(_pos,q0,_sc1); deckMesh.setMatrixAt(di++,_m4);
     // rails only on edges facing water — works for any width/orientation.
@@ -4942,6 +4984,46 @@ function rebuildBridges() {
     if(wet(map[ty+1]?.[tx])) rail(cx, ty*TILE+TILE-2.5, q0);
   }
   markInst(deckMesh,di); markInst(railMesh,ri);
+}
+
+// River bridges: every span built once as a structure (render/bridges.js) —
+// arched plank deck, trestle bents in the river, stone abutments, railings.
+// Two draws for all of them; never windowed, so they haze but never pop.
+const _brCol = h => { const c = new THREE.Color(); c.setHex(h, THREE.SRGBColorSpace); return [c.r, c.g, c.b]; };
+const BRIDGE_COLORS = { plank:_brCol(0xc2a684), beam:_brCol(0x86684a), post:_brCol(0x8e7050), rail:_brCol(0xa88a66), stone:_brCol(0xbcae94), kerb:_brCol(0x9a8f7c) };
+const _brSolid = new Set([T.CAVE_WALL, T.WALL, T.RIDGE]);
+const _bridgeSolidAt = (wx, wz) => { const r = map[Math.floor(wz/TILE)]; return !!r && _brSolid.has(r[Math.floor(wx/TILE)]); };
+const bridgeWoodMesh  = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ map:_woodTex,   vertexColors:true, roughness:0.9 }));
+const bridgeStoneMesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ map:_stoneTexB, vertexColors:true, roughness:0.94 }));
+// Lantern glass: unlit by day, glowing at night (emissive driven in updateBridgeLamps).
+const bridgeGlowMat = new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0.4, emissive:0xffa24a, emissiveIntensity:0 });
+const bridgeGlowMesh = new THREE.Mesh(new THREE.BufferGeometry(), bridgeGlowMat);
+bridgeGlowMesh.userData.fx = true;   // (out of the AO prepass, like the flames)
+const bridgeLampSrcs = [];           // world positions → the light pool, like the arch torches
+for(const m of [bridgeWoodMesh, bridgeStoneMesh, bridgeGlowMesh]){
+  m.castShadow = m.receiveShadow = true; m.frustumCulled = false;
+  m.material.defines = { NO_RANGE_FOG: '' };
+  scene.add(m);
+}
+let _bridgeColliders = [];
+function rebuildBridgeStructures(){
+  const b = buildBridges(THREE, BRIDGE_SPANS, { TILE, groundAt: terrain.heightAt, waterY: 2, colors: BRIDGE_COLORS, solidAt: _bridgeSolidAt });
+  bridgeWoodMesh.geometry.dispose(); bridgeWoodMesh.geometry = b.wood;
+  bridgeStoneMesh.geometry.dispose(); bridgeStoneMesh.geometry = b.stone;
+  bridgeGlowMesh.geometry.dispose(); bridgeGlowMesh.geometry = b.glow;
+  bridgeLampSrcs.length = 0; for(const l of b.lamps) bridgeLampSrcs.push({ x: l.x, y: l.z, fy: l.y });
+  // the railings stop you walking off the side into the river
+  for(const c of _bridgeColliders){ const i = pointColliders.indexOf(c); if(i >= 0) pointColliders.splice(i, 1); }
+  _bridgeColliders = b.colliders; pointColliders.push(...b.colliders);
+}
+rebuildBridgeStructures();
+// An editor edit that adds or removes BRIDGE tiles re-plans the spans from the
+// map as it now stands. (The carved river bed is baked at boot and stays.)
+let bridgeStructDirty = false;
+function replanBridges(){
+  BRIDGE_SPANS = shapeBridgeSpans(findBridgeSpans(map, T), { TILE, groundAt: terrain.heightAt, waterY: 2 });
+  _deckAt = makeDeckLookup(BRIDGE_SPANS, { TILE, W: MAP_W, H: MAP_H });
+  rebuildBridgeStructures();
 }
 
 // ── Skins (pixel-editor output) ───────────────────────────────────
@@ -5046,6 +5128,7 @@ function bakeStaticTile(tx, ty, oldT) {
   // or painting glass leaves it invisible until the window happens to re-centre.
   if(t>=100||ot>=100||t===T.STAINED_GLASS||ot===T.STAINED_GLASS) customDirty=true;
   if(t===T.WATER||t===T.BRIDGE||ot===T.WATER||ot===T.BRIDGE){waterDirty=true;bridgeDirty=true;}
+  if(t===T.BRIDGE||ot===T.BRIDGE) bridgeStructDirty=true;
 }
 function minimapUpdateTile(tx, ty) { updateTerrPx(tx, ty); updateMiniPx(tx, ty); }
 function resizeTileViewport() {}   // no-op — Three.js resizes via renderer

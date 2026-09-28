@@ -23,6 +23,60 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-28 (evening) — bridges remade (NOT yet deployed)
+
+Owner: "remake the bridges across the water". The critic loop went 6.5 → 7.2 → **PASS at 7.6**.
+
+**The bug under it:** at boot, "Widen the rivers" grows every river by 3 tiles per bank, but it skips BRIDGE
+tiles. So every bridge became a 2x3 raft in the middle of the river, the road ended at the bank, and you had
+to wade (or drown) to reach the raft.
+
+**js/render/bridges.js** (new) is pure planning and geometry:
+- `findBridgeSpans(map, T, axisMap)` groups the spans. The crossing axis is taken from the PRE-widening map,
+  where the ends still touch the road.
+- `extendBridgeSpans` carries each span over the water until every column lands on dry ground:
+  - a one-tile footbridge becomes two tiles;
+  - the 2 landing tiles at each end are paved;
+  - trees and boulders are cleared from the footprint and from 3 columns either side.
+- `shapeBridgeSpans` / `deckY`:
+  - A 1.5-tile stone approach ramp on each bank climbs to water + 12 at the bank edge. The banks sit at or
+    below the water surface, so a deck that started at bank height ran its first half-tile underwater.
+  - A sine arch (rise up to 34) spans the water.
+- `makeDeckLookup` returns a deck-height lookup (an Int16 per tile).
+- `buildBridges` merges everything into 3 draws for all 13 bridges, about 38k triangles:
+  - ramps and pier heads (stone, with kerbs);
+  - stringers, and planks at a 12 pitch with jitter;
+  - trestle bents (posts, cap beam, X and knee braces);
+  - railings with newels. Posts next to cave-wall, wall or ridge tiles are dropped, so the rail ends at the
+    rock;
+  - point colliders along both deck edges (r 4, 15 apart);
+  - a lantern on one newel per bank.
+
+**game3d.js:**
+- Spans are planned inside the widening block, where `src` is still available.
+- The widening also drowns TREE/STONE tiles with 4 or more wet neighbours. They used to stand as islands
+  in the river.
+- `riverDepth` carves the bed under BRIDGE tiles too. Before, it was a submerged causeway.
+- `heightAt` now wraps `_deckAt`, so feet, NPCs and drops ride the arch. `terrain.heightAt` stays the bare
+  land.
+- Grass is kept off the decks and ramps.
+- The instanced deck and rail meshes now draw DOCKs only.
+- Lanterns: `bridge_lamp` light type (decay 1.5, intensity 260, colour 0xffa850). Their emissive follows
+  nightFactor.
+- Editor edits to BRIDGE tiles re-plan the spans (`bridgeStructDirty` → `replanBridges`).
+
+**Server:** untouched. It only uses walkability for mobs, and BRIDGE, PATH and WATER are all walkable for
+players.
+
+**Test:** `test:bridges` (19 checks):
+- the span reaches both banks, the landings are paved, and the footbridge is widened;
+- the deck meets the road with no step, stays clear of the water, and is smooth;
+- the rail colliders leave no gap and a player fits between them.
+
+**Left:**
+- The submerged pier head shows faintly through the shore foam. It really is under the water.
+- There is a bare deck edge where the (240, 86) bridge meets the cliff.
+
 ### 2026-09-28 — DEPLOYED v0.22.0 to production (for testing), client only
 
 This is the short-list entry below: water blink, ultra grass AO, cave exteriors, torches, and the minors.

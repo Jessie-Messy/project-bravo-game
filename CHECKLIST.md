@@ -372,3 +372,13 @@ on the band's lower half, slope-based rock blend.
 - [x] minor: sand warmer/darker (184,156,106 — lit beaches read as snow); first-person near plane 3
       (props and door leaves sliced open at 10); top-view trunk "stubs" are perspective (trunks of trees
       at the frame edge seen from the side) — correct geometry, left as is
+- [x] v0.22.0 deployed (client only) + pushed
+- [x] BRIDGES — remade (critic 6.5 → 7.2 → PASS 7.6). They were rafts stranded mid-river since the boot-time
+      river widening skipped them; now planned bank to bank (js/render/bridges.js), stone approach ramps +
+      pier heads, arched plank deck, trestle bents with X + knee braces, railings (colliders), lanterns at
+      night. heightAt wraps the deck; bed carved under bridges; widening drowns island trees. test:bridges
+      Left: submerged pier head faintly visible through shore foam (it IS under the water); bare deck edge
+      where one bridge meets the cliff (no kicker board)
+- [ ] TREES — "need some love" (owner, 2026-09-28). Critic loop on near + far trees.
+- [ ] CAVE ENTRANCES — the cave mouths (owner, 2026-09-28). Critic loop; they sit in the new rock mesh.
+- [ ] polish: pale rim on the torch head at point-blank range; critic review of the cave rock mesh
