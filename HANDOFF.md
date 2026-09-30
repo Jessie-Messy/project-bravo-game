@@ -23,7 +23,34 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
-### 2026-09-28 (night) — trees and cave mouths (NOT yet deployed)
+### 2026-09-29 — DEPLOYED v0.23.0 to production (for testing), client only
+
+This ships the bridges, trees and cave mouths (the two entries below).
+
+**⏸ The owner asked to PAUSE new work until they send more solid feedback.** Do not start new checklist
+items. Wait for the owner.
+
+**Backups first** in `/home/ubuntu/bravo-backups/`: `bravo-server-20260930-003207.tgz` and
+`medieval-client-20260930-003207.tgz` (the VPS clock reads Sep 30).
+
+**Deploy:**
+1. 12 test files green; models 7.96 of 12 MB.
+2. Platform `npm run build`: every patch anchor matched and it ships v0.23.0.
+3. Output audit:
+   - no extra files;
+   - the origin IP is not in the build;
+   - no secrets;
+   - the built `index.html` is byte-identical to live.
+4. **Client only:** no server, model or world-data changes since v0.22.0.
+
+**Verified:**
+- Through nginx and through Cloudflare, v0.23.0 is served with no-cache, and `bridges.js` and `cave-mouth.js`
+  return 200.
+- The live page boots to v0.23.0. A join from it succeeded and 48 mobs synced.
+- pm2 shows bravo online.
+- Live has a stray `gpu-check.js.pre-webgl1` from earlier work. It isn't ours and was left alone.
+
+### 2026-09-28 (night) — trees and cave mouths (deployed in v0.23.0)
 
 **Trees:** owner, "the trees need some love". The critic loop went 4.5 → 6.0 → 7.0 → 7.2 → 7.3 → 7.3 → **PASS
 at 7.7**. What was wrong, and the fixes:
@@ -86,7 +113,7 @@ at 7.7**. What was wrong, and the fixes:
 - **Test:** `test:cavemouth` (12 checks): head clearance across the gap, the soffit faces down, the torches sit
   outside on the jambs, and no NaN.
 
-### 2026-09-28 (evening) — bridges remade (NOT yet deployed)
+### 2026-09-28 (evening) — bridges remade (deployed in v0.23.0)
 
 Owner: "remake the bridges across the water". The critic loop went 6.5 → 7.2 → **PASS at 7.6**.
 
