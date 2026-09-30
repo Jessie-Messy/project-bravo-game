@@ -23,7 +23,51 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
-### 2026-09-29 (later) — v0.24 build: the city ×2.5, interiors, nature and bridges ×1.5 (NOT DEPLOYED)
+### 2026-09-30 — DEPLOYED v0.24.0 to production (server + client)
+
+This ships everything in the "v0.24 build" entry below. The owner said "deploy".
+
+**Backups first**, in `/home/ubuntu/bravo-backups/`:
+- `bravo-server-20260930-114925.tgz`
+- `medieval-client-20260930-114925.tgz`
+- `bravo-db-20260930-114925.db` — an online SQLite `.backup()` of `data/bravo.db` (16 player rows). The DB runs
+  in WAL mode, so a tar of it alone isn't a safe copy.
+
+**Server:**
+- Pre-flight: the live `index.js`, `bravo-room.js`, `storage.js`, `mobs.js`, `orion-auth.js`, `package.json` and
+  `world-data.json` md5-matched the repo at `d7e4b2e~1`, so nothing on the VPS was overwritten.
+- Only `bravo-room.js`, `storage.js` and `world-data.json` changed (world-data: mapW 680, city rect, spawn). Those
+  three were copied, then `pm2 restart bravo`.
+- Health `{"ok":true}`. The log shows `[storage] SQLite` and `[mobs] world-data loaded: 42 wolf + 18 bandit
+  spawns`. The err log holds only colyseus's usual transport deprecation notice.
+
+**Client:**
+- `js/build-info.js` bumped to **0.24.0**.
+- Platform `npm run build`: every patch anchor matched, and it ships v0.24.0.
+- Audit, a per-file md5 diff of the build against live:
+  - NEW: `js/city.js`, `js/render/gatehouse.js`.
+  - CHANGED: 10 js files (build-info, constants, game3d, state, world, render/bridges, buildings, cave-mouth,
+    cave-rock, tree-lod).
+  - No other difference: index.html, models, sounds and vendor are all byte-identical.
+  - The origin IP is not in the build, there are no secret patterns, and no .bat/.env/.pem files.
+- Only those 12 files were shipped: tar, scp, extract into `/home/ubuntu/orion-platform/public/games/medieval/`.
+
+**Verified:**
+- Through nginx (`--resolve …:127.0.0.1`) and through Cloudflare, the new files return 200 at origin sizes, and
+  build-info serves 0.24.0 with no-cache.
+- The live page boots **v0.24.0** signed in.
+- A join from the live page (`initNet`) came online with 48 mobs synced. A saved position on the old map (272,200)
+  is walkable and was kept.
+
+**Notes:**
+- Live still carries old stray `*.pre-*` files (`game3d.js.pre-trees` and others). They aren't ours and were left
+  alone.
+- ⚠ The ORION working folder's `world-server/` copy is **not** in sync with live (even `index.js` differs). Deploys of
+  the world server come from THIS repo's `server/` (`deploy_server_to_vps.bat`), so don't deploy from that folder
+  without diffing it first.
+- ⚠ `curl -w` fails with exit 43 in this Windows curl build. Use `-D -` and check the body instead.
+
+### 2026-09-29 (later) — v0.24 build: the city ×2.5, interiors, nature and bridges ×1.5 (deployed 2026-09-30)
 
 Status: implemented locally; `npm test` is green (13 suites). Not deployed yet. It needs a SERVER deploy first
 (`server/world-data.json` is rebuilt: mapW 680, spawn, city), then the client.
