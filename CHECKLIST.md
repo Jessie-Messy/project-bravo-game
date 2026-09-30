@@ -419,7 +419,7 @@ annotate HANDOFF; a critic on every visual change; `npm test` must stay green.
 - [x] 1b Portals: culled and their lights/bloom off beyond the draw window; the glow no longer carries map-wide
       (gate groups hidden past ER, animatePortals)
 - [x] 1c Minimap/world map shows mobs only within sight range (no map-wide mob tracking) — within ER
-- [ ] 1d Perf check (ultra + low) before/after; critic shot of a far view
+- [x] 1d Perf check (ultra + low) before/after; critic shot of a far view
 
 ## Phase 2 — map expansion (design + investigation before any rebuild)
 - [x] 2a Survey everything tied to map size: MAP_W/MAP_H, the overworld/dungeon/coast bands, the terrain canvas
@@ -438,7 +438,7 @@ annotate HANDOFF; a critic on every visual change; `npm test` must stay green.
       doors) used by world.js, game3d (signs, NPC positions, flatten zones) and the server (safe zone, spawn)
 - [x] 3b Outer wall + corner towers + gates, inner keep, streets at ×2.5; wall height/thickness to match
       (3-thick curtain, 5-thick keep, 7x7 towers, FORT_H = 2×WALL_H)
-- [ ] 3c Buildings ×2.5 (5×5 → ~12×12 tiles; bank ~22×17): doors a character fits through comfortably
+- [x] 3c Buildings ×2.5 (5×5 → ~12×12 tiles; bank ~22×17): doors a character fits through comfortably
 - [x] 3d NPCs/shopkeepers, guards, signs, props, spawn point moved with the layout (all from CITY_SPOTS)
 - [ ] 3e Rebuild server world-data; SERVER deploy needed
 
@@ -449,7 +449,7 @@ Critic r1 (2026-09-29): CITY 5.0, INTERIORS 4.0 — both FAIL. Work list:
       corner towers taller
 - [x] C2 city empty: many more (smaller, terraced) houses along the ring road and avenues; courtyard dressing
       (well, market stalls, lamp posts, carts, trees, cobbles); no grass patches at avenue mouths
-- [ ] C3 keep isn't a keep: taller walls with merlons, corner towers, gate arches, a donjon behind the bank
+- [x] C3 keep isn't a keep: taller walls with merlons, corner towers, gate arches, a donjon behind the bank
 - [ ] C4 (minor) building variety: gable studs/collar, plaster variety, some 3-storey, rotated ridges, dormers
 - [x] C5 (minor) door leaves oversized/clipping; 3-wide doors get posts+leaf per tile (fills 40% of the opening)
 - [x] I1 rooms empty: 25–40 props per room; partitions/back room; stairs; wall-hung tools, tapestries, sacks
@@ -458,12 +458,12 @@ Critic r1 (2026-09-29): CITY 5.0, INTERIORS 4.0 — both FAIL. Work list:
 - [x] I4 lantern at eye level / ceilings too low (164 vs eye 115): taller ground storey for city buildings
 - [x] I5 props polish: counters lighter wood, crates 60 cubes, forge fire always-on emissive + light, blade rack
 - [x] I6 ceiling lighter, joists parallel
-- [ ] bugs: props (barrel/crate/stool) in doorways; cutaway misses door frames/upper glass; phantom shadow strip
+- [x] bugs: props (barrel/crate/stool) in doorways; cutaway misses door frames/upper glass; phantom shadow strip
       SE of the bank
 - [x] 4a Interior floors, interior wall faces, ceilings/roof hidden while inside (exists: extend)
 - [x] 4b Furniture per shop type (counter, shelves, anvil/forge, beds, tables, barrels) as colliders
 - [x] 4c Interior lighting (hearth/lamps), camera behaviour inside (no wall clipping in third person)
-- [ ] 4d Critic loop on interiors (r2 sent 2026-09-29: city round 2 + interiors round 2 — see HANDOFF)
+- [x] 4d Critic loop on interiors — r4: CITY 8.0, INTERIORS 8.5 PASS (see HANDOFF)
 - Round 2 done (2026-09-29): C1 rubble/merlons/plinth/string course, mid-wall towers, gate lintels; C2 32 terraced
   houses, well, 10 stalls, goods, carts, 20 lamps, market cross, full paving, gate aprons; C3 keep taller + 9×9
   corner towers (no donjon yet); C5 door spans (one opening, double leaves, props beside the span); I1–I6 lining
@@ -473,12 +473,12 @@ Critic r1 (2026-09-29): CITY 5.0, INTERIORS 4.0 — both FAIL. Work list:
 ## Phase 5 — nature ×1.5
 - [x] 5a Trees ×1.5 (TREE_H 252→378; crowns ×1.2 only, so groves don't re-merge; near width cap 0.40 H)
 - [x] 5b Cave cliffs ×1.5 (CAVEH 168→252), cave mouths scaled to match (soffit 180→214)
-- [ ] 5c Critic pass
+- [~] 5c Critic pass — NATURE 6.0 at r4 (faceted/strata rock since; capped by the ×1.5 decision, see HANDOFF)
 
 ## Phase 6 — bridges ×1.5
 - [ ] 6c Roads out of the N/S/E gates (aprons only now), bridged over the east strip's rivers
-- [ ] 6a Wider decks (3–4 tiles), taller arch, heavier timbers and piers; roads widened to meet them
-- [ ] 6b Critic pass
+- [x] 6a Wider decks (3–4 tiles), taller arch, heavier timbers and piers; roads widened to meet them
+- [x] 6b Critic pass — BRIDGES 7.5 PASS (r3, r4)
 
 ## Phase 7 — ship
 - [ ] 7a Tests + verify + perf (ultra/low)

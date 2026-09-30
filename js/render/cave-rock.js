@@ -28,7 +28,7 @@ export const CAVE_ROCK_SUB = 3;
  * @param opts.ridged   (x, y) => 0..1 ridged noise
  * @returns BufferGeometry (position, normal) or null
  */
-export function buildCaveRock(THREE, { isWall, tiles, TILE, height, groundAt, noise, ridged }) {
+export function buildCaveRock(THREE, { isWall, tiles, TILE, height, groundAt, noise, ridged, nearMouth = () => false }) {
   if (!tiles.length) return null;
   const S = CAVE_ROCK_SUB;
   // Occupancy at a point in TILE units: bilinear over tile centres.
@@ -38,6 +38,28 @@ export function buildCaveRock(THREE, { isWall, tiles, TILE, height, groundAt, no
     return (o(x0, y0) * (1 - ax) + o(x0 + 1, y0) * ax) * (1 - ay) + (o(x0, y0 + 1) * (1 - ax) + o(x0 + 1, y0 + 1) * ax) * ay;
   };
   const sstep = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
+  // The silhouette (v0.24, nature critic r5: from the fields a ring read as an
+  // even wall with sheer-cut ends). Each wall tile gets a rim factor: stepped
+  // down toward the ends and corners of a run (0.35, then 0.6), and varied
+  // tile to tile by up to a quarter. Blended between tile centres like `occ`.
+  const run = (tx, ty, dx, dy) => { let k = 0; while (k < 3 && isWall(tx + dx * (k + 1), ty + dy * (k + 1))) k++; return k; };
+  const rimCache = new Map();
+  const rimOf = (tx, ty) => {
+    const key = tx + ',' + ty; let f = rimCache.get(key);
+    if (f !== undefined) return f;
+    if (!isWall(tx, ty)) f = 1;
+    else {
+      const e = Math.max(Math.min(run(tx, ty, -1, 0), run(tx, ty, 1, 0)), Math.min(run(tx, ty, 0, -1), run(tx, ty, 0, 1)));
+      // (never beside a cave mouth: its portal rides up to the cliff tops)
+      const step = e >= 2 || nearMouth(tx, ty) ? 1 : e === 1 ? 0.6 : 0.35;
+      f = step * (1 - 0.25 * noise(tx * 0.83 + 17.7, ty * 0.83 + 3.9));
+    }
+    rimCache.set(key, f); return f;
+  };
+  const rim = (fx, fy) => {
+    const x = fx - 0.5, y = fy - 0.5, x0 = Math.floor(x), y0 = Math.floor(y), ax = x - x0, ay = y - y0;
+    return (rimOf(x0, y0) * (1 - ax) + rimOf(x0 + 1, y0) * ax) * (1 - ay) + (rimOf(x0, y0 + 1) * (1 - ax) + rimOf(x0 + 1, y0 + 1) * ax) * ay;
+  };
 
   // Every tile within one of a wall: the rock's foot spills half a tile out.
   const cover = new Set();
@@ -62,7 +84,7 @@ export function buildCaveRock(THREE, { isWall, tiles, TILE, height, groundAt, no
     const wx = fx * TILE + (noise(fx * 2.1 + 7, fy * 2.1) - 0.5) * j * 2;
     const wz = fy * TILE + (noise(fx * 2.1, fy * 2.1 + 5) - 0.5) * j * 2;
     const g = groundAt(wx, wz);
-    const y = s <= 0.001 ? g - 4 : g - 4 * (1 - s) + height * s * (mass + crag * s);
+    const y = s <= 0.001 ? g - 4 : g - 4 * (1 - s) + height * s * (mass + crag * s) * rim(fx, fy);
     i = pos.length / 3;
     pos.push(wx, y, wz);
     vid.set(key, i);

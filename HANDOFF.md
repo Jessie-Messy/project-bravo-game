@@ -75,12 +75,28 @@ It never comes closer than 150; in a lane it rises over the roofs instead.
 - The arch is `min(52, 9+3.9·tiles)`. Stringers, bents, braces and rails are ×1.5, and the rails are 54 high.
 - test:bridges was updated for 3-wide spans.
 
-**Critic:**
-- r1: city 5.0, interiors 4.0.
-- r2: city 7.0 PASS, interiors 7.5 PASS.
-- r3: sent (city, interiors, nature, bridges).
-- Open minors: the shopkeepers use two model styles, lamp light pools are weak, terrace variety.
-- Roads out of the N/S/E gates are still to do (CHECKLIST 6c).
+**Critic:** r1 city 5.0 / interiors 4.0 → r2 7.0 / 7.5 → r3 7.5 / 8.0 (bridges 7.5, nature 6.0 FAIL) → r4 city
+8.0, interiors 8.5, bridges 7.5 PASS; nature 6.0.
+- r3/r4 fixes: houses between the camera and the player (up to two) are CUT AWAY like the one you are in
+  (`_camOccBid`/`_camOccBid2`, second shader uniform `uHideBid2`; roof boxes are the full ridge height). City
+  masonry still pulls the camera in, with an over-the-shoulder fallback.
+- Hearths have a real 22-deep firebox; the forge has a sooty back, a full coal bed and 6 staggered flame cards.
+- Walk-in rooms drop the dark doorway card.
+- Street lamps have their own night light (`street_lamp`, 2800).
+- Bridge pads are flagged in stone, with trees cleared around the ends.
+- There are no cobbles under house floors.
+- The cave rock is flat-shaded, with strata and a foot-to-rim gradient, and a battered foot (same footprint).
+- NATURE is capped by the constraints: the owner chose ×1.5 cliffs (252), the canyon pillars are single cave-wall
+  tiles, and the old map's generation is protected.
+
+Open minors:
+- the shopkeepers use two model styles;
+- terrace variety;
+- nature (a per-tile lean and height variation in cave-rock.js was the critic's next suggestion);
+- roads out of the N/S/E gates (CHECKLIST 6c).
+
+Perf (ultra, 1280×720, CPU frame via `_dev.frames`): about 8.5 ms in the city against 7.2 ms in the fields.
+⚠ `_dev.setTier` is the WEAPON-tier command. The graphics tier is `_dev.gfxTier(name)`.
 
 ### 2026-09-29 — v0.24 "bigger world": plan and map-expansion design (IN PROGRESS)
 

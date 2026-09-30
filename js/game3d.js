@@ -4677,8 +4677,9 @@ _caveRockMat.onBeforeCompile = (sh) => {
         // strata: a few darker beds across the faces, wavering, and the rock
         // lighter toward the rim than at the foot
         float bed = abs(fract(vRkW.y / 64.0 + 0.35 * b) - 0.5);
-        rock *= mix(0.84, 1.0, smoothstep(0.06, 0.16, bed));
-        rock *= mix(0.82, 1.12, smoothstep(10.0, 260.0, vRkW.y));
+        rock *= mix(0.75, 1.0, smoothstep(0.08, 0.13, bed));                 // beds ~14 thick, a quarter darker
+        rock *= mix(0.72, 1.22, smoothstep(10.0, 260.0, vRkW.y));             // dark foot, pale rim (critic r5)
+        rock *= 0.94 + 0.12 * _rh(floor(wn.xz * 23.0) + floor(vRkW.y / 90.0)); // each facet its own tone
         // what faces the sky carries moss and a little turf
         float top = smoothstep(0.62, 0.9, wn.y) * (0.55 + 0.45 * b);
         rock = mix(rock, vec3(0.16, 0.22, 0.10) * (0.8 + 0.4 * c), top * 0.75);
@@ -4686,7 +4687,7 @@ _caveRockMat.onBeforeCompile = (sh) => {
         diffuseColor.rgb = rock;
       }`);
 };
-_caveRockMat.customProgramCacheKey = () => 'cave-rock-v3-flat';
+_caveRockMat.customProgramCacheKey = () => 'cave-rock-v4-flat';
 let caveRockMesh = null;
 function rebuildCaveRock(){
   if(caveRockMesh){ scene.remove(caveRockMesh); caveRockMesh.geometry.dispose(); caveRockMesh = null; }
@@ -4697,6 +4698,7 @@ function rebuildCaveRock(){
     tiles, TILE, height: CAVEH, groundAt: heightAt,
     isWall: (tx, ty) => tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H && _caveSurface(ty) && map[ty][tx] === T.CAVE_WALL,
     noise: (x, y) => _rn(x, y), ridged: (x, y) => _rr(x, y),
+    nearMouth: (tx, ty) => { for(let dy = -3; dy <= 3; dy++) for(let dx = -3; dx <= 3; dx++) if(map[ty + dy]?.[tx + dx] === T.CAVE_ENTRANCE) return true; return false; },
   });
   if(!geo) return;
   caveRockMesh = new THREE.Mesh(geo, _caveRockMat);
