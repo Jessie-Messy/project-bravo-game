@@ -4143,6 +4143,27 @@ const _flowerMat = _bidHide(new THREE.MeshStandardMaterial({ vertexColors: true,
   const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: tex, vertexColors: true, roughness: 0.93,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
   m.receiveShadow = true; scene.add(m);
+  // The bridges' landing pads, flagged in the same stone (a sand-coloured PATH
+  // pad read as a beach, not as built, critic r4). Off the ramps, which are stone already.
+  { const p2 = [], u2 = [], c2 = [], i2 = [];
+    for (const sp of BRIDGE_SPANS) for (const a of [sp.a0 - 3, sp.a0 - 2, sp.a0 - 1, sp.a1 + 1, sp.a1 + 2, sp.a1 + 3])
+      for (let c = sp.c0 - 1; c <= sp.c1 + 1; c++) {
+        const tx = sp.axis === 'y' ? c : a, ty = sp.axis === 'y' ? a : c;
+        if (map[ty]?.[tx] !== T.PATH) continue;
+        const cs = [[tx, ty], [tx + 1, ty], [tx, ty + 1], [tx + 1, ty + 1]].map(([x, y]) => [x * TILE, y * TILE]);
+        if (cs.some(([x, z]) => _deckAt(Math.min(x, (tx + 1) * TILE - 1), Math.min(z, (ty + 1) * TILE - 1)) != null)) continue;
+        const b0 = p2.length / 3;
+        for (const [x, z] of cs) { p2.push(x, heightAt(x, z) + 1.5, z); u2.push(x / 120, z / 120); c2.push(1.05, 1.02, 0.98); }
+        i2.push(b0, b0 + 2, b0 + 1, b0 + 1, b0 + 2, b0 + 3);
+      }
+    if (i2.length) {
+      const g2 = new THREE.BufferGeometry();
+      g2.setAttribute('position', new THREE.Float32BufferAttribute(p2, 3));
+      g2.setAttribute('uv', new THREE.Float32BufferAttribute(u2, 2));
+      g2.setAttribute('color', new THREE.Float32BufferAttribute(c2, 3));
+      g2.setIndex(i2); g2.computeVertexNormals();
+      const m2 = new THREE.Mesh(g2, m.material); m2.receiveShadow = true; scene.add(m2);
+    } }
 })();
 
 // Per frame: the roof over you lifts away; windows light up after dusk.
@@ -4610,7 +4631,9 @@ function _buildCaveList(){
 // See render/cave-rock.js. Shaded in world space like the mountain skirt —
 // broad tone, faint bedding, soft gullies down the fall line, moss on what
 // faces the sky — so the caves read as outcrops of the same range.
-const _caveRockMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0 });
+// Flat-shaded (v0.24, nature critic r3/r4: the smooth shading read as plaster
+// cones and an extruded wall — faceted, the same mesh reads as fractured stone).
+const _caveRockMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0, flatShading: true });
 _caveRockMat.defines = { NO_RANGE_FOG: '' };
 _caveRockMat.onBeforeCompile = (sh) => {
   sh.vertexShader = sh.vertexShader
@@ -4628,7 +4651,8 @@ _caveRockMat.onBeforeCompile = (sh) => {
         return mix(mix(_rh(i), _rh(i+vec2(1,0)), f.x), mix(_rh(i+vec2(0,1)), _rh(i+vec2(1,1)), f.x), f.y); }`)
     .replace('#include <color_fragment>', `#include <color_fragment>
       {
-        vec3 wn = normalize( ( vec4( vNormal, 0.0 ) * viewMatrix ).xyz );
+        // the facet's own world normal (flat shading has no vNormal)
+        vec3 wn = normalize( cross( dFdx( vRkW ), dFdy( vRkW ) ) );
         // TRIPLANAR: three axis-aligned projections blended by the normal.
         // The face-plane lookup it replaces (along the face, and up) turned
         // with every change of facing, so on a curved face — the cave-mouth
@@ -4650,6 +4674,11 @@ _caveRockMat.onBeforeCompile = (sh) => {
                   * (0.90 + 0.16 * gully) * mix(0.86, 1.0, smoothstep(0.10, 0.50, c * 0.5 + b * 0.5));   // (0.72 over 0.18-0.42 printed dalmatian spots)
         // steep faces a shade darker and cooler than ledges: reads as relief
         rock *= mix(vec3(0.86, 0.88, 0.92), vec3(1.0), smoothstep(0.2, 0.7, wn.y));
+        // strata: a few darker beds across the faces, wavering, and the rock
+        // lighter toward the rim than at the foot
+        float bed = abs(fract(vRkW.y / 64.0 + 0.35 * b) - 0.5);
+        rock *= mix(0.84, 1.0, smoothstep(0.06, 0.16, bed));
+        rock *= mix(0.82, 1.12, smoothstep(10.0, 260.0, vRkW.y));
         // what faces the sky carries moss and a little turf
         float top = smoothstep(0.62, 0.9, wn.y) * (0.55 + 0.45 * b);
         rock = mix(rock, vec3(0.16, 0.22, 0.10) * (0.8 + 0.4 * c), top * 0.75);
@@ -4657,7 +4686,7 @@ _caveRockMat.onBeforeCompile = (sh) => {
         diffuseColor.rgb = rock;
       }`);
 };
-_caveRockMat.customProgramCacheKey = () => 'cave-rock-v2-tri';
+_caveRockMat.customProgramCacheKey = () => 'cave-rock-v3-flat';
 let caveRockMesh = null;
 function rebuildCaveRock(){
   if(caveRockMesh){ scene.remove(caveRockMesh); caveRockMesh.geometry.dispose(); caveRockMesh = null; }
@@ -5030,7 +5059,7 @@ function updateEnvironmentCycle(dt) {
       } else if (type === 'bridge_lamp') {
         baseY = 50; baseInt = 260; colorHex = 0xffa850; dist = TILE * 5; decay = 1.5;
       } else if (type === 'street_lamp') {
-        baseY = 200; baseInt = 900 * nightFactor; colorHex = 0xffb060; dist = TILE * 8; decay = 1.5;
+        baseY = 200; baseInt = 2800 * nightFactor; colorHex = 0xffb060; dist = TILE * 8; decay = 1.5;   // (the road is ~210 below the lantern)
       }
 
       // At the flame, a touch above it so the torch's own head is lit from

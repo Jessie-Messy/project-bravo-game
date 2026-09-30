@@ -143,6 +143,13 @@ export function extendBridgeSpans(map, T, spans, { maxReach = 12, minWidth = 3 }
       const t = tileOf(map, sp, a, c);
       if (t === T.TREE || t === T.STONE) setTile(map, sp, a, c, a >= sp.a0 && a <= sp.a1 ? T.WATER : T.GRASS);
     }
+    // ...and a clear ring four tiles round each end: a grove on the bank still
+    // reached the landing, trunks against the rail (critic r4)
+    if (T.TREE !== undefined) for (const [ae, dir] of [[sp.a0 - 1, -1], [sp.a1 + 1, 1]])
+      for (let k = 0; k <= 5; k++) for (let c = sp.c0 - 4; c <= sp.c1 + 4; c++) {
+        const a = ae + dir * k, t = tileOf(map, sp, a, c);
+        if (t === T.TREE || t === T.STONE) setTile(map, sp, a, c, T.GRASS);
+      }
   }
   return n;
 }

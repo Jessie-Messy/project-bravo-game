@@ -300,7 +300,9 @@ function furnish(THREE, A, B, o) {
     box(A.stone, u0, vBack - 60, u1, vBack, 0, 56, [0.4, 0.37, 0.34]);
     box(A.fire, u0 + 8, vBack - 54, u1 - 8, vBack - 12, 56, 61, [1, 0.22, 0.03]);     // the coal bed, always glowing
     box(A.stone, u0 + 6, vBack - 12, u1 - 6, vBack, 56, 130, [0.23, 0.2, 0.19]);     // the sooty back (the plaster showed through, critic r3)
-    for (const du of [-60, -36, -12, 12, 36, 60]) { const q = P((u0 + u1) / 2 + du, vBack - 32); o.fires.push({ x: q[0], y: F + 80, z: q[1], s: 2.2 + (Math.abs(du) < 30 ? 0.5 : 0) }); }
+    // (staggered in height and depth: an even row read as a line of candles, critic r4)
+    [[-60, 4, -3], [-36, -6, 6], [-12, 3, -7], [12, -4, 5], [36, 7, -2], [60, -3, 4]].forEach(([du, dz, dy]) => {
+      const q = P((u0 + u1) / 2 + du, vBack - 32 + dz); o.fires.push({ x: q[0], y: F + 80 + dy, z: q[1], s: 2.2 + (Math.abs(du) < 30 ? 0.5 : 0) }); });
     // the hood, stepping in to a chimney that runs into the ceiling
     box(A.stone, u0 + 6, vBack - 58, u1 - 6, vBack, 128, 150, [0.45, 0.42, 0.38]);
     box(A.stone, u0 + 22, vBack - 44, u1 - 22, vBack, 150, 172, [0.47, 0.44, 0.4]);
