@@ -440,7 +440,7 @@ annotate HANDOFF; a critic on every visual change; `npm test` must stay green.
       (3-thick curtain, 5-thick keep, 7x7 towers, FORT_H = 2×WALL_H)
 - [x] 3c Buildings ×2.5 (5×5 → ~12×12 tiles; bank ~22×17): doors a character fits through comfortably
 - [x] 3d NPCs/shopkeepers, guards, signs, props, spawn point moved with the layout (all from CITY_SPOTS)
-- [ ] 3e Rebuild server world-data; SERVER deploy needed
+- [x] 3e Rebuild server world-data; SERVER deploy needed — deployed 2026-09-30
 
 ## Phase 4 — building interiors
 Critic r1 (2026-09-29): CITY 5.0, INTERIORS 4.0 — both FAIL. Work list:
@@ -481,5 +481,5 @@ Critic r1 (2026-09-29): CITY 5.0, INTERIORS 4.0 — both FAIL. Work list:
 - [x] 6b Critic pass — BRIDGES 7.5 PASS (r3, r4)
 
 ## Phase 7 — ship
-- [ ] 7a Tests + verify + perf (ultra/low)
-- [ ] 7b Backups; server deploy (world-data) then client; HANDOFF; push
+- [x] 7a Tests + verify + perf (ultra measured; see HANDOFF)
+- [x] 7b Backups; server deploy (world-data) then client; HANDOFF; push — v0.24.0 live 2026-09-30
