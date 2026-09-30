@@ -74,7 +74,7 @@ const setTile = (map, sp, a, c, t) => { if (sp.axis === 'y') map[a][c] = t; else
 // simply passes over it. A span that runs `maxReach` tiles without finding
 // land on some column is left at that end as it was (it's going along a
 // river, not across it). Returns the number of tiles converted.
-export function extendBridgeSpans(map, T, spans, { maxReach = 12 } = {}) {
+export function extendBridgeSpans(map, T, spans, { maxReach = 12, minWidth = 3 } = {}) {
   let n = 0;
   for (const sp of spans) {
     // A one-tile footbridge is 48 wide, and between two railings a 13-radius
@@ -109,6 +109,21 @@ export function extendBridgeSpans(map, T, spans, { maxReach = 12 } = {}) {
         }
       }
       if (dir < 0) sp.a0 -= reach; else sp.a1 += reach;
+    }
+    // ...and at least `minWidth` wide (v0.24, owner: "the new bridges look
+    // great... but can be much bigger in scale" — ×1.5, two tiles to three).
+    // A column is added on whichever side has more water under it; land the
+    // new column crosses stays land and the deck passes over it.
+    for (let guard = 0; sp.c1 - sp.c0 + 1 < minWidth && guard < 4; guard++) {
+      const wetIn = c => { let w = 0; for (let a = sp.a0; a <= sp.a1; a++) { const t = tileOf(map, sp, a, c); if (t === T.WATER || t === T.SHALLOWS || t === T.BRIDGE) w++; } return w; };
+      const lo = sp.c0 - 1, hi = sp.c1 + 1, wl = wetIn(lo), wh = wetIn(hi);
+      const c = wh >= wl ? hi : lo;
+      if (!wetIn(c)) break;
+      for (let a = sp.a0; a <= sp.a1; a++) {
+        const t = tileOf(map, sp, a, c);
+        if (t === T.WATER || t === T.SHALLOWS) { setTile(map, sp, a, c, T.BRIDGE); n++; }
+      }
+      if (c > sp.c1) sp.c1 = c; else sp.c0 = c;
     }
     // The road meets the bridge: the landing tiles at each end are paved, so a
     // bridge never sets down in a meadow beside the road it serves.
@@ -150,7 +165,7 @@ export function shapeBridgeSpans(spans, { TILE, groundAt, waterY = 2 }) {
     sp.yA = at(sp.S0); sp.yB = at(sp.S1);
     sp.eA = Math.max(sp.yA, waterY + 12); sp.eB = Math.max(sp.yB, waterY + 12);
     const tiles = sp.a1 - sp.a0 + 1;
-    sp.arch = Math.min(34, 6 + tiles * 2.6);
+    sp.arch = Math.min(52, 9 + tiles * 3.9);          // (×1.5 with the wider decks, v0.24)
   }
   return spans;
 }
@@ -268,7 +283,7 @@ export function buildBridges(THREE, spans, { TILE, groundAt, waterY = 2, colors,
 
     const hd = TILE * 0.35;          // how far each pier head reaches out over the water
     const pA = sp.sA + hd, pB = sp.sB - hd;
-    const sy = DECK_T + 5;           // stringer centre below the deck top
+    const sy = DECK_T + 8;           // stringer centre below the deck top (the ×1.5 stringers are 15 deep)
 
     // APPROACH RAMPS: dressed stone from the landing up to the bank edge; its
     // top IS the walking surface (deckY), so nothing floats and nothing sinks.
@@ -308,12 +323,14 @@ export function buildBridges(THREE, spans, { TILE, groundAt, waterY = 2, colors,
 
     // STRINGERS: three longitudinal beams under the planks, in segments that
     // follow the arch, bank edge to bank edge.
-    for (const c of [-(hw - 9), 0, hw - 9]) {
+    // (a fourth and fifth under a deck three tiles wide: at 144 across, three
+    //  left planks spanning 60 unsupported)
+    for (const c of hw >= 70 ? [-(hw - 11), -(hw - 11) / 2, 0, (hw - 11) / 2, hw - 11] : [-(hw - 11), 0, hw - 11]) {
       if (c === 0 && hw < 40) continue;
       const seg = 24;
       for (let s = sp.sA - 4; s < sp.sB + 3; s += seg) {
         const s2 = Math.min(sp.sB + 4, s + seg);
-        wood.beam(P(s, c, dy(s) - sy), P(s2, c, dy(s2) - sy), 9, 10, Cx, tint(C.beam, 0.95 + r() * 0.1));
+        wood.beam(P(s, c, dy(s) - sy), P(s2, c, dy(s2) - sy), 13, 15, Cx, tint(C.beam, 0.95 + r() * 0.1));
       }
     }
 
@@ -339,32 +356,32 @@ export function buildBridges(THREE, spans, { TILE, groundAt, waterY = 2, colors,
     const nb = Math.max(1, Math.round((pB - pA) / (TILE * 1.9)));
     for (let k = 1; k < nb; k++) {
       const s = pA + (pB - pA) * k / nb;
-      const capY = dy(s) - sy - 5 - 5;
-      const posts = hw >= 40 ? [-(hw - 7), 0, hw - 7] : [-(hw - 6), hw - 6];
+      const capY = dy(s) - sy - 8 - 7;
+      const posts = hw >= 70 ? [-(hw - 9), -(hw - 9) / 3, (hw - 9) / 3, hw - 9] : hw >= 40 ? [-(hw - 9), 0, hw - 9] : [-(hw - 8), hw - 8];
       for (const c of posts) {
         const g = ground(s, c) - 14;
-        wood.box(P(s, c, (g + capY) / 2), Cx, [0, 1, 0], A, 5, (capY - g) / 2, 5, tint(C.post, 0.9 + r() * 0.15));
+        wood.box(P(s, c, (g + capY) / 2), Cx, [0, 1, 0], A, 7.5, (capY - g) / 2, 7.5, tint(C.post, 0.9 + r() * 0.15));
       }
-      wood.beam(P(s, -(hw + 12), capY), P(s, hw + 12, capY), 10, 9, A, tint(C.beam, 1));
+      wood.beam(P(s, -(hw + 16), capY), P(s, hw + 16, capY), 15, 13, A, tint(C.beam, 1));
       // braces: between the outer posts, from just above the water to the cap
       const lo = Math.max(waterY + 8, Math.max(ground(s, -(hw - 7)), ground(s, hw - 7)) + 4);
       if (capY - lo > 16) {
-        wood.beam(P(s + 3, -(hw - 7), lo), P(s + 3, hw - 7, capY - 6), 4, 6, A, tint(C.beam, 0.9));
-        wood.beam(P(s - 3, hw - 7, lo), P(s - 3, -(hw - 7), capY - 6), 4, 6, A, tint(C.beam, 0.9));
+        wood.beam(P(s + 4, -(hw - 9), lo), P(s + 4, hw - 9, capY - 8), 6, 9, A, tint(C.beam, 0.9));
+        wood.beam(P(s - 4, hw - 9, lo), P(s - 4, -(hw - 9), capY - 8), 6, 9, A, tint(C.beam, 0.9));
       }
       // knee braces from the outer posts up to the outer stringers, both ways:
       // they show at every range where the X-bracing is below the eye (critic r3)
-      for (const c of [-(hw - 8), hw - 8]) for (const d of [-1, 1]) {
-        const k0 = P(s, c, capY - 18), s2 = s + d * 18;
-        if (capY - 18 < waterY + 2) continue;
-        wood.beam(k0, P(s2, c, dy(s2) - sy - 4), 4.5, 5, Cx, tint(C.beam, 0.92));
+      for (const c of [-(hw - 11), hw - 11]) for (const d of [-1, 1]) {
+        const k0 = P(s, c, capY - 27), s2 = s + d * 27;
+        if (capY - 27 < waterY + 2) continue;
+        wood.beam(k0, P(s2, c, dy(s2) - sy - 6), 6.5, 7.5, Cx, tint(C.beam, 0.92));
       }
     }
 
     // RAILINGS: posts every ~44, a mid rail and a top rail on each side; big
     // newel posts at the four corners. Colliders along each side.
-    const rc = hw - 3, postH = 36;
-    const np = Math.max(2, Math.round((L - 20) / 44));
+    const rc = hw - 4, postH = 54;                 // (×1.5, v0.24: waist-high on a 126 character)
+    const np = Math.max(2, Math.round((L - 20) / 60));
     for (const side of [-1, 1]) {
       const c = side * rc;
       let prev = null;
@@ -375,9 +392,9 @@ export function buildBridges(THREE, spans, { TILE, groundAt, waterY = 2, colors,
         if (inRock(s)) { prev = null; continue; }
         const newel = k === 0 || k === np || inRock(sp.S0 + 10 + (L - 20) * (k - 1) / np) || inRock(sp.S0 + 10 + (L - 20) * (k + 1) / np);
         const base = dy(s) - DECK_T - 6, h = newel ? postH + 10 : postH;
-        const hs = newel ? 6.5 : 3.6;
+        const hs = newel ? 9.5 : 5.2;
         wood.box(P(s, c, base + (h + 6) / 2), Cx, [0, 1, 0], A, hs, (h + 6) / 2, hs, tint(C.post, 0.95 + r() * 0.12));
-        if (newel) wood.box(P(s, c, base + h + 6 + 2), Cx, [0, 1, 0], A, hs + 1.5, 2, hs + 1.5, tint(C.post, 1.1));
+        if (newel) wood.box(P(s, c, base + h + 6 + 3), Cx, [0, 1, 0], A, hs + 2, 3, hs + 2, tint(C.post, 1.1));
         // a lantern on one newel at each bank, on opposite corners: it marks
         // the crossing after dark (the bridge vanished at night — critic r3)
         if ((side === 1 && k === 0) || (side === -1 && k === np)) {
@@ -390,10 +407,10 @@ export function buildBridges(THREE, spans, { TILE, groundAt, waterY = 2, colors,
           wood.box(P(s, c, ly + 16.5), Cx, [0, 1, 0], A, 1.6, 1.2, 1.6, tint(C.beam, 0.7));         // finial
           const q = P(s, c, ly + 8); lamps.push({ x: q[0], y: q[1], z: q[2] });
         }
-        const top = P(s, c, dy(s) + postH - 3), midr = P(s, c, dy(s) + 15);
+        const top = P(s, c, dy(s) + postH - 4), midr = P(s, c, dy(s) + 24);
         if (prev) {
-          wood.beam(prev.top, top, 5, 5, Cx, tint(C.rail, 0.95 + r() * 0.1));
-          wood.beam(prev.mid, midr, 3.5, 4, Cx, tint(C.rail, 0.9));
+          wood.beam(prev.top, top, 7.5, 7, Cx, tint(C.rail, 0.95 + r() * 0.1));
+          wood.beam(prev.mid, midr, 5, 5.5, Cx, tint(C.rail, 0.9));
         }
         prev = { top, mid: midr };
       }

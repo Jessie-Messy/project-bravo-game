@@ -18,9 +18,14 @@
 //   keep (inner)   ±36, 5 thick; 7-wide entrances on all four sides
 //   bank           23×17 in the middle of the keep, doors S (5)
 //   shops          four 13×13 in the keep's corners, doors facing the bank
-//   houses         13×13 between the keep and the ring road: the healer, the
-//                  four artifact traders and the fletcher each keep a house
-//                  (they stood about the old courtyard), the rest are homes
+//   houses         a terraced ring of 32 11×11 houses between the keep and
+//                  the ring road; the healer, the four artifact traders and
+//                  the fletcher keep the ones nearest the avenues
+//   towers         7×7 corner towers; 7×7 towers astride the curtain every
+//                  24 tiles, two of them flanking each gate; 9×9 towers at
+//                  the keep's corners
+//   dressing       a well, market stalls, lamp posts and carts (CITY_EXTRAS,
+//                  drawn by render/buildings.js)
 //
 // Buildings keep 1-tile walls: at 48 units a tile they are already a stout
 // wall, and collision is per tile.
@@ -44,6 +49,13 @@ export const KEEP_HALF = 36, KEEP_T = 5;
 // Buildings: [rx0, ry0, w, h, doorSide, doorOffset, doorWidth, role]
 // (rx0, ry0 = top-left, relative). Door offset is along the door's wall from
 // that wall's left/top end.
+//
+// Round 2 (city critic r1: "the city is empty — 17 buildings in 153×153"): the
+// band between the keep and the ring road is a continuous ring of TERRACED
+// houses, 11×11 (9×9 rooms, still walk-in and furnished), two tiles apart,
+// every one facing the ring road — 10 along the north and south, 6 down the
+// west and east, broken only by the avenues. The traders keep the houses
+// nearest the avenues.
 const B = [
   // bank, centre of the keep
   [-11, -8, 23, 17, 's', 9, 5, 'bank'],
@@ -52,20 +64,20 @@ const B = [
   [ 17, -30, 13, 13, 'w', 5, 3, 'blacksmith'],   // NE
   [-30,  17, 13, 13, 'e', 5, 3, 'mage'],         // SW
   [ 17,  17, 13, 13, 'w', 5, 3, 'farrier'],      // SE
-  // between the keep and the ring road
-  [  6, -60, 13, 13, 'w', 5, 3, 'healer'],       // north avenue, east side
-  [-19, -60, 13, 13, 'e', 5, 3, 'antiquarian'],  // north avenue, west side
-  [-45, -60, 13, 13, 'n', 5, 3, 'home'],         // (outer homes face the ring road)
-  [ 32, -60, 13, 13, 'n', 5, 3, 'curator'],
-  [  6,  47, 13, 13, 'w', 5, 3, 'fletcher'],     // south avenue
-  [-19,  47, 13, 13, 'e', 5, 3, 'cryptologist'],
-  [-45,  47, 13, 13, 's', 5, 3, 'home'],
-  [ 32,  47, 13, 13, 's', 5, 3, 'grave_robber'],
-  [-60, -30, 13, 13, 'w', 5, 3, 'home'],         // west side
-  [-60,  17, 13, 13, 'w', 5, 3, 'home'],
-  [ 47, -30, 13, 13, 'e', 5, 3, 'home'],         // east side
-  [ 47,  17, 13, 13, 'e', 5, 3, 'home'],
 ];
+{
+  const H = 11, ROLE = {
+    'n,-15': 'antiquarian', 'n,5': 'healer', 'n,17': 'curator',
+    's,-15': 'cryptologist', 's,5': 'fletcher', 's,17': 'grave_robber' };
+  for (const rx of [-63, -51, -39, -27, -15, 5, 17, 29, 41, 53]) {
+    B.push([rx, -58, H, H, 'n', 4, 3, ROLE['n,' + rx] || 'home']);        // north row
+    B.push([rx,  48, H, H, 's', 4, 3, ROLE['s,' + rx] || 'home']);        // south row
+  }
+  for (const ry of [-45, -33, -21, 11, 23, 35]) {
+    B.push([-58, ry, H, H, 'w', 4, 3, 'home']);                           // west column
+    B.push([ 48, ry, H, H, 'e', 4, 3, 'home']);                           // east column
+  }
+}
 export const CITY_BUILDINGS = B.map(([rx, ry, w, h, side, off, dw, role]) => {
   const x0 = CITY_C.x + rx, y0 = CITY_C.y + ry, x1 = x0 + w - 1, y1 = y0 + h - 1;
   // the door tiles, and the tile just OUTSIDE the middle of the door
@@ -135,12 +147,35 @@ export function buildCity(map) {
   rect(X1, CY - a, CX - KEEP_HALF, CY + a, T.PATH); rect(CX + KEEP_HALF, CY - a, X2, CY + a, T.PATH);
   rect(CX - g, Y1, CX + g, Y1 + OUTER_T - 1, T.PATH); rect(CX - g, Y2 - OUTER_T + 1, CX + g, Y2, T.PATH);
   rect(X1, CY - g, X1 + OUTER_T - 1, CY + g, T.PATH); rect(X2 - OUTER_T + 1, CY - g, X2, CY + g, T.PATH);
+  // a paved apron outside each gate, flaring from the gate's width: the north,
+  // south and east gates opened straight onto grass (open ground only — the
+  // west road, water and trees are left as they are)
+  for (let d = 1; d <= 8; d++) {
+    const hw = g + (d >> 1);
+    for (let k = -hw; k <= hw; k++) for (const [x, y] of [[CX + k, Y1 - d], [CX + k, Y2 + d], [X1 - d, CY + k], [X2 + d, CY + k]])
+      if (map[y] && map[y][x] === T.GRASS) map[y][x] = T.PATH;
+  }
   // the keep: a 5-thick ring with 7-wide entrances, a paved courtyard inside
   const K = KEEP_HALF;
   rect(CX - K, CY - K, CX + K, CY + K, T.WALL);
   rect(CX - K + KEEP_T, CY - K + KEEP_T, CX + K - KEEP_T, CY + K - KEEP_T, T.PATH);
   rect(CX - g, CY - K, CX + g, CY - K + KEEP_T - 1, T.PATH); rect(CX - g, CY + K - KEEP_T + 1, CX + g, CY + K, T.PATH);
   rect(CX - K, CY - g, CX - K + KEEP_T - 1, CY + g, T.PATH); rect(CX + K - KEEP_T + 1, CY - g, CX + K, CY + g, T.PATH);
+  // towers astride the curtain, every 24 tiles along each side; the pair at
+  // ±7 flank the gate (city critic r1: "a dark hedge, not a fortification")
+  const MID = [-55, -31, -7, 7, 31, 55], CT = 3;
+  for (const r of MID) {
+    rect(CX + r - CT, Y1 + 1 - CT, CX + r + CT, Y1 + 1 + CT, T.WALL);   // north
+    rect(CX + r - CT, Y2 - 1 - CT, CX + r + CT, Y2 - 1 + CT, T.WALL);   // south
+    rect(X1 + 1 - CT, CY + r - CT, X1 + 1 + CT, CY + r + CT, T.WALL);   // west
+    rect(X2 - 1 - CT, CY + r - CT, X2 - 1 + CT, CY + r + CT, T.WALL);   // east
+  }
+  // the keep's corner towers, 9×9 on its corners
+  for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]])
+    rect(CX + sx * K - 4, CY + sy * K - 4, CX + sx * K + 4, CY + sy * K + 4, T.WALL);
+  // a paved city: everything open inside the curtain is road
+  for (let y = Y1 + OUTER_T; y <= Y2 - OUTER_T; y++) for (let x = X1 + OUTER_T; x <= X2 - OUTER_T; x++)
+    if (map[y][x] === T.GRASS) map[y][x] = T.PATH;
   // buildings: 1-tile walls, a paved floor, the door(s)
   for (const b of CITY_BUILDINGS) {
     rect(b.x0, b.y0, b.x1, b.y1, T.WALL);
@@ -160,3 +195,26 @@ export function buildCity(map) {
     }
   }
 }
+
+// The courtyard and the streets: dressed, not bare sand (city critic r1).
+// World tiles (float), `rot` a quarter-turn count. render/buildings.js draws
+// them and gives them colliders.
+export const CITY_EXTRAS = [
+  { type: 'well',  ...at(0, -20) },
+  // (the awning slopes down to the customer's side, `rot` 0 = south: every
+  //  stall faces the middle of the courtyard)
+  { type: 'stall', ...at(-12, 23), rot: 2 }, { type: 'stall', ...at(12, 23), rot: 2 },
+  { type: 'stall', ...at(-12, -22), rot: 0 }, { type: 'stall', ...at(12, -22), rot: 0 },
+  ...[[-4, -38], [4, -38], [-4, 38], [4, 38], [-38, -4], [-38, 4], [38, -4], [38, 4],
+      [-4, -62], [4, -62], [-4, 62], [4, 62], [-62, -4], [-62, 4], [62, -4], [62, 4]].map(([x, y]) => ({ type: 'lamp', ...at(x, y) })),
+  { type: 'cart', ...at(-6, -70), rot: 1 }, { type: 'cart', ...at(6, 70), rot: 3 }, { type: 'cart', ...at(-70, 6), rot: 0 },
+  { type: 'cart', ...at(-20, 8), rot: 1 },
+  // a market either side of the bank, the stalls facing it (rot 3 faces east,
+  // 1 west), stock stacked between them, lamps at the bank's corners, and a
+  // market cross in front of its door (the courtyard still read as an empty
+  // parade ground from above)
+  ...[-10, 0, 10].flatMap(y => [{ type: 'stall', ...at(-24, y), rot: 3 }, { type: 'stall', ...at(24, y), rot: 1 }]),
+  ...[[-26, -5], [-26, 5], [26, -5], [26, 5], [-17, 25], [17, -24]].map(([x, y], i) => ({ type: 'goods', ...at(x, y), rot: i % 4 })),
+  ...[[-15, -12], [15, -12], [-15, 12], [15, 12]].map(([x, y]) => ({ type: 'lamp', ...at(x, y) })),
+  { type: 'cross', ...at(0, 22) },
+];

@@ -23,6 +23,65 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-29 (later) — v0.24 build: the city ×2.5, interiors, nature and bridges ×1.5 (NOT DEPLOYED)
+
+Status: implemented locally; `npm test` is green (13 suites). Not deployed yet. It needs a SERVER deploy first
+(`server/world-data.json` is rebuilt: mapW 680, spawn, city), then the client.
+
+**City (js/city.js is the single source of truth; test:city has 111 checks):**
+- The layout is 152×152 at (586, 290): a 3-thick curtain and 7×7 corner towers.
+- Towers stand astride the curtain every 24 tiles, a pair flanking each gate.
+- The keep has 9×9 corner towers.
+- 32 terraced 11×11 houses ring the keep. The bank and four shops sit in the keep.
+- Every open tile inside the curtain is PATH, and each gate has a paved apron outside.
+- `CITY_EXTRAS` holds the dressing: a well, 10 stalls, goods, carts, 20 lamp posts and a market cross. It is drawn
+  by `render/buildings.js dress()`, with colliders.
+
+**Fort rendering (game3d):**
+- Anything over 30 across counts as a fort wall; the keep's L pieces were being drawn as plain wall.
+- KEEP_H is 2.45×WALL_H. Towers are clustered, one cone per block.
+- The wall stone is lighter rubble, with chunky merlons every other tile, a plinth and a string course.
+- **`render/gatehouse.js` (new)** builds the gates:
+  - basket arches with a voussoir ring;
+  - a raised portcullis;
+  - leaves folded back in the passage;
+  - merlons on top.
+- There are 4 curtain gates and 4 keep gates. The arch stone is a 1-instance InstancedMesh because the fort
+  material's world-UV patch reads `instanceMatrix`.
+- **Cobbles** (`buildCityPaving`): an overlay mesh on every PATH tile within 10 tiles of the city, with a
+  procedural sett texture, vertex-darkened gutters along house walls and pale flags around the well and cross.
+
+**Interiors (buildings.js):**
+- Walk-in rooms (`room` = not a hut, 7×7 or larger) have H1 220.
+- A lining: boarded wainscot, plaster, a dado rail, posts every 2 tiles, and a wall plate.
+- Windows are on the door wall and at the front of each side wall, seen from inside as daylit panes (`pane` Acc,
+  `_paneMat` glows with the day).
+- `fire` Acc (unlit MeshBasic) for lanterns and embers.
+- Hearths and forges send animated flame cards (`out.fires` → `archFlamePts`, campfire type).
+- A door of several tiles is one opening, with double leaves.
+- Furnishing per role:
+  - stairs with a real stairwell;
+  - cupboards, tapestries, chairs, pots, candles, sacks;
+  - a blade rack;
+  - an anvil on a stump;
+  - bank pillars and a counting table.
+
+**Camera:** the third-person boom pulls in before city walls, towers and roofs (`camWallPull`, `_roofTopAt`).
+It never comes closer than 150; in a lane it rises over the roofs instead.
+
+**Nature ×1.5 and bridges ×1.5:**
+- TREE_H is CHAR_H×3 and CAVEH is WALL_H×1.5, with the cave mouths scaled to match.
+- `extendBridgeSpans` widens every bridge to at least 3 tiles.
+- The arch is `min(52, 9+3.9·tiles)`. Stringers, bents, braces and rails are ×1.5, and the rails are 54 high.
+- test:bridges was updated for 3-wide spans.
+
+**Critic:**
+- r1: city 5.0, interiors 4.0.
+- r2: city 7.0 PASS, interiors 7.5 PASS.
+- r3: sent (city, interiors, nature, bridges).
+- Open minors: the shopkeepers use two model styles, lamp light pools are weak, terrace variety.
+- Roads out of the N/S/E gates are still to do (CHECKLIST 6c).
+
 ### 2026-09-29 — v0.24 "bigger world": plan and map-expansion design (IN PROGRESS)
 
 The owner play-tested v0.23.0 and asked for a bigger world. The work list is the v0.24 section of CHECKLIST.md.

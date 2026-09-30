@@ -7,10 +7,11 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildTown } from './render/buildings.js';
+import { buildGatehouses } from './render/gatehouse.js';
 import { buildCaveRock } from './render/cave-rock.js';
 import { findBridgeSpans, extendBridgeSpans, shapeBridgeSpans, makeDeckLookup, buildBridges } from './render/bridges.js';
 import { buildCaveMouths } from './render/cave-mouth.js';
-import { CITY_SPOTS, CITY_BUILDINGS, cityBuilding } from './city.js';
+import { CITY_SPOTS, CITY_BUILDINGS, cityBuilding, CITY_C, KEEP_HALF, CITY_EXTRAS, GATE_W, OUTER_T, KEEP_T, CITY_RECT } from './city.js';
 import { makeFlameMaterial, makeFlameGeometry, makeGlowMaterial, makeGlowGeometry } from './render/flame.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave, netCallGuards,
   netHousePlace, netHouseUpdate, netHouseRemove,
@@ -373,6 +374,53 @@ const CAM_BOOM_SAMPLES = 6;
 // The lowest the camera may sit at (cx,cz), accounting for everything the boom
 // passes over on the way there. heightAt() is a lookup into a baked grid, not
 // noise evaluation, so this is six array reads per frame.
+// How much of the orbit boom is clear of the city's walls: 1 when nothing
+// stands between the player and the camera, less when a curtain, keep or tower
+// wall does. The ×2.5 city's walls are 330–470 tall and the boom is ~500
+// long, so standing near one put the camera outside it, looking at stone
+// (v0.24). Houses count too, as a box with a ridge (eaves ~380 on the city's
+// walk-in houses, the roof rising ~1.2 per unit in from the nearest edge):
+// between two terraces the boom ended inside a roof. The building you are
+// standing in is left to the roof cutaway.
+function _roofTopAt(x, z){
+  const OV = 56;                                   // the jetty and the eaves overhang the footprint
+  let top = -Infinity;
+  for(const b of TOWN){
+    const d = Math.min(x - b.x0*TILE, (b.x1 + 1)*TILE - x, z - b.y0*TILE, (b.y1 + 1)*TILE - z) + OV;
+    if(d < 0) continue;
+    if(_insideBid >= 0 && TOWN[_insideBid] === b) continue;
+    const big = b.x1 - b.x0 >= 6 && b.y1 - b.y0 >= 6;
+    top = Math.max(top, heightAt(x, z) + (big ? 330 : 200) + d * 1.2 + 30);
+  }
+  return top;
+}
+function camWallPull(px, pz, y0, cx, cz, y1){
+  const dx = cx - px, dz = cz - pz, L = Math.hypot(dx, dz);
+  if(L < 1) return 1;
+  const n = Math.ceil(L / (TILE * 0.4));
+  for(let i = 1; i <= n; i++){
+    const t = i / n, x = px + dx * t, z = pz + dz * t, tx = Math.floor(x / TILE), ty = Math.floor(z / TILE);
+    const wk = map[ty]?.[tx] === T.WALL ? wallKind[ty * MAP_W + tx] : -1;
+    const top = wk === WK_PLAIN ? heightAt(x, z) + WALL_H + 70
+              : (wk === WK_FORT || wk === WK_TOWER) ? heightAt(x, z) + _fortTileH(tx, ty, wk) + 70   // (+ the merlons)
+              : _roofTopAt(x, z);
+    if(y0 + (y1 - y0) * t < top) return Math.max(0.06, t - (TILE * 0.35) / L);
+  }
+  return 1;
+}
+// The highest wall or roof top over the first `k` of the boom (for lifting
+// the camera over a lane instead of pushing it into the player's back).
+function camObstacleTop(px, pz, cx, cz, k){
+  const dx = (cx - px) * k, dz = (cz - pz) * k, L = Math.hypot(dx, dz), n = Math.max(1, Math.ceil(L / (TILE * 0.4)));
+  let top = -Infinity;
+  for(let i = 1; i <= n; i++){
+    const x = px + dx * i / n, z = pz + dz * i / n, tx = Math.floor(x / TILE), ty = Math.floor(z / TILE);
+    const wk = map[ty]?.[tx] === T.WALL ? wallKind[ty * MAP_W + tx] : -1;
+    top = Math.max(top, wk === WK_PLAIN ? heightAt(x, z) + WALL_H + 70
+      : (wk === WK_FORT || wk === WK_TOWER) ? heightAt(x, z) + _fortTileH(tx, ty, wk) + 70 : _roofTopAt(x, z));
+  }
+  return top;
+}
 function camBoomFloor(cx, cz){
   let floor = -Infinity;
   for(let s = 1; s <= CAM_BOOM_SAMPLES; s++){
@@ -3640,6 +3688,16 @@ const WK_PLAIN = 0, WK_FORT = 1, WK_BUILDING = 2, WK_TOWER = 3;
 // The city's fortifications scaled with it (×2.5 footprint): curtain and keep
 // twice the height of a plain wall, and 7x7 corner towers (half-size 3).
 const FORT_H = WALL_H * 2, TOWER_R = 3;
+// The keep stands taller than the curtain, its towers taller still, and the
+// curtain's towers well above its walk (city critic r1: corner towers 520).
+const KEEP_H = WALL_H * 2.45, TOWER_H = FORT_H * 1.55, KEEP_TOWER_H = KEEP_H * 1.4;
+const _inKeep = (tx, ty) => Math.abs(tx - CITY_C.x) <= KEEP_HALF + 5 && Math.abs(ty - CITY_C.y) <= KEEP_HALF + 5;
+// the height a fort tile is drawn to
+function _fortTileH(tx, ty, wk){
+  const keep = _inKeep(tx, ty);
+  if(wk === WK_TOWER) return keep ? KEEP_TOWER_H : TOWER_H;
+  return keep ? KEEP_H : FORT_H;
+}
 const wallKind = new Uint8Array(MAP_W * MAP_H);
 const BUILDINGS = [];       // { x0, y0, x1, y1 } inclusive tile bounds
 (function classifyWalls(){
@@ -3658,8 +3716,11 @@ const BUILDINGS = [];       // { x0, y0, x1, y1 } inclusive tile bounds
       }
     }
     const w = x1-x0+1, h = y1-y0+1;
+    // (> 30 is fort: the keep's four entrances cut it into ~33-across L pieces,
+    //  which fell between the two thresholds and were drawn as plain 168 wall —
+    //  "the keep isn't a keep", city critic r1)
     const kind = (Math.max(w, h) <= 30 && Math.min(w, h) >= 2) ? WK_BUILDING
-               : (Math.max(w, h) > 40 ? WK_FORT : WK_PLAIN);
+               : (Math.max(w, h) > 30 ? WK_FORT : WK_PLAIN);
     for(let i = 0; i < tiles.length; i += 2) wallKind[tiles[i+1]*MAP_W + tiles[i]] = kind;
     if(kind === WK_BUILDING) BUILDINGS.push({ x0, y0, x1, y1 });
   }
@@ -3675,14 +3736,30 @@ const BUILDINGS = [];       // { x0, y0, x1, y1 } inclusive tile bounds
   for(const [x, y] of towers) for(let dy = -R_; dy <= R_; dy++) for(let dx = -R_; dx <= R_; dx++) wallKind[(y+dy)*MAP_W + x+dx] = WK_TOWER;
   classifyWalls.towers = towers;
 })();
+// One cone per tower block: a 9x9 block has a 3x3 of qualifying centres, so
+// centres are clustered and each cluster's middle and extent make one tower.
+// Entries are [tx, ty, halfTiles, height].
 const TOWER_CENTRES = [];
-for(let y = TOWER_R; y < MAP_H-TOWER_R; y++) for(let x = TOWER_R; x < MAP_W-TOWER_R; x++){
-  if(wallKind[y*MAP_W+x] !== WK_TOWER) continue;
-  let all = true;
-  for(let dy = -TOWER_R; dy <= TOWER_R && all; dy++) for(let dx = -TOWER_R; dx <= TOWER_R; dx++) if(wallKind[(y+dy)*MAP_W+x+dx] !== WK_TOWER){ all = false; break; }
-  if(all) TOWER_CENTRES.push([x, y]);
+{
+  const raw = [];
+  for(let y = TOWER_R; y < MAP_H-TOWER_R; y++) for(let x = TOWER_R; x < MAP_W-TOWER_R; x++){
+    if(wallKind[y*MAP_W+x] !== WK_TOWER) continue;
+    let all = true;
+    for(let dy = -TOWER_R; dy <= TOWER_R && all; dy++) for(let dx = -TOWER_R; dx <= TOWER_R; dx++) if(wallKind[(y+dy)*MAP_W+x+dx] !== WK_TOWER){ all = false; break; }
+    if(all) raw.push([x, y]);
+  }
+  const used = new Set();
+  for(let i = 0; i < raw.length; i++){
+    if(used.has(i)) continue;
+    const cl = [raw[i]]; used.add(i);
+    for(let j = i + 1; j < raw.length; j++) if(!used.has(j) && cl.some(([a, b]) => Math.abs(a - raw[j][0]) <= 1 && Math.abs(b - raw[j][1]) <= 1)){ cl.push(raw[j]); used.add(j); }
+    const xs = cl.map(c => c[0]), ys = cl.map(c => c[1]);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const half = TOWER_R + (Math.max(...xs) - Math.min(...xs)) / 2;
+    const keep = _inKeep(Math.round(cx), Math.round(cy));
+    TOWER_CENTRES.push([cx, cy, half, keep ? KEEP_TOWER_H : TOWER_H]);
+  }
 }
-const TOWER_H = FORT_H * 1.38;
 
 // Fort walls, towers and their merlons are drawn ALL the time rather than
 // windowed round the player like other obstacles, and they haze the way the
@@ -3695,14 +3772,16 @@ const FORT_TILES = [];
 for(let y = 0; y < MAP_H; y++) for(let x = 0; x < MAP_W; x++){
   const k = wallKind[y*MAP_W + x]; if(k === WK_FORT || k === WK_TOWER) FORT_TILES.push(y*MAP_W + x);
 }
-const _fortMat = new THREE.MeshStandardMaterial({ map: wallTex, normalMap: wallNrm, roughness: 0.99, metalness: 0.0 });
+// Coursed rubble in a light dressed grey, not the dark brick: the curtain read
+// as a dark hedge from the fields (city critic r1).
+const _fortMat = new THREE.MeshStandardMaterial({ color: 0xc8c0b2, roughness: 0.97, metalness: 0.0 });   // (map: _stoneTexB, set once it exists below)
 _fortMat.onBeforeCompile = wallMesh.material.onBeforeCompile;          // same world-space courses
 _fortMat.defines = { NO_RANGE_FOG: '' };
-_fortMat.customProgramCacheKey = () => 'fort-worlduv-v1';
+_fortMat.customProgramCacheKey = () => 'fort-worlduv-v2';
 const fortMesh = makeMesh(new THREE.BoxGeometry(1,1,1), _fortMat, FORT_TILES.length + 16);
 const fortInstTile = [];
 // Crenellations: a parapet on the outward edge of each fort tile.
-const merlonMesh = makeMesh(new THREE.BoxGeometry(1,1,1), _fortMat, FORT_TILES.length * 2 + 16);
+const merlonMesh = makeMesh(new THREE.BoxGeometry(1,1,1), _fortMat, FORT_TILES.length * 4 + 64);
 
 // ── The buildings ──
 // Each building is generated ONCE as architecture by render/buildings.js — a
@@ -3763,6 +3842,7 @@ const _stoneTexB = _mkTex(128, 128, (x, w, h) => {
       draw(bx); if(bx + bw > w) draw(bx - w); bx += bw; } }
   grain(x, w, h, 14, 0.12);
 });
+_fortMat.map = _stoneTexB; _fortMat.needsUpdate = true;   // the curtain's coursed rubble (see _fortMat)
 const _plasterTex = _mkTex(64, 64, (x, w, h) => {
   x.fillStyle = '#f2f0ec'; x.fillRect(0, 0, w, h);
   for(let i = 0; i < 180; i++){ const g = 225 + Math.random() * 30 | 0;
@@ -3824,7 +3904,7 @@ const _shadowTex = (() => { const c = document.createElement('canvas'); c.width 
 // over a quarter second instead of popping. Walls carry id -1, never hidden.
 // Which building the player stands in (index into TOWN, -1 outside), and the
 // hearths/forges/lamps of every room (buildings.js furnish), for the light pool.
-let _insideBid = -1, _townLights = [];
+let _insideBid = -1, _townLights = [], _townFlames = [], _townFires = [];
 const _hideBid = { value: -2 }, _hideT = { value: 0 };
 // While you are inside, that building's roof and upper storey dissolve and its
 // ground-storey walls are cut down to waist height (critic r3: a 164-deep
@@ -3882,6 +3962,10 @@ const _boardMat     = _bidHide(new THREE.MeshStandardMaterial({ map: _boardTex, 
 const _thatchMat    = _bidHide(new THREE.MeshStandardMaterial({ map: _thatchTex, vertexColors: true, roughness: 1 }), 'thatch');
 const _slateMat     = _bidHide(new THREE.MeshStandardMaterial({ map: _slateTex, vertexColors: true, roughness: 0.7 }), 'slate');
 const _floorMat     = new THREE.MeshStandardMaterial({ map: _boardTex, vertexColors: true, roughness: 0.9 });
+// v0.24 interiors: a window seen from inside is daylit (its glow follows the
+// day, not the night), and fire burns at noon — hearths, forges, lanterns.
+const _paneMat      = _bidHide(new THREE.MeshStandardMaterial({ color: 0x6f8496, emissive: 0xdfe8f0, emissiveIntensity: 0, roughness: 0.3 }), 'pane', 1.2);
+const _fireMat      = _bidHide(new THREE.MeshBasicMaterial({ vertexColors: true }), 'fire', 1.2);
 const _windowMat    = _bidHide(new THREE.MeshStandardMaterial({ color: 0x3a3226, emissive: 0xffb057, emissiveIntensity: 0, roughness: 0.25, metalness: 0.1 }), 'glass', 1.2);
 const _bldRoofMat   = _bidHide(new THREE.MeshStandardMaterial({ map: _tileTex, vertexColors: true, roughness: 0.8 }), 'roof');
 const roofMat = _bldRoofMat;           // the tower caps share the tiles
@@ -3940,15 +4024,16 @@ const _signTex = (() => {
 const _signMat   = _bidHide(new THREE.MeshStandardMaterial({ map: _signTex, roughness: 0.85 }), 'sign', 1.2);
 const _flowerMat = _bidHide(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }), 'flowers', 1.0);
 (function buildTownMeshes(){
-  const G = buildTown(THREE, { buildings: TOWN, TILE, groundAt: heightAt, coastY0: COAST_Y0, signs: SHOP_SIGNS });
+  const G = buildTown(THREE, { buildings: TOWN, TILE, groundAt: heightAt, coastY0: COAST_Y0, signs: SHOP_SIGNS, extras: CITY_EXTRAS });
   const add = (geo, mat, shadow = true) => { if(!geo) return; const m = new THREE.Mesh(geo, mat);
     m.castShadow = shadow; m.receiveShadow = true; m.customDepthMaterial = _bldDepthMat; scene.add(m); };
   add(G.stone, _bldStoneMat); add(G.plaster, _bldPlastMat); add(G.timber, _bldWoodMat);
   add(G.glass, _glassMat, false); add(G.glassLit, _windowMat, false); add(G.doorGlow, _doorGlowMat, false); add(G.roof, _bldRoofMat);
   add(G.sign, _signMat); add(G.flowers, _flowerMat);
+  add(G.pane, _paneMat, false); add(G.fire, _fireMat, false);
   // barrels, crates and benches block the player like any other prop
   for(const q of G.props) pointColliders.push({ x: q.x, y: q.z, r: q.r });
-  _townLights = G.lights || [];
+  _townLights = G.lights || []; _townFlames = G.flames || []; _townFires = G.fires || [];
   add(G.boards, _boardMat); add(G.thatch, _thatchMat); add(G.slate, _slateMat); add(G.floor, _floorMat, false);
   // Lamplight pools under lit windows and doorways: additive, a soft falloff
   // from the wall outward, faded in with the dark (see updateBuildings).
@@ -3957,15 +4042,98 @@ const _flowerMat = _bidHide(new THREE.MeshStandardMaterial({ vertexColors: true,
     m.renderOrder = 1; scene.add(m); }
   // Tower caps: a conical tiled roof on each corner tower — merged, one draw.
   const cones = [];
-  for(const [tx, ty] of TOWER_CENTRES){
-    const wx = tx*TILE+TILE/2, wz = ty*TILE+TILE/2, y = heightAt(wx, wz) + TOWER_H;
-    const g = new THREE.ConeGeometry(TILE*(TOWER_R + 0.95), TILE*(TOWER_R + 0.95)*1.35, 20, 1, true);
+  for(const [tx, ty, half, th] of TOWER_CENTRES){
+    const wx = tx*TILE+TILE/2, wz = ty*TILE+TILE/2, y = heightAt(wx, wz) + th;
+    const rr = TILE*(half + 0.95);
+    const g = new THREE.ConeGeometry(rr, rr*1.35, 20, 1, true);
     g.setAttribute('color', new THREE.Float32BufferAttribute(Array.from({ length: g.attributes.position.count }, () => [0.55, 0.30, 0.20]).flat(), 3));
     for(const [k, v] of [['aBid', -1], ['aCut', -1], ['aBase', 0]]) g.setAttribute(k, new THREE.Float32BufferAttribute(new Array(g.attributes.position.count).fill(v), 1));
-    g.translate(wx, y + TILE*(TOWER_R + 0.95)*0.675, wz); cones.push(g);
+    g.translate(wx, y + rr*0.675, wz); cones.push(g);
   }
   if(cones.length){ const m = new THREE.Mesh(mergeGeometries(cones), _bldRoofMat); m.castShadow = true; scene.add(m); cones.forEach(g => g.dispose()); }
+  // Gatehouses: an arch, a raised portcullis and folded-back doors in every
+  // gateway, four in the curtain and four in the keep (render/gatehouse.js;
+  // city critic r2: "gates are square holes with a thin lintel").
+  {
+    const T_ = TILE, g = GATE_W >> 1, R_ = CITY_RECT, K = KEEP_HALF, cx0 = CITY_C.x, cy0 = CITY_C.y;
+    const ux = [(cx0 - g) * T_, (cx0 + g + 1) * T_], uz = [(cy0 - g) * T_, (cy0 + g + 1) * T_];
+    const gates = [
+      { axis: 'x', u0: ux[0], u1: ux[1], w0: R_.y1 * T_, w1: (R_.y1 + OUTER_T) * T_, out: -1, top: FORT_H },
+      { axis: 'x', u0: ux[0], u1: ux[1], w0: (R_.y2 - OUTER_T + 1) * T_, w1: (R_.y2 + 1) * T_, out: 1, top: FORT_H },
+      { axis: 'z', u0: uz[0], u1: uz[1], w0: R_.x1 * T_, w1: (R_.x1 + OUTER_T) * T_, out: -1, top: FORT_H },
+      { axis: 'z', u0: uz[0], u1: uz[1], w0: (R_.x2 - OUTER_T + 1) * T_, w1: (R_.x2 + 1) * T_, out: 1, top: FORT_H },
+      { axis: 'x', u0: ux[0], u1: ux[1], w0: (cy0 - K) * T_, w1: (cy0 - K + KEEP_T) * T_, out: -1, top: KEEP_H },
+      { axis: 'x', u0: ux[0], u1: ux[1], w0: (cy0 + K - KEEP_T + 1) * T_, w1: (cy0 + K + 1) * T_, out: 1, top: KEEP_H },
+      { axis: 'z', u0: uz[0], u1: uz[1], w0: (cx0 - K) * T_, w1: (cx0 - K + KEEP_T) * T_, out: -1, top: KEEP_H },
+      { axis: 'z', u0: uz[0], u1: uz[1], w0: (cx0 + K - KEEP_T + 1) * T_, w1: (cx0 + K + 1) * T_, out: 1, top: KEEP_H },
+    ];
+    const _c = h => { const c = new THREE.Color(); c.setHex(h, THREE.SRGBColorSpace); return [c.r, c.g, c.b]; };
+    const GH = buildGatehouses(THREE, gates, { groundAt: heightAt, colors: { iron: _c(0x1c1c1c), wood: _c(0x5a3e28) } });
+    // the stone rides the fort's world-space courses, whose patch reads instanceMatrix
+    const st = new THREE.InstancedMesh(GH.stone, _fortMat, 1);
+    st.setMatrixAt(0, new THREE.Matrix4()); st.frustumCulled = false;
+    const mt = new THREE.Mesh(GH.metal, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.6 }));
+    const wd = new THREE.Mesh(GH.wood, new THREE.MeshStandardMaterial({ map: _woodTex, vertexColors: true, roughness: 0.85 }));
+    for (const m of [st, mt, wd]) { m.castShadow = m.receiveShadow = true; scene.add(m); }
+  }
 })();
+// ── City paving (v0.24) ───────────────────────────────────────────
+// The city's streets and courtyard are PATH tiles, which the ground painter
+// draws as sand: from the ramparts the whole city read as one flat beige
+// (city critic r2). Every PATH tile in and just around the curtain gets a
+// cobbled surface on top of the ground instead: 24-unit setts in a running
+// bond, a darker gutter along the house fronts (vertex colour, one tile wide),
+// and paler flags round the well and the market cross.
+(function buildCityPaving(){
+  const M = 10, R_ = CITY_RECT;
+  const x0 = R_.x1 - M, y0 = R_.y1 - M, x1 = R_.x2 + M, y1 = R_.y2 + M;
+  const nx = x1 - x0 + 2, ny = y1 - y0 + 2;                        // corners
+  const tex = (() => {
+    const c = document.createElement('canvas'); c.width = c.height = 256;
+    const x = c.getContext('2d'); x.fillStyle = '#5e574c'; x.fillRect(0, 0, 256, 256);
+    let sd = 7; const rnd = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
+    const S = 64;                                                   // a sett: 24 units across of the 96-unit tile
+    for (let row = 0; row < 4; row++) for (let col = -1; col < 4; col++) {
+      const ox = col * S + (row % 2 ? S / 2 : 0), oy = row * S;
+      const v = 0.86 + rnd() * 0.24, r = Math.round(0x8e * v), g = Math.round(0x86 * v), b = Math.round(0x76 * v);
+      x.fillStyle = `rgb(${r},${g},${b})`;
+      x.beginPath(); x.roundRect(ox + 4, oy + 4, S - 8, S - 8, 10); x.fill();
+      x.fillStyle = 'rgba(255,255,255,0.10)'; x.fillRect(ox + 8, oy + 7, S - 18, 5);            // the worn top catches the light
+      x.fillStyle = 'rgba(0,0,0,0.12)'; x.fillRect(ox + 8, oy + S - 12, S - 16, 5);
+      for (let k = 0; k < 6; k++) { x.fillStyle = `rgba(0,0,0,${0.04 + rnd() * 0.06})`; x.fillRect(ox + 6 + rnd() * (S - 16), oy + 6 + rnd() * (S - 16), 4 + rnd() * 6, 3 + rnd() * 5); }
+    }
+    // the two half-setts wrapping round the tile's edge
+    const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 8; return t;
+  })();
+  const pos = new Float32Array(nx * ny * 3), uv = new Float32Array(nx * ny * 2), col = new Float32Array(nx * ny * 3);
+  const isBldWall = (tx, ty) => map[ty]?.[tx] === T.WALL && wallKind[ty * MAP_W + tx] === WK_BUILDING;
+  const flags = CITY_EXTRAS.filter(e => e.type === 'well' || e.type === 'cross');
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const tx = x0 + i, ty = y0 + j, wx = tx * TILE, wz = ty * TILE, k = j * nx + i;
+    pos[k*3] = wx; pos[k*3+1] = heightAt(wx, wz) + 1.5; pos[k*3+2] = wz;
+    uv[k*2] = wx / 96; uv[k*2+1] = wz / 96;
+    let c = 1;
+    if (isBldWall(tx, ty) || isBldWall(tx - 1, ty) || isBldWall(tx, ty - 1) || isBldWall(tx - 1, ty - 1)) c = 0.7;   // the gutter
+    for (const f of flags) if (Math.hypot(tx - f.x - 0.5, ty - f.y - 0.5) < 4.5) c = 1.18;
+    col[k*3] = col[k*3+1] = col[k*3+2] = c;
+  }
+  const idx = [];
+  for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) {
+    if (map[ty]?.[tx] !== T.PATH) continue;
+    const a = (ty - y0) * nx + (tx - x0), b = a + 1, c = a + nx, d = c + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setIndex(idx); g.computeVertexNormals(); g.computeBoundingSphere();
+  const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: tex, vertexColors: true, roughness: 0.93,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+  m.receiveShadow = true; scene.add(m);
+})();
+
 // Per frame: the roof over you lifts away; windows light up after dusk.
 let _bldT0 = 0;
 function updateBuildings(){
@@ -3984,6 +4152,7 @@ function updateBuildings(){
   const night = Math.max(0, 1 - _envDayF*1.6);
   _windowMat.emissiveIntensity = night * 2.2;
   _doorGlowMat.emissiveIntensity = night * 0.8;
+  _paneMat.emissiveIntensity = (1 - night) * 0.9;
   _spillMat.opacity = night * 0.55; _spillMat.visible = night > 0.01;
 }
 
@@ -4049,7 +4218,7 @@ function rebuildForts(){
     {
       // Masonry is laid straight: no per-tile tilt or height jitter, which
       // opened seams and stepped the top (critic C-9). A full tile wide.
-      const h = wk===WK_TOWER ? TOWER_H : FORT_H;
+      const h = _fortTileH(tx, ty, wk);
       _pos.set(cx, gy + h/2, cz); _sc1.set(TILE, h, TILE); q.identity();
       _m4.compose(_pos, q, _sc1); fortMesh.setMatrixAt(i, _m4);
       fortInstTile[i]=k; i++;
@@ -4068,13 +4237,25 @@ function rebuildForts(){
       const sides = outward.length ? outward : open.length === 2 ? open : [];
       const edges = sides.length === 1 ? [[sides[0][0]*0.36, sides[0][1]*0.36, 0.26]]
                   : sides.length === 2 ? [[0, 0, 0.4]] : [];
+      // Merlons: one chunky merlon every other tile, 60 tall, with a tile's
+      // gap between — two slivers per tile vanished at any distance (r1).
+      const run = alongX ? tx : ty;
       for(const [ex, ez, thick] of edges){
-        if(mi >= mcap-1) break;
-        for(const s of [-0.25, 0.25]){
-          _pos.set(cx + (alongX?s*TILE:ex*TILE), gy + h + 17, cz + (alongX?ez*TILE:s*TILE));
-          _sc1.set(alongX?TILE*0.3:TILE*thick, 34, alongX?TILE*thick:TILE*0.3);   // (taller with the ×2 wall)
+        if(mi >= mcap-4) break;
+        if(run % 2 === 0){
+          _pos.set(cx + (alongX?0:ex*TILE), gy + h + 30, cz + (alongX?ez*TILE:0));
+          _sc1.set(alongX?TILE*0.72:TILE*thick, 60, alongX?TILE*thick:TILE*0.72);
           _m4.compose(_pos, q, _sc1); merlonMesh.setMatrixAt(mi++, _m4);
         }
+      }
+      // On the outward face: a battered plinth at the foot and a string course
+      // under the walk, both proud of the wall, so it reads as masonry.
+      if(sides.length === 1 && outward.length){
+        const [ox, oz] = sides[0];
+        _pos.set(cx + ox*TILE*0.62, gy + 30, cz + oz*TILE*0.62);
+        _sc1.set(alongX?TILE:TILE*0.3, 76, alongX?TILE*0.3:TILE); _m4.compose(_pos, q, _sc1); merlonMesh.setMatrixAt(mi++, _m4);
+        _pos.set(cx + ox*TILE*0.56, gy + h - 34, cz + oz*TILE*0.56);
+        _sc1.set(alongX?TILE:TILE*0.14, 12, alongX?TILE*0.14:TILE); _m4.compose(_pos, q, _sc1); merlonMesh.setMatrixAt(mi++, _m4);
       }
     }
   }
@@ -4366,7 +4547,7 @@ function rebuildPlacedObjects() {
   // the cave-mouth torches burn with the same flame (they never go out)
   for(const f of archFlamePts){
     const tx=Math.floor(f.x/TILE), ty=Math.floor(f.z/TILE);
-    if(tx>=b.tx0&&tx<=b.tx1&&ty>=b.ty0&&ty<=b.ty1) addFlame(f.x, f.y, f.z, 1.0, 'torch');   // (1.6 read as a sticker twice the shaft: critic r1)
+    if(tx>=b.tx0&&tx<=b.tx1&&ty>=b.ty0&&ty<=b.ty1) addFlame(f.x, f.y, f.z, f.s||1.0, f.type||'torch');   // (1.6 read as a sticker twice the shaft: critic r1)
   }
   markInst(placedFlameMesh,nFlame); markInst(placedGlowMesh,nGlow);
   rebuildWorldChests();
@@ -8219,6 +8400,11 @@ const archFlamePts = [];    // ...and their flame cards (drawn with the placed t
   const wood = new THREE.Mesh(cm.wood, bridgeWoodMesh.material);
   for (const m of [rock, wood]) { m.castShadow = m.receiveShadow = true; scene.add(m); }
   for (const f of cm.flames) { archFlamePts.push(f); archLightSrcs.push({ x:f.x, y:f.z, fy:f.y + 6 }); }
+  // the city's lamp posts light the street like the mouth torches (their
+  // glazed lanterns are the flame: a torch card would poke out of the glass)
+  for (const f of _townFlames) archLightSrcs.push({ x:f.x, y:f.z, fy:f.y + 6 });
+  // hearths and forges burn with the campfire's cards (lit by the room light)
+  for (const f of _townFires) archFlamePts.push({ x:f.x, y:f.y, z:f.z, s:f.s, type:'campfire' });
   console.log('[world]', mouths.length, 'cave mouths');
 }
 function animateArches(t) {
@@ -8655,6 +8841,7 @@ function pickWallTile(sx, sy) {
       if(map[ty] && _isFullCover(map[ty][tx])) return {tx,ty,point:h.point};
       continue;
     }
+    if (packed === -1) continue;              // a gatehouse lintel: no tile of its own
     if (packed==null) {                       // customMesh (glass): fall back to the hit point
       const tx=Math.floor(h.point.x/TILE), ty=Math.floor(h.point.z/TILE);
       if(map[ty] && _isFullCover(map[ty][tx])) return {tx,ty,point:h.point};
@@ -16088,7 +16275,19 @@ function syncEntities(t){
     // the far end matters most, but a crest partway along would block the shot
     // even with both ends clear.
     camY = Math.max(camY, camBoomFloor(cx, cz));
-    camera.position.set(cx, camY, cz);
+    // pulled in along the boom to this side of a city wall in the way
+    const _ty0 = _camGY + CHAR_H * 0.6, k = camWallPull(player.x, player.y, _ty0, cx, cz, camY);
+    if(k < 1){
+      // Never closer than ~150: in a lane between terraces the pull put the
+      // camera at the player's hips (city critic r2). Hold 150 out and rise
+      // over whatever stands there, looking down into the lane.
+      const Lb = Math.hypot(cx - player.x, camY - _ty0, cz - player.y), kmin = Math.min(1, 150 / Math.max(1, Lb));
+      if(k < kmin){
+        const y = Math.max(_ty0 + (camY - _ty0) * kmin, camObstacleTop(player.x, player.y, cx, cz, kmin) + 30);
+        camera.position.set(player.x + (cx - player.x) * kmin, y, player.y + (cz - player.y) * kmin);
+      } else camera.position.set(player.x + (cx - player.x) * k, _ty0 + (camY - _ty0) * k, player.y + (cz - player.y) * k);
+    }
+    else camera.position.set(cx, camY, cz);
     // At low angles aim at the torso instead of the feet so the view stays level
     camera.lookAt(player.x, _camGY + (camPitch < CAM_PITCH0 ? (1 - camPitch/CAM_PITCH0) * 24 : 0), player.y);
   }

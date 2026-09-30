@@ -444,26 +444,31 @@ annotate HANDOFF; a critic on every visual change; `npm test` must stay green.
 
 ## Phase 4 — building interiors
 Critic r1 (2026-09-29): CITY 5.0, INTERIORS 4.0 — both FAIL. Work list:
-- [ ] C1 curtain wall reads as a dark hedge: merlons 1 tile × 72 with gaps, lighter stone #8f877a, string course,
+- [x] C1 curtain wall reads as a dark hedge: merlons 1 tile × 72 with gaps, lighter stone #8f877a, string course,
       battered plinth; GATEHOUSES (13×7, ~480 tall, arch) flanked by towers; mid-wall towers every ~24 tiles;
       corner towers taller
-- [ ] C2 city empty: many more (smaller, terraced) houses along the ring road and avenues; courtyard dressing
+- [x] C2 city empty: many more (smaller, terraced) houses along the ring road and avenues; courtyard dressing
       (well, market stalls, lamp posts, carts, trees, cobbles); no grass patches at avenue mouths
 - [ ] C3 keep isn't a keep: taller walls with merlons, corner towers, gate arches, a donjon behind the bank
 - [ ] C4 (minor) building variety: gable studs/collar, plaster variety, some 3-storey, rotated ridges, dormers
-- [ ] C5 (minor) door leaves oversized/clipping; 3-wide doors get posts+leaf per tile (fills 40% of the opening)
-- [ ] I1 rooms empty: 25–40 props per room; partitions/back room; stairs; wall-hung tools, tapestries, sacks
-- [ ] I2 no windows inside: cut matching openings through the walls (reveals), panes, daylight in
-- [ ] I3 exterior stone reused inside: plaster above a stone wainscot, posts every 2 tiles
-- [ ] I4 lantern at eye level / ceilings too low (164 vs eye 115): taller ground storey for city buildings
-- [ ] I5 props polish: counters lighter wood, crates 60 cubes, forge fire always-on emissive + light, blade rack
-- [ ] I6 ceiling lighter, joists parallel
+- [x] C5 (minor) door leaves oversized/clipping; 3-wide doors get posts+leaf per tile (fills 40% of the opening)
+- [x] I1 rooms empty: 25–40 props per room; partitions/back room; stairs; wall-hung tools, tapestries, sacks
+- [x] I2 no windows inside: cut matching openings through the walls (reveals), panes, daylight in
+- [x] I3 exterior stone reused inside: plaster above a stone wainscot, posts every 2 tiles
+- [x] I4 lantern at eye level / ceilings too low (164 vs eye 115): taller ground storey for city buildings
+- [x] I5 props polish: counters lighter wood, crates 60 cubes, forge fire always-on emissive + light, blade rack
+- [x] I6 ceiling lighter, joists parallel
 - [ ] bugs: props (barrel/crate/stool) in doorways; cutaway misses door frames/upper glass; phantom shadow strip
       SE of the bank
-- [ ] 4a Interior floors, interior wall faces, ceilings/roof hidden while inside (exists: extend)
-- [ ] 4b Furniture per shop type (counter, shelves, anvil/forge, beds, tables, barrels) as colliders
-- [ ] 4c Interior lighting (hearth/lamps), camera behaviour inside (no wall clipping in third person)
-- [ ] 4d Critic loop on interiors
+- [x] 4a Interior floors, interior wall faces, ceilings/roof hidden while inside (exists: extend)
+- [x] 4b Furniture per shop type (counter, shelves, anvil/forge, beds, tables, barrels) as colliders
+- [x] 4c Interior lighting (hearth/lamps), camera behaviour inside (no wall clipping in third person)
+- [ ] 4d Critic loop on interiors (r2 sent 2026-09-29: city round 2 + interiors round 2 — see HANDOFF)
+- Round 2 done (2026-09-29): C1 rubble/merlons/plinth/string course, mid-wall towers, gate lintels; C2 32 terraced
+  houses, well, 10 stalls, goods, carts, 20 lamps, market cross, full paving, gate aprons; C3 keep taller + 9×9
+  corner towers (no donjon yet); C5 door spans (one opening, double leaves, props beside the span); I1–I6 lining
+  (wainscot/plaster/dado/posts), windows seen from inside, H1 220, fire always lit, lighter wood, more props,
+  stairs; third-person camera pulls in before city walls and roofs (4c)
 
 ## Phase 5 — nature ×1.5
 - [x] 5a Trees ×1.5 (TREE_H 252→378; crowns ×1.2 only, so groves don't re-merge; near width cap 0.40 H)
@@ -471,6 +476,7 @@ Critic r1 (2026-09-29): CITY 5.0, INTERIORS 4.0 — both FAIL. Work list:
 - [ ] 5c Critic pass
 
 ## Phase 6 — bridges ×1.5
+- [ ] 6c Roads out of the N/S/E gates (aprons only now), bridged over the east strip's rivers
 - [ ] 6a Wider decks (3–4 tiles), taller arch, heavier timbers and piers; roads widened to meet them
 - [ ] 6b Critic pass
 

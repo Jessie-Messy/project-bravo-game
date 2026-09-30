@@ -43,7 +43,8 @@ let wetUnder = 0;
 for (let y = 17; y <= 25; y++) for (const x of [30, 31]) if (map[y][x] !== T.BRIDGE) wetUnder++;
 check('every tile under the road bridge is BRIDGE', wetUnder === 0, wetUnder + ' tiles');
 check('the landings are dry road', [15, 16, 26, 27].every(y => map[y][30] === T.PATH && map[y][31] === T.PATH));
-check('the footbridge is widened to two tiles', foot && foot.c1 - foot.c0 === 1, foot && (foot.c0 + '..' + foot.c1));
+check('the footbridge is widened to three tiles (v0.24 ×1.5)', foot && foot.c1 - foot.c0 === 2, foot && (foot.c0 + '..' + foot.c1));
+check('the road bridge is widened to three tiles', road.c1 - road.c0 === 2, road.c0 + '..' + road.c1);
 check('no tree beside the span', map[23][29] !== T.TREE && map[16][32] !== T.TREE);
 
 // Ground: the banks slope down to -6 at the water's edge (below the surface,
@@ -57,7 +58,7 @@ const ground = (wx, wz) => {
 };
 shapeBridgeSpans(spans, { TILE, groundAt: ground, waterY: WATER_Y });
 const deckAt = makeDeckLookup(spans, { TILE, W, H });
-const cx = 31 * TILE;                                // road bridge centre line
+const cx = road.cc;                                  // road bridge centre line
 check('the deck meets the road with no step (north)', Math.abs(deckAt(cx, road.S0 + 0.01) - ground(cx, road.S0)) < 0.5,
   deckAt(cx, road.S0 + 0.01) + ' vs ' + ground(cx, road.S0));
 check('the deck meets the road with no step (south)', Math.abs(deckAt(cx, road.S1 - 0.01) - ground(cx, road.S1)) < 0.5);
