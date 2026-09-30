@@ -79,7 +79,10 @@ for (const k of ['glass', 'glassLit']) {
   for (let i = 0; i < p.length; i += 3) for (const b of buildings) {
     const X0 = b.x0 * TILE, X1 = (b.x1 + 1) * TILE, Z0 = b.y0 * TILE, Z1 = (b.y1 + 1) * TILE;
     const inDoorTile = b.doors.some(d => p[i] >= d.tx*TILE && p[i] <= (d.tx + 1)*TILE && p[i + 2] >= d.ty*TILE && p[i + 2] <= (d.ty + 1)*TILE);
-    if (!inDoorTile && p[i] > X0 + 0.3 && p[i] < X1 - 0.3 && p[i + 2] > Z0 + 0.3 && p[i + 2] < Z1 - 0.3) buried++;
+    // (v0.24: rooms are furnished — a lantern or a hearth's glow in the ROOM is
+    //  not buried; only the one-tile wall ring is solid)
+    const inRoom = p[i] >= X0 + TILE && p[i] <= X1 - TILE && p[i + 2] >= Z0 + TILE && p[i + 2] <= Z1 - TILE;
+    if (!inDoorTile && !inRoom && p[i] > X0 + 0.3 && p[i] < X1 - 0.3 && p[i + 2] > Z0 + 0.3 && p[i + 2] < Z1 - 0.3) buried++;
   }
   check(`${k}: no glass buried inside a solid wall`, buried === 0, buried + ' vertices');
 }
