@@ -382,45 +382,50 @@ const CAM_BOOM_SAMPLES = 6;
 // walk-in houses, the roof rising ~1.2 per unit in from the nearest edge):
 // between two terraces the boom ended inside a roof. The building you are
 // standing in is left to the roof cutaway.
-function _roofTopAt(x, z){
+let _roofHitBid = -1;                // the building _roofTopAt last found highest
+function _roofTopAt(x, z, ex1 = -1, ex2 = -1){   // (ex: houses already being cut away)
   const OV = 56;                                   // the jetty and the eaves overhang the footprint
-  let top = -Infinity;
-  for(const b of TOWN){
+  let top = -Infinity; _roofHitBid = -1;
+  for(let i = 0; i < TOWN.length; i++){
+    const b = TOWN[i];
     const d = Math.min(x - b.x0*TILE, (b.x1 + 1)*TILE - x, z - b.y0*TILE, (b.y1 + 1)*TILE - z) + OV;
     if(d < 0) continue;
-    if(_insideBid >= 0 && TOWN[_insideBid] === b) continue;
-    const big = b.x1 - b.x0 >= 6 && b.y1 - b.y0 >= 6;
-    top = Math.max(top, heightAt(x, z) + (big ? 330 : 200) + d * 1.2 + 30);
+    if(i === _insideBid || i === ex1 || i === ex2) continue;
+    // the ridge's height over the whole footprint: a gable end stands full
+    // height right to the verge, and a hip-shaped estimate let the camera
+    // settle inside one (eaves + rise at ~52°, plus the ridge cap)
+    const w = Math.min(b.x1 - b.x0, b.y1 - b.y0) + 1, big = w >= 7;
+    const h = heightAt(x, z) + (big ? 376 : 190) + (w * TILE / 2 + 20) * 1.28 + 20;
+    if(h > top){ top = h; _roofHitBid = i; }
   }
   return top;
 }
+// The house standing between the camera and the player, if any: it is cut
+// away like the one you are inside (updateBuildings) rather than the camera
+// being pulled in front of it — in the lanes between terraces that left no
+// room for a camera at all (city critic r2, r3).
+let _camOccBid = -1, _camOccBid2 = -1;
 function camWallPull(px, pz, y0, cx, cz, y1){
   const dx = cx - px, dz = cz - pz, L = Math.hypot(dx, dz);
+  _camOccBid = _camOccBid2 = -1;
   if(L < 1) return 1;
   const n = Math.ceil(L / (TILE * 0.4));
   for(let i = 1; i <= n; i++){
-    const t = i / n, x = px + dx * t, z = pz + dz * t, tx = Math.floor(x / TILE), ty = Math.floor(z / TILE);
+    const t = i / n, x = px + dx * t, z = pz + dz * t, tx = Math.floor(x / TILE), ty = Math.floor(z / TILE), y = y0 + (y1 - y0) * t;
     const wk = map[ty]?.[tx] === T.WALL ? wallKind[ty * MAP_W + tx] : -1;
-    const top = wk === WK_PLAIN ? heightAt(x, z) + WALL_H + 70
-              : (wk === WK_FORT || wk === WK_TOWER) ? heightAt(x, z) + _fortTileH(tx, ty, wk) + 70   // (+ the merlons)
-              : _roofTopAt(x, z);
-    if(y0 + (y1 - y0) * t < top) return Math.max(0.06, t - (TILE * 0.35) / L);
+    if(wk === WK_PLAIN || wk === WK_FORT || wk === WK_TOWER){
+      const top = heightAt(x, z) + (wk === WK_PLAIN ? WALL_H : _fortTileH(tx, ty, wk)) + 70;   // (+ the merlons)
+      if(y < top) return Math.max(0.06, t - (TILE * 0.35) / L);
+    } else if(_roofTopAt(x, z, _camOccBid, _camOccBid2) > y){
+      // two houses can be cut away; a third in the way pulls the camera in
+      if(_camOccBid < 0) _camOccBid = _roofHitBid;
+      else if(_camOccBid2 < 0) _camOccBid2 = _roofHitBid;
+      else return Math.max(0.06, t - (TILE * 0.35) / L);
+    }
   }
   return 1;
 }
-// The highest wall or roof top over the first `k` of the boom (for lifting
-// the camera over a lane instead of pushing it into the player's back).
-function camObstacleTop(px, pz, cx, cz, k){
-  const dx = (cx - px) * k, dz = (cz - pz) * k, L = Math.hypot(dx, dz), n = Math.max(1, Math.ceil(L / (TILE * 0.4)));
-  let top = -Infinity;
-  for(let i = 1; i <= n; i++){
-    const x = px + dx * i / n, z = pz + dz * i / n, tx = Math.floor(x / TILE), ty = Math.floor(z / TILE);
-    const wk = map[ty]?.[tx] === T.WALL ? wallKind[ty * MAP_W + tx] : -1;
-    top = Math.max(top, wk === WK_PLAIN ? heightAt(x, z) + WALL_H + 70
-      : (wk === WK_FORT || wk === WK_TOWER) ? heightAt(x, z) + _fortTileH(tx, ty, wk) + 70 : _roofTopAt(x, z));
-  }
-  return top;
-}
+let _camShoulder = false;           // this frame's camera is the lane's over-the-shoulder view
 function camBoomFloor(cx, cz){
   let floor = -Infinity;
   for(let s = 1; s <= CAM_BOOM_SAMPLES; s++){
@@ -3906,26 +3911,28 @@ const _shadowTex = (() => { const c = document.createElement('canvas'); c.width 
 // hearths/forges/lamps of every room (buildings.js furnish), for the light pool.
 let _insideBid = -1, _townLights = [], _townFlames = [], _townFires = [];
 const _hideBid = { value: -2 }, _hideT = { value: 0 };
+const _hideBid2 = { value: -2 };      // a second building cut away with it (a lane has a house each side, v0.24)
 // While you are inside, that building's roof and upper storey dissolve and its
 // ground-storey walls are cut down to waist height (critic r3: a 164-deep
 // stone well hid the player completely). The cut sweeps down with the fade.
 // cutOff lifts each material's cut plane a hair, so the flattened timber sits
 // on top of the flattened wall instead of z-fighting with it.
 function _bldPatch(sh, cutOff, depth){
-    sh.uniforms.uHideBid = _hideBid; sh.uniforms.uHideT = _hideT;
+    sh.uniforms.uHideBid = _hideBid; sh.uniforms.uHideBid2 = _hideBid2; sh.uniforms.uHideT = _hideT;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aBid;
         attribute float aCut;
         attribute float aBase;
         uniform float uHideBid;
+        uniform float uHideBid2;
         uniform float uHideT;
         varying float vHid;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
-        if (aBid < -0.5 && abs(aCut - uHideBid) < 0.5 && uHideT > 0.0)
+        if (aBid < -0.5 && (abs(aCut - uHideBid) < 0.5 || abs(aCut - uHideBid2) < 0.5) && uHideT > 0.0)
           transformed.y = min(transformed.y, aBase + mix(600.0, 70.0, uHideT) + ${cutOff.toFixed(2)});`)
       .replace('#include <project_vertex>', `#include <project_vertex>
-        vHid = abs(aBid - uHideBid) < 0.5 ? 1.0 : 0.0;`);
+        vHid = (abs(aBid - uHideBid) < 0.5 || abs(aBid - uHideBid2) < 0.5) ? 1.0 : 0.0;`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
         uniform float uHideT;
@@ -4118,9 +4125,13 @@ const _flowerMat = _bidHide(new THREE.MeshStandardMaterial({ vertexColors: true,
     for (const f of flags) if (Math.hypot(tx - f.x - 0.5, ty - f.y - 0.5) < 4.5) c = 1.18;
     col[k*3] = col[k*3+1] = col[k*3+2] = c;
   }
+  // not under the houses: their floors are PATH too, and at a grazing angle
+  // the polygon offset let the setts win over the planks
+  const inBld = new Set();
+  for (const bb of TOWN) for (let ty = bb.y0; ty <= bb.y1; ty++) for (let tx = bb.x0; tx <= bb.x1; tx++) inBld.add(ty * MAP_W + tx);
   const idx = [];
   for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) {
-    if (map[ty]?.[tx] !== T.PATH) continue;
+    if (map[ty]?.[tx] !== T.PATH || inBld.has(ty * MAP_W + tx)) continue;
     const a = (ty - y0) * nx + (tx - x0), b = a + 1, c = a + nx, d = c + 1;
     idx.push(a, c, b, b, c, d);
   }
@@ -4144,11 +4155,13 @@ function updateBuildings(){
   _insideBid = hide >= 0 ? hide : -1;
   // First person INSIDE is a room: walls, ceiling, the lot. The cutaway (roof
   // off, walls to the waist) is for a camera outside looking in (v0.24).
+  let hide2 = -2;
   if(camMode().fp) hide = -2;
+  else if(hide === -2 && _camOccBid >= 0){ hide = _camOccBid; if(_camOccBid2 >= 0) hide2 = _camOccBid2; }   // the houses in the camera's way
   // fade the current roof out before switching to another building's
   const now = performance.now(), dt = Math.min(0.1, (now - (_bldT0 || now)) / 1000); _bldT0 = now;
-  if(hide === _hideBid.value){ if(hide >= 0) _hideT.value = Math.min(1, _hideT.value + dt * 4); }
-  else { _hideT.value = Math.max(0, _hideT.value - dt * 4); if(_hideT.value === 0) _hideBid.value = hide; }
+  if(hide === _hideBid.value && hide2 === _hideBid2.value){ if(hide >= 0) _hideT.value = Math.min(1, _hideT.value + dt * 4); }
+  else { _hideT.value = Math.max(0, _hideT.value - dt * 4); if(_hideT.value === 0){ _hideBid.value = hide; _hideBid2.value = hide2; } }
   const night = Math.max(0, 1 - _envDayF*1.6);
   _windowMat.emissiveIntensity = night * 2.2;
   _doorGlowMat.emissiveIntensity = night * 0.8;
@@ -4960,6 +4973,9 @@ function updateEnvironmentCycle(dt) {
   // Bridge lanterns: only worth a light slot after dark.
   bridgeGlowMat.emissiveIntensity = 2.2 * nightFactor;
   if (nightFactor > 0.15) for (const a of bridgeLampSrcs) lightSources.push({ type: 'bridge_lamp', x: a.x, y: a.y, fy: a.fy });
+  // Street lamps: 200 up, so the arch torch's 4-tile reach never met the road
+  // (city critic r2: "lamps light their heads, barely the road").
+  if (nightFactor > 0.15) for (const a of streetLampSrcs) lightSources.push({ type: 'street_lamp', x: a.x, y: a.y, fy: a.fy });
 
   // House interior light sources at night
   if (G.placedHouses) {
@@ -5013,6 +5029,8 @@ function updateEnvironmentCycle(dt) {
         baseY = 60; baseInt = 2400; colorHex = src.warm === false ? 0xa8e0c0 : 0xffb070; dist = TILE * 11; decay = 1.5;
       } else if (type === 'bridge_lamp') {
         baseY = 50; baseInt = 260; colorHex = 0xffa850; dist = TILE * 5; decay = 1.5;
+      } else if (type === 'street_lamp') {
+        baseY = 200; baseInt = 900 * nightFactor; colorHex = 0xffb060; dist = TILE * 8; decay = 1.5;
       }
 
       // At the flame, a touch above it so the torch's own head is lit from
@@ -8374,6 +8392,7 @@ corpseGrp.visible = false; scene.add(corpseGrp);
 // of a three-tile gap — half the character's height, lit by additive balls.
 const archFlames = [];      // (the old arch's flame balls: none now; animateArches is a no-op)
 const archLightSrcs = [];   // world positions of the mouth torches → fed to the light pool
+const streetLampSrcs = [];  // the city's lamp posts: their own light type, after dark
 const archFlamePts = [];    // ...and their flame cards (drawn with the placed torches')
 {
   const mouths = [];
@@ -8402,7 +8421,7 @@ const archFlamePts = [];    // ...and their flame cards (drawn with the placed t
   for (const f of cm.flames) { archFlamePts.push(f); archLightSrcs.push({ x:f.x, y:f.z, fy:f.y + 6 }); }
   // the city's lamp posts light the street like the mouth torches (their
   // glazed lanterns are the flame: a torch card would poke out of the glass)
-  for (const f of _townFlames) archLightSrcs.push({ x:f.x, y:f.z, fy:f.y + 6 });
+  for (const f of _townFlames) streetLampSrcs.push({ x:f.x, y:f.z, fy:f.y + 6 });
   // hearths and forges burn with the campfire's cards (lit by the room light)
   for (const f of _townFires) archFlamePts.push({ x:f.x, y:f.y, z:f.z, s:f.s, type:'campfire' });
   console.log('[world]', mouths.length, 'cave mouths');
@@ -16252,6 +16271,7 @@ function syncEntities(t){
     // leaves and props stand in the street: at the orbit camera's near plane
     // of 10 they sliced open in first person. 3 still leaves a 4000:1 range.
     if(camera.near !== 3){ camera.near = 3; camera.updateProjectionMatrix(); }
+    _camOccBid = _camOccBid2 = -1;
     camera.position.set(player.x, eye, player.y);
     camera.lookAt(
       player.x - Math.sin(camAngle) * 1000 * cp,
@@ -16278,18 +16298,35 @@ function syncEntities(t){
     // pulled in along the boom to this side of a city wall in the way
     const _ty0 = _camGY + CHAR_H * 0.6, k = camWallPull(player.x, player.y, _ty0, cx, cz, camY);
     if(k < 1){
-      // Never closer than ~150: in a lane between terraces the pull put the
-      // camera at the player's hips (city critic r2). Hold 150 out and rise
-      // over whatever stands there, looking down into the lane.
+      // Pulled in closer than ~150 (a lane between terraces): an over-the-
+      // shoulder view instead. Pulling along the boom put the camera at the
+      // player's hips (city critic r2); rising over the roofs looked straight
+      // down with a roof against the lens (r3). Step back level with the head,
+      // as far as the lane allows, and look just past it.
       const Lb = Math.hypot(cx - player.x, camY - _ty0, cz - player.y), kmin = Math.min(1, 150 / Math.max(1, Lb));
       if(k < kmin){
-        const y = Math.max(_ty0 + (camY - _ty0) * kmin, camObstacleTop(player.x, player.y, cx, cz, kmin) + 30);
-        camera.position.set(player.x + (cx - player.x) * kmin, y, player.y + (cz - player.y) * kmin);
+        const hx = cx - player.x, hz = cz - player.y, hl = Math.hypot(hx, hz) || 1, ux = hx / hl, uz = hz / hl;
+        const yh = _camGY + CHAR_H * 1.1 + 34;
+        let d = 0;
+        for(let t = 8; t <= 150; t += 8){
+          const x = player.x + ux * t, z = player.y + uz * t, tx = Math.floor(x / TILE), ty = Math.floor(z / TILE);
+          // (only masonry stops it: the houses in the way are cut away, updateBuildings)
+          if(map[ty]?.[tx] === T.WALL && wallKind[ty * MAP_W + tx] !== WK_BUILDING) break;
+          d = t;
+        }
+        d = Math.max(30, d - 14);
+        camera.position.set(player.x + ux * d, yh, player.y + uz * d);
+        _camShoulder = true;
       } else camera.position.set(player.x + (cx - player.x) * k, _ty0 + (camY - _ty0) * k, player.y + (cz - player.y) * k);
     }
     else camera.position.set(cx, camY, cz);
     // At low angles aim at the torso instead of the feet so the view stays level
-    camera.lookAt(player.x, _camGY + (camPitch < CAM_PITCH0 ? (1 - camPitch/CAM_PITCH0) * 24 : 0), player.y);
+    if(_camShoulder){
+      // past the head, along the view: the player sits low in the frame, the lane ahead in it
+      const fx = player.x - camera.position.x, fz = player.y - camera.position.z, fl = Math.hypot(fx, fz) || 1;
+      camera.lookAt(player.x + fx / fl * 160, _camGY + CHAR_H * 0.9, player.y + fz / fl * 160);
+      _camShoulder = false;
+    } else camera.lookAt(player.x, _camGY + (camPitch < CAM_PITCH0 ? (1 - camPitch/CAM_PITCH0) * 24 : 0), player.y);
   }
 }
 

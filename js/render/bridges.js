@@ -129,15 +129,17 @@ export function extendBridgeSpans(map, T, spans, { maxReach = 12, minWidth = 3 }
     // bridge never sets down in a meadow beside the road it serves.
     // Trees and boulders anywhere on the footprint (ramps, and land the deck
     // passes over) are cleared too — trunks came up through a deck (critic r1).
-    if (T.PATH !== undefined) for (let a = sp.a0 - 2; a <= sp.a1 + 2; a++) for (let c = sp.c0; c <= sp.c1; c++) {
-      const t = tileOf(map, sp, a, c), end = a < sp.a0 || a > sp.a1;
-      if ((end && t === T.GRASS) || t === T.TREE || t === T.STONE) setTile(map, sp, a, c, T.PATH);
+    // (a pad a column wider than the deck and three tiles out: the ×1.5
+    //  bridges set down in open grass, critic r3)
+    if (T.PATH !== undefined) for (let a = sp.a0 - 3; a <= sp.a1 + 3; a++) for (let c = sp.c0 - 1; c <= sp.c1 + 1; c++) {
+      const t = tileOf(map, sp, a, c), end = a < sp.a0 || a > sp.a1, deck = c >= sp.c0 && c <= sp.c1;
+      if ((end && t === T.GRASS) || (deck && (t === T.TREE || t === T.STONE)) || (end && (t === T.TREE || t === T.STONE))) setTile(map, sp, a, c, T.PATH);
     }
     // ...and beside it: a tree one column off still put its canopy over the
     // rail and its trunk in the river next to the posts.
     // (three columns: trees are drawn jittered off their tile and a canopy is
     // wide — one column off still hid an end newel, critic r2)
-    if (T.TREE !== undefined) for (let a = sp.a0 - 2; a <= sp.a1 + 2; a++) for (const c of [sp.c0 - 3, sp.c0 - 2, sp.c0 - 1, sp.c1 + 1, sp.c1 + 2, sp.c1 + 3]) {
+    if (T.TREE !== undefined) for (let a = sp.a0 - 5; a <= sp.a1 + 5; a++) for (const c of [sp.c0 - 3, sp.c0 - 2, sp.c0 - 1, sp.c1 + 1, sp.c1 + 2, sp.c1 + 3]) {
       const t = tileOf(map, sp, a, c);
       if (t === T.TREE || t === T.STONE) setTile(map, sp, a, c, a >= sp.a0 && a <= sp.a1 ? T.WATER : T.GRASS);
     }

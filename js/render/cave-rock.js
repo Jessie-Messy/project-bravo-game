@@ -50,7 +50,10 @@ export function buildCaveRock(THREE, { isWall, tiles, TILE, height, groundAt, no
     if (i !== undefined) return i;
     const fx = gx / S, fy = gy / S;
     // A talus foot, not a sheer sheet: the face leans back over most of a tile.
-    const s = Math.pow(sstep(0.10, 0.80, occ(fx, fy)), 1.4);
+    // (v0.24: at ×1.5 the cliffs read as extruded fortress walls, nature
+    // critic r3 — the foot now flares out from further down the occupancy
+    // ramp, a battered base under a steep upper face, same footprint)
+    const s = Math.pow(sstep(0.03, 0.86, occ(fx, fy)), 1.9);
     // Massing: broad swells and saddles, then crags, then a fine break-up.
     const mass = 0.70 + 0.85 * noise(fx / 7 + 3.3, fy / 7 + 1.1);
     const crag = 0.55 * ridged(fx / 2.6 + 9.1, fy / 2.6 + 4.7) + 0.18 * noise(fx * 1.3, fy * 1.3);

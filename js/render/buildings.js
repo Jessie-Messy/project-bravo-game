@@ -270,18 +270,24 @@ function furnish(THREE, A, B, o) {
     block(u0 + lu / 2, v0 + 10, u0 + lu / 2, v0 + lv - 10, Math.min(lu, lv) / 2 + 2);
   };
   const hearth = (uc, onRight) => {                         // against a side wall, facing across the room
-    const vc = Dv * 0.62, u0 = onRight ? Wu - 34 : 0, u1 = onRight ? Wu : 34;
-    box(A.stone, u0, vc - 44, u1, vc + 44, 0, 150, [0.55, 0.52, 0.48]);
-    box(A.stone, onRight ? u0 - 8 : u1, vc - 50, onRight ? u0 : u1 + 8, vc + 50, 0, 10, [0.45, 0.43, 0.4]);   // hearthstone
-    box(A.stone, onRight ? u0 - 1 : u1, vc - 26, onRight ? u0 : u1 + 1, vc + 26, 10, 54, [0.08, 0.07, 0.06]);   // the firebox
-    box(A.fire, onRight ? u0 - 12 : u1 + 2, vc - 20, onRight ? u0 - 2 : u1 + 12, vc + 20, 10, 14, [1, 0.25, 0.03]);   // embers
-    // the flames: game3d's animated fire cards, burning at noon (blocks read
-    // as untextured yellow slabs, critic r2)
-    for (const dv of [-11, 0, 11]) { const q = P(onRight ? u0 - 7 : u1 + 7, vc + dv); o.fires.push({ x: q[0], y: F + 26 + (dv ? 0 : 4), z: q[1], s: dv ? 1.9 : 2.5 }); }
-    box(A.timber, onRight ? u0 - 14 : u1 + 2, vc - 20, onRight ? u0 - 2 : u1 + 14, vc + 20, 6, 10, [0.2, 0.13, 0.08]);   // the logs
-    box(A.stone, onRight ? u0 - 6 : u1, vc - 52, onRight ? u0 : u1 + 6, vc + 52, 96, 106, [0.6, 0.57, 0.52]); // mantel
-    block(onRight ? u0 : u1, vc - 40, onRight ? u0 : u1, vc + 40, 20);
-    const q = P(onRight ? u0 - 20 : u1 + 20, vc); o.lights.push({ x: q[0], y: F + 60, z: q[1], bid: o.lightBid, warm: true });
+    // A chimney breast 34 deep with a real firebox 22 into it: the flames
+    // stood on the ledge outside a painted-on opening (critic r3).
+    const vc = Dv * 0.62, D = 34, FB = 22, face = onRight ? Wu - D : D;
+    const U = (p, q) => onRight ? [face + p, face + q] : [face - q, face - p];   // depth p..q into the breast
+    const st = [0.55, 0.52, 0.48], soot = [0.23, 0.2, 0.19];
+    { const [a0, a1] = U(0, D);
+      box(A.stone, a0, vc - 44, a1, vc - 26, 0, 150, st); box(A.stone, a0, vc + 26, a1, vc + 44, 0, 150, st);   // cheeks
+      box(A.stone, a0, vc - 26, a1, vc + 26, 56, 150, st); }                                                      // the breast over the opening
+    { const [a0, a1] = U(FB, D); box(A.stone, a0, vc - 26, a1, vc + 26, 0, 56, soot); }                           // the sooty back
+    { const [a0, a1] = U(0, FB); box(A.stone, a0, vc - 26, a1, vc + 26, 0, 6, soot); }                            // its floor
+    { const [a0, a1] = U(-8, 0); box(A.stone, a0, vc - 50, a1, vc + 50, 0, 10, [0.45, 0.43, 0.4]); }             // hearthstone
+    { const [a0, a1] = U(4, 19); box(A.fire, a0, vc - 20, a1, vc + 20, 6, 10, [1, 0.25, 0.03]);                  // embers
+      box(A.timber, a0, vc - 18, a1, vc + 18, 9, 13, [0.2, 0.13, 0.08]); }                                        // the logs
+    { const [a0, a1] = U(-6, 0); box(A.stone, a0, vc - 52, a1, vc + 52, 96, 106, [0.6, 0.57, 0.52]); }           // mantel
+    // the flames: game3d's animated fire cards, burning at noon
+    for (const dv of [-11, 0, 11]) { const q = P(onRight ? face + 11 : face - 11, vc + dv); o.fires.push({ x: q[0], y: F + 24 + (dv ? 0 : 4), z: q[1], s: dv ? 1.9 : 2.5 }); }
+    block(face, vc - 40, face, vc + 40, 20);
+    const q = P(onRight ? face - 20 : face + 20, vc); o.lights.push({ x: q[0], y: F + 60, z: q[1], bid: o.lightBid, warm: true });
   };
   const barrelAt = (u, v) => { const q = P(u, v); barrel(THREE, A, q[0], q[1], F - 4, mul(cTi, 1.1), -1); props.push({ x: q[0], z: q[1], r: 19 }); };
   const crate = (u, v, sz = 46) => { box(A.timber, u - sz / 2, v - sz / 2, u + sz / 2, v + sz / 2, 0, sz, [0.5, 0.38, 0.24]); block(u, v, u, v, sz / 2 + 3); };
@@ -292,8 +298,9 @@ function furnish(THREE, A, B, o) {
     box(A.timber, u + 18, v - 5, u + 34, v + 5, 52, 60, [0.1, 0.1, 0.11]); block(u, v, u, v, 22); };
   const forge = (u0, u1, vBack) => {
     box(A.stone, u0, vBack - 60, u1, vBack, 0, 56, [0.4, 0.37, 0.34]);
-    box(A.fire, u0 + 10, vBack - 50, u1 - 10, vBack - 10, 56, 60, [1, 0.22, 0.03]);   // coals, always glowing
-    for (const du of [-50, -18, 18, 50]) { const q = P((u0 + u1) / 2 + du, vBack - 32); o.fires.push({ x: q[0], y: F + 74, z: q[1], s: 1.8 + (Math.abs(du) < 30 ? 0.6 : 0) }); }
+    box(A.fire, u0 + 8, vBack - 54, u1 - 8, vBack - 12, 56, 61, [1, 0.22, 0.03]);     // the coal bed, always glowing
+    box(A.stone, u0 + 6, vBack - 12, u1 - 6, vBack, 56, 130, [0.23, 0.2, 0.19]);     // the sooty back (the plaster showed through, critic r3)
+    for (const du of [-60, -36, -12, 12, 36, 60]) { const q = P((u0 + u1) / 2 + du, vBack - 32); o.fires.push({ x: q[0], y: F + 80, z: q[1], s: 2.2 + (Math.abs(du) < 30 ? 0.5 : 0) }); }
     // the hood, stepping in to a chimney that runs into the ceiling
     box(A.stone, u0 + 6, vBack - 58, u1 - 6, vBack, 128, 150, [0.45, 0.42, 0.38]);
     box(A.stone, u0 + 22, vBack - 44, u1 - 22, vBack, 150, 172, [0.47, 0.44, 0.4]);
@@ -985,7 +992,8 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
       // lamplight pool on the step with no visible source). At the BACK of the
       // reveal, with its own dim warm material, so it reads as a lit room and
       // not a white-hot slit (critic r6). Hidden with the roof.
-      { const ix = ax ? 0 : out[0], iz = ax ? out[1] : 0, dd = -(T - 4);
+      // (not for a walk-in room: the card hid the room, a black slot at noon, critic r3)
+      if (!room) { const ix = ax ? 0 : out[0], iz = ax ? out[1] : 0, dd = -(T - 4);
         const q0 = ax ? [x + 6, G + 4, fz + iz*dd] : [fx + ix*dd, G + 4, z + 6];
         const q1 = ax ? [x + WD - 6, G + 4, fz + iz*dd] : [fx + ix*dd, G + 4, z + WD - 6];
         A.doorGlow.quad(q0, q1, [q1[0], G + DOOR_H - 2, q1[2]], [q0[0], G + DOOR_H - 2, q0[2]], [out[0], 0, out[1]], [1,1,1], bid); }
