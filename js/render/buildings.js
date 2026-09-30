@@ -195,6 +195,154 @@ function barrel(THREE, A, x, z, G, c, bid) {
     A.timber.quad(...q.map(i => pt(i, 16, 56)), [0, 1, 0], mul(c, 0.8), bid);
 }
 
+
+// ── Interiors (v0.24) ─────────────────────────────────────────────────
+// The owner: "if I can enter a building I want to see the inside of the
+// building and be able to walk around in them". The ×2.5 city's buildings are
+// 13×13 tiles (11×11 inside), room enough for a real room; this furnishes it
+// by the building's role, with a plank ceiling so first person looks up at
+// joists rather than into the roof (it lifts away with the roof in the
+// third-person cutaway).
+//
+// Rooms are laid out in a DOOR frame: u runs along the door wall's inner face
+// (0 at its left end, Wu wide), v inward from it (Dv deep). One layout per
+// role then fits whichever way the door faces. Pieces that block the player
+// add circle colliders to `props`.
+function furnish(THREE, A, B, o) {
+  const { T, G, bid, ceilBid, H1, cTi, rp, props, role } = o;
+  const X0 = (B.x0 + 1) * T, X1 = B.x1 * T, Z0 = (B.y0 + 1) * T, Z1 = B.y1 * T;   // inner faces
+  const side = (B.doors[0] || {}).side || 's';
+  const V = side === 's' ? [0, -1] : side === 'n' ? [0, 1] : side === 'w' ? [1, 0] : [-1, 0];
+  const U = [-V[1], V[0]];
+  const Wu = (side === 'n' || side === 's') ? X1 - X0 : Z1 - Z0, Dv = (side === 'n' || side === 's') ? Z1 - Z0 : X1 - X0;
+  // the inner face of the door wall, left end
+  const ox = side === 's' ? X0 : side === 'n' ? X1 : side === 'w' ? X0 : X1;
+  const oz = side === 's' ? Z1 : side === 'n' ? Z0 : side === 'w' ? Z0 : Z1;
+  const P = (u, v) => [ox + U[0] * u + V[0] * v, oz + U[1] * u + V[1] * v];
+  const F = G + 4;                                            // the floor's top
+  // an axis-aligned box from room coords
+  const box = (acc, u0, v0, u1, v1, y0, y1, col, b = -1) => {
+    const a = P(u0, v0), c = P(u1, v1);
+    acc.box(Math.min(a[0], c[0]), F + y0, Math.min(a[1], c[1]), Math.max(a[0], c[0]), F + y1, Math.max(a[1], c[1]), col, b);
+  };
+  const block = (u0, v0, u1, v1, r = 14) => {                  // colliders over a footprint
+    const du = u1 - u0, dv = v1 - v0, n = Math.max(1, Math.ceil(Math.max(Math.abs(du), Math.abs(dv)) / 20));
+    const lu = Math.abs(du) >= Math.abs(dv);
+    for (let k = 0; k <= n; k++) {
+      const t = k / n, u = lu ? u0 + du * t : (u0 + u1) / 2, v = lu ? (v0 + v1) / 2 : v0 + dv * t;
+      const q = P(u, v); props.push({ x: q[0], z: q[1], r: Math.max(r, (lu ? Math.abs(dv) : Math.abs(du)) / 2 + 4) });
+    }
+  };
+  const wood = mul(cTi, 1.25), dark = mul(cTi, 0.8), plank = [0.42, 0.30, 0.20], ironC = [0.06, 0.06, 0.06];
+  const cloth = [[0.45, 0.12, 0.10], [0.16, 0.24, 0.40], [0.22, 0.34, 0.18], [0.46, 0.36, 0.16]][Math.floor(rp() * 4)];
+
+  const counter = (uc, vc, len, deep = 28) => {
+    box(A.timber, uc - len / 2, vc - deep / 2, uc + len / 2, vc + deep / 2, 0, 66, dark);
+    box(A.timber, uc - len / 2 - 4, vc - deep / 2 - 5, uc + len / 2 + 4, vc + deep / 2 + 5, 66, 71, wood);
+    block(uc - len / 2, vc, uc + len / 2, vc);
+  };
+  const shelves = (u0, u1, vBack, h = 150) => {           // against the far wall, facing the door
+    for (const u of [u0, (u0 + u1) / 2, u1]) box(A.timber, u - 3, vBack - 26, u + 3, vBack, 0, h, dark);
+    for (const y of [36, 76, 116, h - 4]) box(A.timber, u0, vBack - 26, u1, vBack, y, y + 4, wood);
+    for (const y of [40, 80, 120]) for (let u = u0 + 8; u < u1 - 10; u += 14 + rp() * 8) {
+      if (rp() < 0.3) continue;
+      const c = [[0.55, 0.28, 0.15], [0.2, 0.3, 0.45], [0.6, 0.55, 0.4], [0.3, 0.42, 0.25]][Math.floor(rp() * 4)];
+      const hh = 12 + rp() * 16; box(A.timber, u, vBack - 20, u + 8 + rp() * 6, vBack - 6, y, y + hh, c);
+    }
+    block(u0, vBack - 13, u1, vBack - 13);
+  };
+  const table = (uc, vc, lu = 110, lv = 60) => {
+    box(A.timber, uc - lu / 2, vc - lv / 2, uc + lu / 2, vc + lv / 2, 60, 65, wood);
+    for (const [du, dv] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) box(A.timber, uc + du * (lu / 2 - 8) - 3, vc + dv * (lv / 2 - 8) - 3, uc + du * (lu / 2 - 8) + 3, vc + dv * (lv / 2 - 8) + 3, 0, 60, dark);
+    block(uc - lu / 2 + 10, vc, uc + lu / 2 - 10, vc, lv / 2);
+  };
+  const stool = (u, v) => { box(A.timber, u - 11, v - 11, u + 11, v + 11, 36, 40, wood); for (const [a, b] of [[-1, -1], [1, 1], [-1, 1], [1, -1]]) box(A.timber, u + a * 7 - 2, v + b * 7 - 2, u + a * 7 + 2, v + b * 7 + 2, 0, 36, dark); };
+  const bed = (u0, v0, along = 'v') => {                    // 110 long, 60 wide, head against a wall
+    const [lu, lv] = along === 'v' ? [60, 110] : [110, 60];
+    box(A.timber, u0, v0, u0 + lu, v0 + lv, 0, 26, dark);
+    box(A.plaster, u0 + 3, v0 + 3, u0 + lu - 3, v0 + lv - 3, 26, 36, cloth);
+    const pu = along === 'v' ? [u0 + 8, v0 + lv - 26, u0 + lu - 8, v0 + lv - 6] : [u0 + lu - 26, v0 + 8, u0 + lu - 6, v0 + lv - 8];
+    box(A.plaster, pu[0], pu[1], pu[2], pu[3], 36, 44, [0.85, 0.82, 0.74]);
+    box(A.timber, along === 'v' ? u0 : u0 + lu - 6, along === 'v' ? v0 + lv - 6 : v0, along === 'v' ? u0 + lu : u0 + lu, along === 'v' ? v0 + lv : v0 + lv, 0, 60, dark);   // headboard
+    block(u0 + lu / 2, v0 + 10, u0 + lu / 2, v0 + lv - 10, Math.min(lu, lv) / 2 + 2);
+  };
+  const hearth = (uc, onRight) => {                         // against a side wall, facing across the room
+    const vc = Dv * 0.62, u0 = onRight ? Wu - 34 : 0, u1 = onRight ? Wu : 34;
+    box(A.stone, u0, vc - 44, u1, vc + 44, 0, 150, [0.55, 0.52, 0.48]);
+    box(A.stone, onRight ? u0 - 8 : u1, vc - 50, onRight ? u0 : u1 + 8, vc + 50, 0, 10, [0.45, 0.43, 0.4]);   // hearthstone
+    box(A.glassLit, onRight ? u0 - 1 : u1, vc - 24, onRight ? u0 : u1 + 1, vc + 24, 12, 50, [1, 0.6, 0.3]);   // the fire's glow
+    box(A.stone, onRight ? u0 - 6 : u1, vc - 52, onRight ? u0 : u1 + 6, vc + 52, 96, 106, [0.6, 0.57, 0.52]); // mantel
+    block(onRight ? u0 : u1, vc - 40, onRight ? u0 : u1, vc + 40, 20);
+    const q = P(onRight ? u0 - 20 : u1 + 20, vc); o.lights.push({ x: q[0], y: F + 60, z: q[1], bid: o.lightBid, warm: true });
+  };
+  const barrelAt = (u, v) => { const q = P(u, v); barrel(THREE, A, q[0], q[1], F - 4, mul(cTi, 1.1), -1); props.push({ x: q[0], z: q[1], r: 19 }); };
+  const crate = (u, v, sz = 34) => { box(A.timber, u - sz / 2, v - sz / 2, u + sz / 2, v + sz / 2, 0, sz, [0.5, 0.38, 0.24]); block(u, v, u, v, sz / 2 + 3); };
+  const rug = (uc, vc, lu, lv) => box(A.plaster, uc - lu / 2, vc - lv / 2, uc + lu / 2, vc + lv / 2, 0.4, 1.2, mul(cloth, 1.2));
+  const anvil = (u, v) => { box(A.stone, u - 16, v - 12, u + 16, v + 12, 0, 34, [0.35, 0.33, 0.3]); box(A.timber, u - 26, v - 9, u + 22, v + 9, 34, 46, ironC); block(u, v, u, v, 22); };
+  const forge = (u0, u1, vBack) => {
+    box(A.stone, u0, vBack - 60, u1, vBack, 0, 56, [0.4, 0.37, 0.34]);
+    box(A.glassLit, u0 + 10, vBack - 50, u1 - 10, vBack - 10, 56, 58, [1, 0.45, 0.15]);   // coals
+    box(A.stone, u0 + 12, vBack - 40, u1 - 12, vBack, 56, 170, [0.45, 0.42, 0.38]);       // hood
+    block(u0, vBack - 30, u1, vBack - 30, 30);
+    const q = P((u0 + u1) / 2, vBack - 30); o.lights.push({ x: q[0], y: F + 80, z: q[1], bid: o.lightBid, warm: true });
+  };
+  const hay = (u, v) => { box(A.thatch, u - 30, v - 20, u + 30, v + 20, 0, 36, [0.8, 0.72, 0.45]); block(u, v, u, v, 32); };
+  const bookcase = (u0, u1, vBack) => shelves(u0, u1, vBack, 180);
+
+  const mid = Wu / 2, back = Dv;
+  // the shopkeeper stands 4 tiles in (city.js); the counter is between them and
+  // the door, 3 tiles in, leaving a passage round each end
+  const vC = 3 * T - T / 2 + 6;
+  switch (role) {
+    case 'merchant':
+      counter(mid, vC, 160); shelves(mid - 150, mid + 150, back); crate(40, back - 60); crate(78, back - 50, 28); barrelAt(Wu - 40, 40); barrelAt(Wu - 40, 84);
+      rug(mid, vC - 60, 120, 60); break;
+    case 'blacksmith':
+      forge(mid - 80, mid + 80, back); anvil(mid, vC + 60); barrelAt(40, back - 40); crate(Wu - 44, back - 44);
+      for (let u = 30; u <= 120; u += 30) box(A.timber, u - 2, back - 8, u + 2, back, 0, 110, ironC);   // a rack of blades
+      counter(mid, vC, 120); break;
+    case 'mage':
+      counter(mid, vC, 140); bookcase(20, Wu - 20, back);
+      { const q = P(mid, vC + 80); box(A.timber, mid - 20, vC + 60, mid + 20, vC + 100, 0, 34, ironC); box(A.glassLit, mid - 14, vC + 66, mid + 14, vC + 94, 34, 36, [0.5, 0.9, 0.6]); block(mid, vC + 80, mid, vC + 80, 24);
+        o.lights.push({ x: q[0], y: F + 70, z: q[1], bid: o.lightBid, warm: false }); }
+      rug(mid, vC - 60, 140, 70); break;
+    case 'farrier':
+      counter(mid, vC, 120); hay(50, back - 40); hay(50, back - 90); hay(Wu - 50, back - 40); barrelAt(Wu - 40, 60);
+      box(A.timber, mid - 40, back - 12, mid + 40, back, 60, 66, dark);   // a saddle bar on the far wall
+      break;
+    case 'bank':
+      counter(mid, vC, Wu - 200, 34); crate(50, back - 50, 40); crate(95, back - 50, 40); crate(Wu - 50, back - 50, 40); crate(Wu - 95, back - 50, 40);
+      shelves(mid - 120, mid + 120, back); rug(mid, vC - 70, 200, 70); break;
+    case 'healer':
+      counter(mid, vC, 120); bed(20, back - 130); bed(Wu - 80, back - 130); shelves(mid - 90, mid + 90, back);
+      hearth(mid, false); break;
+    case 'antiquarian': case 'curator': case 'cryptologist': case 'grave_robber': case 'fletcher':
+      counter(mid, vC, 140); shelves(mid - 150, mid + 150, back); crate(Wu - 44, 44); table(70, back - 110, 90, 50); stool(70, back - 150);
+      if (role === 'fletcher') for (let u = Wu - 140; u <= Wu - 40; u += 20) box(A.timber, u - 1.5, back - 6, u + 1.5, back, 20, 130, wood);   // bows on the wall
+      break;
+    default: {                                                // a home
+      bed(20, back - 130);
+      table(mid + 40, Dv * 0.45); stool(mid + 40 - 45, Dv * 0.45); stool(mid + 40 + 45, Dv * 0.45);
+      hearth(mid, true); crate(40, 40); barrelAt(Wu - 40, 40); rug(mid, Dv * 0.45, 170, 110);
+    }
+  }
+  // a lantern hung from the ceiling's middle, in every room: shops without a
+  // hearth were lit only through their windows, and read as cellars at noon
+  { const u = mid, v = Dv * 0.5, q = P(u, v);
+    // (hung just under the joists: lower, it hung at eye level in the doorway)
+    A.timber.beam(THREE, [q[0], F + H1 - 20, q[1]], [q[0], F + H1 - 26, q[1]], 2, ironC, ceilBid, 2);
+    box(A.timber, u - 9, v - 9, u + 9, v + 9, H1 - 30, H1 - 26, ironC, ceilBid);
+    box(A.glassLit, u - 7, v - 7, u + 7, v + 7, H1 - 48, H1 - 30, [1, 0.8, 0.5], ceilBid);
+    box(A.timber, u - 9, v - 9, u + 9, v + 9, H1 - 52, H1 - 48, ironC, ceilBid);
+    // the light itself sits lower, mid-room: at the lantern it blew the ceiling out
+    o.lights.push({ x: q[0], y: F + H1 * 0.6, z: q[1], bid: o.lightBid, warm: true }); }
+  // the ceiling: planks at the storey line, joists under them
+  // (on the timber material: the floor's is never cut away, and a plank lid
+  //  sat over the room in the third-person view)
+  box(A.timber, 0, 0, Wu, Dv, H1 - 8, H1 - 2, mul(plank, 1.5), ceilBid);
+  for (let u = 36; u < Wu; u += 48) box(A.timber, u - 5, 0, u + 5, Dv, H1 - 20, H1 - 8, dark, ceilBid);
+}
+
 export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity, signs = [] }) {
   const A = {
     stone: new Acc(96), plaster: new Acc(64), timber: new Acc(48), boards: new Acc(64),
@@ -203,7 +351,8 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
     sign: new Acc(1), flowers: new Acc(16),
   };
   const T = TILE;
-  const props = [];           // {x, z, r}: circle colliders for the street furniture
+  const props = [];           // {x, z, r}: circle colliders for the street furniture (and furniture)
+  const lights = [];          // {x, y, z, bid}: a hearth / forge / lamp to light a room you are in
   buildings.forEach((B, bid) => {
     const r = rng(0x9e3779b1 ^ (B.x0 * 73856093) ^ (B.y0 * 19349663));
     const rp = rng(0x51ed270b ^ (B.x0 * 83492791) ^ (B.y0 * 2971215073));   // props only
@@ -263,7 +412,11 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
         A.stone.box(tx*T - (tx === B.x0 ? o : 0), y0, ty*T - (ty === B.y0 ? o : 0),
                     tx*T + T + (tx === B.x1 ? o : 0), y1, ty*T + T + (ty === B.y1 ? o : 0), mul(cSt, 0.82), -1, {bottom:true}); });
       // interior floor: planks (houses) or boards (huts)
-      A.floor.box(X0 + T, y0, Z0 + T, X1 - T, G + 4, Z1 - T, hut ? mul(cBoard, 1.4) : hex(THREE, 0x5a3e27), -1, {bottom:true});
+      A.floor.box(X0 + T, y0, Z0 + T, X1 - T, G + 4, Z1 - T, hut ? mul(cBoard, 1.4) : hex(THREE, 0x8c6a47), -1, {bottom:true});   // (lighter: rooms read as cellars at 0x5a3e27)
+    }
+    // furniture, and a ceiling you see from inside (rooms big enough to stand in)
+    if (!hut && w >= 7 && h >= 7) {
+      furnish(THREE, A, B, { T, G, bid, ceilBid: two ? bid : bid, H1, cTi, rp, props, lights, lightBid: bid, role: B.role || 'home' });
     }
 
     // ── ground storey ──
@@ -626,5 +779,6 @@ export function buildTown(THREE, { buildings, TILE, groundAt, coastY0 = Infinity
   const out = {};
   for (const k in A) out[k] = A[k].p.length ? A[k].geometry(THREE) : null;
   out.props = props;
+  out.lights = lights;
   return out;
 }

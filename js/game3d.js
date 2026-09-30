@@ -3736,6 +3736,9 @@ const TOWN = (() => {
       if(!edge || corner || isW(tx, ty)) continue;
       b.doors.push({ tx, ty, side: ty === b.y0 ? 'n' : ty === b.y1 ? 's' : tx === b.x0 ? 'w' : 'e' });
     }
+    // what it is: a city building's role from the plan (city.js), else a home
+    const cb = CITY_BUILDINGS.find(c => c.x0 === b.x0 && c.y0 === b.y0 && c.x1 === b.x1 && c.y1 === b.y1);
+    b.role = cb ? cb.role : 'home';
   }
   return bs;
 })();
@@ -3817,6 +3820,9 @@ const _shadowTex = (() => { const c = document.createElement('canvas'); c.width 
 // is lifted off because the player stands inside it (-2 = none), and how far
 // it has faded (0..1). The fade is a screen-door dither, so the roof dissolves
 // over a quarter second instead of popping. Walls carry id -1, never hidden.
+// Which building the player stands in (index into TOWN, -1 outside), and the
+// hearths/forges/lamps of every room (buildings.js furnish), for the light pool.
+let _insideBid = -1, _townLights = [];
 const _hideBid = { value: -2 }, _hideT = { value: 0 };
 // While you are inside, that building's roof and upper storey dissolve and its
 // ground-storey walls are cut down to waist height (critic r3: a 164-deep
@@ -3940,6 +3946,7 @@ const _flowerMat = _bidHide(new THREE.MeshStandardMaterial({ vertexColors: true,
   add(G.sign, _signMat); add(G.flowers, _flowerMat);
   // barrels, crates and benches block the player like any other prop
   for(const q of G.props) pointColliders.push({ x: q.x, y: q.z, r: q.r });
+  _townLights = G.lights || [];
   add(G.boards, _boardMat); add(G.thatch, _thatchMat); add(G.slate, _slateMat); add(G.floor, _floorMat, false);
   // Lamplight pools under lit windows and doorways: additive, a soft falloff
   // from the wall outward, faded in with the dark (see updateBuildings).
@@ -3964,6 +3971,10 @@ function updateBuildings(){
   let hide = -2;
   for(let i = 0; i < TOWN.length; i++){ const b = TOWN[i];
     if(ptx >= b.x0 && ptx <= b.x1 && pty >= b.y0 && pty <= b.y1){ hide = i; break; } }
+  _insideBid = hide >= 0 ? hide : -1;
+  // First person INSIDE is a room: walls, ceiling, the lot. The cutaway (roof
+  // off, walls to the waist) is for a camera outside looking in (v0.24).
+  if(camMode().fp) hide = -2;
   // fade the current roof out before switching to another building's
   const now = performance.now(), dt = Math.min(0.1, (now - (_bldT0 || now)) / 1000); _bldT0 = now;
   if(hide === _hideBid.value){ if(hide >= 0) _hideT.value = Math.min(1, _hideT.value + dt * 4); }
@@ -4757,6 +4768,10 @@ function updateEnvironmentCycle(dt) {
   const lightSources = placedObjects.filter(o => PLACEABLE_LIGHTS.has(o.type) && isLit(o))
     .map(o => { const f = placedFlameAt(o); return { type: o.type, x: f.x, y: f.z, fy: f.y }; });
 
+  // The room you are standing in: its hearth, forge or lamp, day or night —
+  // a room lit only through its windows read as a cellar at noon.
+  if (_insideBid >= 0) for (const L of _townLights) if (L.bid === _insideBid)
+    lightSources.push({ type: 'interior', x: L.x, y: L.z, fy: L.y, warm: L.warm });
   // Cave-mouth arch torches glow too (one light per archway)
   for (const a of archLightSrcs) lightSources.push({ type: 'arch', x: a.x, y: a.y, fy: a.fy });
   // Bridge lanterns: only worth a light slot after dark.
@@ -4811,6 +4826,8 @@ function updateEnvironmentCycle(dt) {
         baseY = 24; baseInt = 1.2 * nightFactor; colorHex = 0xffeedd; dist = TILE * 8;
       } else if (type === 'campfire') {
         baseY = 6; baseInt = 1.3; colorHex = 0xff7722; dist = TILE * 7;
+      } else if (type === 'interior') {
+        baseY = 60; baseInt = 2400; colorHex = src.warm === false ? 0xa8e0c0 : 0xffb070; dist = TILE * 11; decay = 1.5;
       } else if (type === 'bridge_lamp') {
         baseY = 50; baseInt = 260; colorHex = 0xffa850; dist = TILE * 5; decay = 1.5;
       }
@@ -4837,6 +4854,8 @@ function updateEnvironmentCycle(dt) {
         } else {
           pl.intensity = baseInt * flicker * (nightFactor > 0.3 ? 1.0 : Math.max(0.35, nightFactor));
         }
+      } else if (type === 'interior') {
+        pl.intensity = baseInt * flameFlicker(_fireU.value, (src.x * 0.013 + src.y * 0.021));   // a fire indoors: full by day too
       } else if (isHouseLight) {
         pl.intensity = baseInt;
       } else if (inCave || inHouse) {
