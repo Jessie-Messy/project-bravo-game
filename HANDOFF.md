@@ -76,7 +76,9 @@ It never comes closer than 150; in a lane it rises over the roofs instead.
 - test:bridges was updated for 3-wide spans.
 
 **Critic:** r1 city 5.0 / interiors 4.0 → r2 7.0 / 7.5 → r3 7.5 / 8.0 (bridges 7.5, nature 6.0 FAIL) → r4 city
-8.0, interiors 8.5, bridges 7.5 PASS; nature 6.0.
+8.0, interiors 8.5, bridges 7.5 PASS; nature 6.0 → r5 6.5 (bridges 8.0) → r6 NATURE 7.0 PASS (per-tile rim
+factor stepping ring ends/corners down, bolder strata). Every area passes. Optional: a thin rim seam on the far
+ring, an end batter.
 - r3/r4 fixes: houses between the camera and the player (up to two) are CUT AWAY like the one you are in
   (`_camOccBid`/`_camOccBid2`, second shader uniform `uHideBid2`; roof boxes are the full ridge height). City
   masonry still pulls the camera in, with an over-the-shoulder fallback.

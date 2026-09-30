@@ -473,7 +473,7 @@ Critic r1 (2026-09-29): CITY 5.0, INTERIORS 4.0 — both FAIL. Work list:
 ## Phase 5 — nature ×1.5
 - [x] 5a Trees ×1.5 (TREE_H 252→378; crowns ×1.2 only, so groves don't re-merge; near width cap 0.40 H)
 - [x] 5b Cave cliffs ×1.5 (CAVEH 168→252), cave mouths scaled to match (soffit 180→214)
-- [~] 5c Critic pass — NATURE 6.0 at r4 (faceted/strata rock since; capped by the ×1.5 decision, see HANDOFF)
+- [x] 5c Critic pass — NATURE 7.0 PASS at r6 (faceted, strata, stepped ring ends); optional: a rim seam, end batter
 
 ## Phase 6 — bridges ×1.5
 - [ ] 6c Roads out of the N/S/E gates (aprons only now), bridged over the east strip's rivers
