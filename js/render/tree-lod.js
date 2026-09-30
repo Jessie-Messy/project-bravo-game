@@ -67,10 +67,10 @@ export function buildNearForest(THREE, opts) {
     // across — five tiles, on trees one tile apart — so a near grove was one
     // continuous mass, and every tree shrank to a quarter of its width at the
     // swap to the far crown (tree critic r3, measured). Squeeze each crown
-    // to ~0.50 of the height; the far crowns are sized to meet it.
+    // to ~0.40 of the height; the far crowns are sized to meet it.
     g.leaf.computeBoundingBox();
     const lb = g.leaf.boundingBox, cw = Math.max(lb.max.x - lb.min.x, lb.max.z - lb.min.z);
-    const kw = Math.min(1, targetHeight * 0.50 / Math.max(1, cw));   // (0.40 read as poplars)
+    const kw = Math.min(1, targetHeight * 0.40 / Math.max(1, cw));   // (0.40 of the ×1.5 tree ≈ 0.60 of the old one; at 0.40 of the old it read as poplars)
     g.bark.scale(kw, 1, kw); g.leaf.scale(kw, 1, kw);
     g.bark.computeBoundingSphere();
     g.leaf.computeBoundingSphere();

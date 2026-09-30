@@ -48,12 +48,12 @@ for (const [mi, m] of mouths.entries()) {
     if (Math.abs(u) > m.halfW - 8 || v < -TILE * 0.7 || v > TILE * 0.9) continue;
     low = Math.min(low, rp[i + 1] - m.gy);
     // anything clearly horizontal down there (under the crest, which never
-    // drops below 172) is the soffit, and must face down; the faces' bottom
-    // rows are vertical walls and don't count
-    if (rp[i + 1] - m.gy < 165 && Math.abs(rn[i + 1]) > 0.5) { soffitN++; if (rn[i + 1] < 0) down++; }
+    // drops below the 214 crown + 24) is the soffit, and must face down; the
+    // faces' bottom rows are vertical walls and don't count
+    if (rp[i + 1] - m.gy < 205 && Math.abs(rn[i + 1]) > 0.5) { soffitN++; if (rn[i + 1] < 0) down++; }
   }
   check('mouth ' + mi + ': clears the head across the gap', low > CHAR_H + 10, 'lowest ' + low.toFixed(0));
-  check('mouth ' + mi + ': the soffit faces down', soffitN > 0 && down / soffitN >= 0.9, down + '/' + soffitN);   // (a few noisy face-bottom vertices count too)
+  check('mouth ' + mi + ': the soffit faces down', soffitN > 0 && down / soffitN >= 0.8, down + '/' + soffitN);   // (noisy face-bottom vertices count too; a soffit wound upward reads ~0%)
   // torches: outside the cave (v < 0) and beside the gap, not in it
   for (const f of out.flames.slice(mi * 2, mi * 2 + 2)) {
     const rx = f.x - m.mx, rz = f.z - m.mz, u = -m.dz * rx + m.dx * rz, v = m.dx * rx + m.dz * rz;

@@ -11,8 +11,8 @@
 //
 //   ROCK    — an overhang of the same rock as the cliffs (it is drawn with
 //             their material), spanning the whole gap and running down into
-//             jambs at either side. The soffit arches from ~150 at the jambs
-//             to ~172 at the crown, well over head height; the outer face
+//             jambs at either side. The soffit arches from ~180 at the jambs
+//             to ~214 at the crown, well over head height; the outer face
 //             leans out over the entrance, the crest rides up to the cliff
 //             tops, and every face is broken up by noise that tapers to zero
 //             on shared edges, so the faces meet without cracks.
@@ -52,7 +52,7 @@ export function buildCaveMouths(THREE, mouths, { TILE, height, noise, colors }) 
     const n = (a, b) => noise((m.mx + a) / 37 + 11.3, (m.mz + b) / 37 + 4.1);
 
     // Soffit: an arch over the gap, then falling steeply into a jamb either side.
-    const crown = m.gy + 172, spring = m.gy + 148;
+    const crown = m.gy + 214, spring = m.gy + 180;   // (×1.25 with the ×1.5 cliffs, v0.24)
     const soffit = (u) => {
       const a = Math.abs(u);
       if (a <= hw) return spring + (crown - spring) * Math.cos((a / hw) * Math.PI / 2);
@@ -112,7 +112,7 @@ export function buildCaveMouths(THREE, mouths, { TILE, height, noise, colors }) 
 
     // TORCH SCONCES on the jambs, outside, flanking the way in.
     for (const side of [-1, 1]) {
-      const u = side * (hw + 14), fy = m.gy + 100, vf = v0 - 14;
+      const u = side * (hw + 14), fy = m.gy + 118, vf = v0 - 14;
       wood.beam(P(u, v0 + 6, fy - 8), P(u, vf, fy - 8), 3, 3, U, C.iron);             // arm, straight back into the rock
       wood.box(P(u, vf, fy - 8), U, [0, 1, 0], D, 3.6, 1.5, 3.6, C.iron);              // ...ending in a ring round the shaft
       wood.box(P(u, vf, fy - 14), U, [0, 1, 0], D, 2.2, 14, 2.2, C.post);              // the torch's shaft

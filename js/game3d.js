@@ -2040,7 +2040,7 @@ for (let ty=0;ty<MAP_H;ty++) for (let tx=0;tx<MAP_W;tx++) {
 // ranges. Bump this to make the whole world chunkier.
 const OBJ_SCALE = 2;                 // 2× the previous sizes
 const CHAR_H    = 63 * OBJ_SCALE;    // main character height (was 63u) → 126u
-const TREE_H    = CHAR_H * 2;        // trees stand twice as tall as the hero → 252u
+const TREE_H    = CHAR_H * 3;        // trees stand three times the hero → 378u (×1.5 in v0.24, owner: "trees can be bigger")
 
 // Walls used to be 91u against a 126u character — you looked straight over
 // every building, so the city read as a maze of low boxes. Now a storey and a
@@ -2056,7 +2056,7 @@ const STONE_R  = TILE * 0.28 * OBJ_SCALE;
 // Dungeon walls were TILE*0.9*OBJ_SCALE = 86u — below the 126u character, so you
 // looked straight over them and a cave read as floor pattern rather than rock.
 // Same mistake the city walls had before they went to 168; now they share it.
-const CAVEH    = WALL_H;
+const CAVEH    = WALL_H * 1.5;       // cave cliffs ×1.5 (v0.24, owner: "caves can be bigger") → 252
 
 // ── Procedural obstacle textures (no asset files) ─────────────────
 // Generated at 256² (was 64²) with fBm weathering, bevelled edges and a
@@ -2868,7 +2868,9 @@ wallMesh.material.customProgramCacheKey = () => 'wall-worlduv-v2';
 // Stacked-skirt canopy and flared trunk instead of a bare cone on a cylinder.
 // Both merge down to ONE geometry each, so this is the same two draw calls the
 // primitives cost — the tier count is free.
-const _canopyGeo = makeConiferCanopy(THREE, { height:TOPH, radius:TILE*0.72, tiers:6, seed:20260801 });
+// (crowns widen only ×1.2 when the trees went ×1.5 tall: wider, and groves
+//  merged back into the one-hedge mass the tree critic spent seven rounds on)
+const _canopyGeo = makeConiferCanopy(THREE, { height:TOPH, radius:TILE*0.86, tiers:6, seed:20260801 });
 const _trunkGeo  = makeTrunk(THREE, { height:TRUNKH, top:9, bottom:12, seed:4242 });
 // Tinted toward grey-brown: the bare bark read as near-black maroon at range,
 // the darkest thing in every vista (critic C-6).
@@ -2895,7 +2897,7 @@ const topMesh   = makeMesh(_canopyGeo, _needleMat, nTree+4000);
 // (_placeFarTree): a full-height crown on a short trunk read as a poplar, the
 // same shape as the conifers beside it (tree critic r3).
 const BROAD_CROWN = 0.80;   // (0.72 put every low-tier broadleaf on a lollipop stick)
-const _canopyBroadGeo = makeBroadleafCanopy(THREE, { height:TOPH*BROAD_CROWN, radius:TILE*0.68, lobes:6, seed:20260902 });
+const _canopyBroadGeo = makeBroadleafCanopy(THREE, { height:TOPH*BROAD_CROWN, radius:TILE*0.82, lobes:6, seed:20260902 });
 _canopyBroadGeo.translate(0, TOPH*(1-BROAD_CROWN)*0.5, 0);
 const topBroadMesh = makeMesh(_canopyBroadGeo, _canopyMat, nTree+4000);
 // three defines USE_INSTANCING_COLOR from the presence of this buffer alone and
