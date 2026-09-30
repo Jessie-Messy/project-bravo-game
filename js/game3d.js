@@ -8366,10 +8366,14 @@ function animatePortals(t) {
     u.uTime.value = t % 600;
     u.uFlare.value = Math.max(0, 1 - (t - (_flareAt[k] ?? -9)) / 0.8);   // by time, not per frame
   }
-  const lim = (TILE*45)**2;
+  // Gates beyond the entity reach are not drawn at all. They were always in
+  // the scene, and the membrane is bright enough to bloom: the glow carried
+  // from one side of the map to the other (owner play-test, 2026-09-29).
+  const { ER2 } = viewRadii();
   for (const p of portals) {
     const dx = p.x - player.x, dz = p.z - player.y;
-    if(dx*dx + dz*dz > lim) continue;
+    p.g.visible = dx*dx + dz*dz <= ER2;
+    if(!p.g.visible) continue;
     p.pool.material.opacity = 0.42 + 0.14*Math.sin(t*2.1 + p.tx);
     if(p.shards){ p.shards.position.y = Math.sin(t*1.3 + p.ty)*5; p.shards.rotation.y = Math.sin(t*0.4)*0.25; }
     const pos = p.motes.geometry.attributes.position, seed = p.motes.geometry.userData.seed;
@@ -15666,9 +15670,14 @@ function renderMinimap(){
   // Player dot
   ctx.fillStyle='#ffee00'; ctx.beginPath(); ctx.arc(toSX(pcx),toSY(pcy),Math.max(2,sz/80),0,Math.PI*2); ctx.fill();
 
-  // Enemies (cave-dwellers stand out in magenta)
+  // Enemies (cave-dwellers stand out in magenta) — only those you could see:
+  // within the entity reach, the same distance they're drawn at. Every mob on
+  // the map was tracked, from anywhere (owner play-test, 2026-09-29).
+  const { ER2: mapER2 } = viewRadii();
   for(const e of enemies){
     if(e.state==='respawning'||e.state==='dead') continue;
+    const edx=e.x-player.x, edy=e.y-player.y;
+    if(edx*edx+edy*edy > mapER2) continue;
     const ex=toSX(e.x/TILE), ey=toSY(e.y/TILE);
     if(!inView(ex,ey)) continue;
     const cave=e.type==='goblin'||e.type==='troll'||e.type==='spider';
@@ -15731,7 +15740,15 @@ function viewRadii(){
   const rs  = Math.max(0.5, Math.min(2, prefs.renderScale || 1));
   const RD  = (_mob?1200:2300) * zoomK * rs;   // vision / cull radius (world units)
   const AD  = (_mob?600:1080)  * zoomK;        // animate within this (~12 tiles on mobile)
-  return { _mob, RD, AD, RD2: RD*RD, AD2: AD*AD };
+  // ENTITY reach: nothing that walks is drawn further out than the world it
+  // stands in. RD ran past the obstacle window on every tier below ultra, so a
+  // bandit stood alone in the open past the last drawn tree (owner play-test,
+  // 2026-09-29). The window is measured from the camera; this is from the
+  // player, so the boom comes off, and it stops where the far trees start to
+  // sink (_treeFade, 86%) so a mob never outlives the grove around it.
+  const _boomE = CAM_R*camZoom;
+  const ER  = _view.far > 0 ? Math.max(TILE*12, Math.min(RD, _view.far*0.86 - _boomE)) : RD;
+  return { _mob, RD, AD, ER, RD2: RD*RD, AD2: AD*AD, ER2: ER*ER };
 }
 // Hard ceiling on simultaneously animated remote players. AD alone is not a
 // bound: a hundred players in one town square are all inside it, and each one
@@ -15763,7 +15780,7 @@ const MAX_VISIBLE_REMOTES = 60;
 function syncEntities(t){
   const adt=Math.min(Math.max(t-_lastSyncT,0),0.1); _lastSyncT=t;
   const isHiding = skills.hiding.active;
-  const { _mob, RD, AD, RD2, AD2 } = viewRadii();
+  const { _mob, RD, AD, RD2, AD2, ER2 } = viewRadii();
   const NPC_LOOK2 = (TILE*6)*(TILE*6);
   // Fog fades by camera distance, so push it *past* the far (north) edge of
   // vision — then it never fades anything on-screen, only the far background.
@@ -15784,7 +15801,7 @@ function syncEntities(t){
     const inst=slotModel[si];
     if(e.state==='dead'||e.state==='respawning'){grp.visible=false;if(inst)inst.obj.visible=false;continue;}
     const edx=e.x-player.x, edz=e.y-player.y, ed2=edx*edx+edz*edz;
-    if(ed2>RD2){ grp.visible=false; if(inst)inst.obj.visible=false; continue; }   // render-distance cull
+    if(ed2>ER2){ grp.visible=false; if(inst)inst.obj.visible=false; continue; }   // entity-reach cull (see viewRadii)
     const eNear = ed2<AD2;                                                        // animation-LOD gate
     // Prefer the animated GLTF model once its file has loaded
     const mm=MOB_MODELS[e.type];
@@ -15901,7 +15918,7 @@ function syncEntities(t){
   else corpseGrp.visible=false;
   for(let i=0;i<guardPool.length;i++){const g=guards[i];if(!g||g.dead){guardPool[i].visible=false;continue;}
     const gd2=(g.x-player.x)*(g.x-player.x)+(g.y-player.y)*(g.y-player.y);
-    if(gd2>RD2){guardPool[i].visible=false;continue;}
+    if(gd2>ER2){guardPool[i].visible=false;continue;}
     guardPool[i].visible=true;guardPool[i].position.set(g.x,heightAt(g.x,g.y),g.y);
     if(gd2<AD2){const gaf=g.attackCooldown-g.attackTimer;animateRig(guardPool[i],g.x,g.y,t,{turn:true,attack:(gaf>=0&&gaf<0.28)?1-gaf/0.28:0});}}
   for(const n of npcs) {
@@ -15909,7 +15926,7 @@ function syncEntities(t){
     // Was `continue` alone, which skipped the ANIMATION but left the mesh visible —
     // so every town NPC was still drawn from anywhere on the map. Mobs and guards
     // above both hide at RD; NPCs never did.
-    if(nd2>RD2){ n.visible=false; continue; }
+    if(nd2>ER2){ n.visible=false; continue; }
     n.visible=true;
     if(nd2<AD2) animateRig(n,n.position.x,n.position.z,t);   // idle breathing
     if(nd2<NPC_LOOK2){                             // face the player only in range
@@ -15923,7 +15940,7 @@ function syncEntities(t){
     const o=n.obj;
     const pdx=player.x-o.position.x, pdz=player.y-o.position.z, pd2=pdx*pdx+pdz*pdz;
     // Same omission as the rig NPCs above: frozen but still submitted every frame.
-    if(pd2>RD2){ o.visible=false; continue; }
+    if(pd2>ER2){ o.visible=false; continue; }
     o.visible=true;
     const near = pd2<AD2;
     n.pause-=adt; let moving=false;
@@ -16980,7 +16997,7 @@ function remoteWeapon(v,kind){
 function syncRemotePlayers(t,dt){
   if(net.remotes.size===0 && remoteVis.size===0) return;
   // Same radii the mobs use, plus a hard cap on how many remotes may animate.
-  const { RD2, AD2 } = viewRadii();
+  const { RD2, AD2, ER2 } = viewRadii();
   // Rank by distance once per frame: everything past RD is hidden, everything
   // past AD holds its pose, and only the nearest MAX_ANIMATED_REMOTES get a
   // mixer update at all.
@@ -17026,7 +17043,7 @@ function syncRemotePlayers(t,dt){
     const k=Math.min(1,dt*10);
     v.rx+=(st.x-v.rx)*k; v.rz+=(st.y-v.rz)*k;
     const _rd2=_d2.get(id) ?? 0;
-    const _tooFar=_rd2>RD2 || !_mayDraw.has(id);   // render distance, then nearest-N
+    const _tooFar=_rd2>ER2 || !_mayDraw.has(id);   // entity reach (viewRadii), then nearest-N
     const _animate=_mayAnimate.has(id);     // animation-LOD + nearest-N cap
     const visible=(!st.dead||st.ghost) && !_tooFar;
     const op=st.ghost?0.45:(st.hidden?0.25:1);

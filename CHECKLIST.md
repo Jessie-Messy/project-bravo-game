@@ -396,3 +396,63 @@ on the band's lower half, slope-based rock blend.
 - [ ] polish: pale rim on the torch head at point-blank range
 - [ ] polish (from the tree loop): first person under a canopy is dusky + dither stipple; horizon grove strips
 - [ ] iron-ore nodes render near-black and read as holes (cave critic) — gameplay resource, owner's call on look
+
+---
+
+# CHECKLIST — v0.24 "bigger world" (owner play-test feedback, 2026-09-29)
+
+Owner, verbatim points:
+- mobs and portals render at far distances, beyond the trees between them and the player (a bandit seen far off);
+- the portal glow is visible from one side of the map to the other ("that's going to cause lag");
+- all mobs are tracked on the map;
+- the whole city needs scaling up greatly — enter a building, see the inside, walk around in it;
+- city walls, everything scaled up; trees, caves bigger; bridges great but much bigger.
+
+Decisions (owner, 2026-09-29): city ×2.5 (~152×152 tiles) and EXPAND THE MAP to fit it; trees, cave cliffs and
+bridges ×~1.5. Standing rules: backups before deploys; never deploy secrets or extra files; the repo is PUBLIC;
+annotate HANDOFF; a critic on every visual change; `npm test` must stay green.
+
+## Phase 1 — draw distance and tracking (quick wins, client only)
+- [x] 1a Mobs, NPCs, guards, remote players and corpses stop drawing where the world behind them stops (the tree
+      window), not at the larger RD — no bandit standing alone past the last tree. viewRadii().ER = min(RD,
+      _view.far×0.86 − boom); on low that's ~1900 vs RD 2300+
+- [x] 1b Portals: culled and their lights/bloom off beyond the draw window; the glow no longer carries map-wide
+      (gate groups hidden past ER, animatePortals)
+- [x] 1c Minimap/world map shows mobs only within sight range (no map-wide mob tracking) — within ER
+- [ ] 1d Perf check (ultra + low) before/after; critic shot of a far view
+
+## Phase 2 — map expansion (design + investigation before any rebuild)
+- [ ] 2a Survey everything tied to map size: MAP_W/MAP_H, the overworld/dungeon/coast bands, the terrain canvas
+      (3840 px wide already — 4096 is the floor on weak GPUs), server walkB64/world-data, minimap, saved positions,
+      player houses, portals, editor world_edits.json
+- [ ] 2b Pick the expansion (e.g. widen the overworld and place the city in new land) + a terrain texture plan
+      that stays under 4096 px per texture; write it into HANDOFF before building
+- [ ] 2c Save migration: any saved position that would land in a wall or the wrong place moves to a safe tile
+- [ ] 2d Implement; tests for map bounds, walkability parity client/server
+
+## Phase 3 — the city ×2.5
+- [ ] 3a One source of truth for the city layout (CITY rect, gates, ring road, inner keep, bank, houses, shop
+      doors) used by world.js, game3d (signs, NPC positions, flatten zones) and the server (safe zone, spawn)
+- [ ] 3b Outer wall + corner towers + gates, inner keep, streets at ×2.5; wall height/thickness to match
+- [ ] 3c Buildings ×2.5 (5×5 → ~12×12 tiles; bank ~22×17): doors a character fits through comfortably
+- [ ] 3d NPCs/shopkeepers, guards, signs, props, spawn point moved with the layout
+- [ ] 3e Rebuild server world-data; SERVER deploy needed
+
+## Phase 4 — building interiors
+- [ ] 4a Interior floors, interior wall faces, ceilings/roof hidden while inside (exists: extend)
+- [ ] 4b Furniture per shop type (counter, shelves, anvil/forge, beds, tables, barrels) as colliders
+- [ ] 4c Interior lighting (hearth/lamps), camera behaviour inside (no wall clipping in third person)
+- [ ] 4d Critic loop on interiors
+
+## Phase 5 — nature ×1.5
+- [ ] 5a Trees ×1.5 (TREE_H; near + far LOD; collision stays per tile)
+- [ ] 5b Cave cliffs ×1.5 (CAVEH), cave mouths scaled to match
+- [ ] 5c Critic pass
+
+## Phase 6 — bridges ×1.5
+- [ ] 6a Wider decks (3–4 tiles), taller arch, heavier timbers and piers; roads widened to meet them
+- [ ] 6b Critic pass
+
+## Phase 7 — ship
+- [ ] 7a Tests + verify + perf (ultra/low)
+- [ ] 7b Backups; server deploy (world-data) then client; HANDOFF; push
