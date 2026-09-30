@@ -1,5 +1,14 @@
 // constants.js — pure compile-time constants, no imports
-export const TILE = 48, MAP_W = 480;
+//
+// ⚠ TWO WIDTHS, the same idea as the two heights below. MAP_W is how many tile
+// columns EXIST (680 since v0.24, "the bigger world": the map grew EAST to fit a
+// ×2.5 Lunar City). MAIN_W is the original 480 — the width the shared ground
+// texture covers AND the width the original world generation still runs at, so
+// every tree, rock and cave of the old map stays exactly where it was. The new
+// strip (x MAIN_W..MAP_W-1, overworld rows only) is generated separately and
+// brings its own ground surface, like the coast.
+export const TILE = 48, MAP_W = 680, MAIN_W = 480;
+export const EAST_X0 = MAIN_W, EAST_W = MAP_W - MAIN_W;   // the east strip
 
 // ⚠ TWO HEIGHTS, AND THEY ARE NOT THE SAME NUMBER.
 //
@@ -50,7 +59,7 @@ export const BLOCKING = {
   [13]:false,[14]:false,[15]:false,[16]:true,
   [17]:true,
 };
-export const CITY = { x1:280, y1:332, x2:340, y2:392 };  // Lunar
+export const CITY = { x1:510, y1:214, x2:662, y2:366 };  // Lunar (×2.5, v0.24) — MUST equal city.js CITY_RECT (test:city)
 
 // Dungeon zone — sits below the overworld on the same map
 // overworld: y 0–479 | separator (CAVE_WALL): y 480–489 | dungeon: y 490–553

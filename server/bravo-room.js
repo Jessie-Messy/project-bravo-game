@@ -25,7 +25,31 @@ const { MobSim, world } = require('./mobs.js');
 const TILE  = (world && world.tile)  || 48;
 const MAP_W = (world && world.mapW)  || 480;
 const MAP_H = (world && world.mapH)  || 554;
-const CITY = { x1: 280, y1: 332, x2: 340, y2: 392 };   // Lunar = safe zone
+// Lunar = safe zone, and the default spawn: both from the city plan via
+// world-data.json (the city moved and grew ×2.5 in v0.24; retyped here, the
+// old rect would have kept the safe zone in an empty field).
+const CITY  = (world && world.city)  || { x1: 510, y1: 214, x2: 662, y2: 366 };
+const SPAWN = (world && world.spawn) || [586 * 48 + 24, 303 * 48 + 24];
+storage.setDefaultSpawn(SPAWN[0], SPAWN[1]);
+
+// A saved position inside something solid — a wall of the new city, say —
+// moves to the nearest walkable tile (the ESCAPE rule's server half: the
+// client rescues itself on load the same way).
+function walkableTile(tx, ty) {
+  if (!world || !world.bits || tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return true;
+  const i = ty * MAP_W + tx;
+  return !(world.bits[i >> 3] & (1 << (i & 7)));
+}
+function rescuePosition(x, y) {
+  const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
+  if (walkableTile(tx, ty)) return [x, y];
+  for (let r = 1; r <= 24; r++)
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+      if (walkableTile(tx + dx, ty + dy)) return [(tx + dx) * TILE + TILE / 2, (ty + dy) * TILE + TILE / 2];
+    }
+  return [SPAWN[0], SPAWN[1]];
+}
 
 // ── Anti-cheat / combat tuning ──
 const MAX_SPEED   = 700;    // u/s — base 190, horse 2.2x, sprint 1.4x ≈ 585 max legit
@@ -742,8 +766,9 @@ class BravoRoom extends Room {
     const p = new PlayerState();
     p.name = name;
     const saved = storage.load(name);
-    p.x = saved ? saved.x : 310 * TILE + 24;   // default spawn: Lunar town square
-    p.y = saved ? saved.y : 360 * TILE + 24;
+    // default spawn: the city courtyard (city.js); a saved spot inside a wall is rescued
+    const [sx, sy] = saved ? rescuePosition(saved.x, saved.y) : SPAWN;
+    p.x = sx; p.y = sy;
     p.kills = saved ? saved.kills : 0;
     p.deaths = saved ? saved.deaths : 0;
     p.noto   = saved && saved.noto ? saved.noto | 0 : 0;

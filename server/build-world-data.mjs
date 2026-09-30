@@ -29,6 +29,7 @@ const { T, BLOCKING, MAP_W, MAP_H, CITY,
         COAST_Y0, NOTO_BAD_AT, NOTO_DECAY_MS, COMBAT_WINDOW_MS,
       } = await import(pathToUrl('js/constants.js'));
 const { WOLF_SPAWNS, BANDIT_SPAWNS, COAST_SAFE_ZONE, PORTAL_ARRIVALS } = await import(pathToUrl('js/world.js'));
+const { CITY_SPOTS } = await import(pathToUrl('js/city.js'));
 
 function pathToUrl(p) { return 'file:///' + path.join(root, p).replace(/\\/g, '/'); }
 
@@ -66,6 +67,9 @@ const out = {
   portalArrivals: PORTAL_ARRIVALS.map(p => [p.x, p.y]),
   healers: [[HEALER.x, HEALER.y]].concat(WORLD_HEALERS.map(h => [h.x, h.y])),
   city: CITY,
+  // The default spawn / respawn point, from the city plan (city.js), in world
+  // units. The server used to retype 310,360 in five places.
+  spawn: [CITY_SPOTS.spawn.x * 48 + 24, CITY_SPOTS.spawn.y * 48 + 24],
   // ── Region rules, copied straight out of js/constants.js ──
   // The server reads these from here rather than retyping them, for the same
   // reason it stopped retyping MAP_H: two sources for one number means the

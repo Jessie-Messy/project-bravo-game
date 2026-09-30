@@ -23,6 +23,41 @@ handoff is invisible to the next session and causes collisions.
   before that date will silently re-add them. **`git fetch` before you branch, and read
   `git status` before you `git add -A`.**
 
+### 2026-09-29 — v0.24 "bigger world": plan and map-expansion design (IN PROGRESS)
+
+The owner play-tested v0.23.0 and asked for a bigger world. The work list is the v0.24 section of CHECKLIST.md.
+Owner decisions:
+- city ×2.5, with the MAP EXPANDED to fit it;
+- trees, cave cliffs and bridges ×~1.5;
+- buildings you can walk around inside.
+
+**Phase 1 (done, commit 1962a14):**
+- `viewRadii().ER` is the entity reach: min(RD, `_view.far`×0.86 − boom).
+- Mobs, NPCs, guards, remote players and portal gates are drawn only within it.
+- The minimap shows mobs only within it.
+
+**Map expansion design (Phase 2), decided after the survey:**
+- **Grow EAST.** MAP_W goes 480 → 680. Every existing coordinate stays valid: saves, `world_edits.json` (all
+  10,886 tile edits are at x ≤ 361), portals, the dungeon, the coast and the house plots. It can't grow south:
+  the dungeon and coast bands sit below the overworld, and every y below 480 would shift.
+- **Generation must not reshuffle the old map.** Forests and stone outcrops are placed with `rng()*MAP_W`, so a
+  wider map would move every tree. The original generation keeps a fixed 480 width (`OLD_W`). The new strip
+  (x 480–679) gets its own seeded pass afterwards. Sine-driven features (rivers, the east–west road) extend
+  east on their own.
+- **The ridge** (the edge mountain wall, `ridgeZone`) moves to the new east edge. The old east band becomes
+  ordinary land joining the strip.
+- **Ground texture.** The main canvas stays 480 tiles wide (5440 px would cost ~96 MB, and TERR_PX halving
+  already guards weak GPUs). The east strip gets a third ground SURFACE on the coast's pattern (its own
+  canvas, mesh and entry in `_surfaceAt`). The terrain mesh covers the main surface only.
+- **The city moves into the new land at ×2.5.** It becomes ~153×153 tiles centred near (584, 300), so the
+  east–west road meets its west gate. The old 61×61 footprint (280–340 × 332–392) goes back to generated land.
+- **City data.** One layout module is the single source of truth for the city rect, gates, keep, bank, houses
+  and shop doors. It is used by world.js, game3d (NPCs, signs, flatten zones, minimap) and the server (safe
+  zone, default spawn). The city-side Saltmere gate (`CITY_COAST_GATE`) moves with the city.
+- **Saves.** A saved position inside the old city is now open land, which is fine. One that lands in a new
+  wall or building is rescued to the nearest walkable tile, on both the client and the server.
+- **This needs a SERVER deploy** (world-data rebuild, spawn and safe zone), then the client.
+
 ### 2026-09-29 — DEPLOYED v0.23.0 to production (for testing), client only
 
 This ships the bridges, trees and cave mouths (the two entries below).

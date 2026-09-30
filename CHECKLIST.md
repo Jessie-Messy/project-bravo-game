@@ -422,20 +422,24 @@ annotate HANDOFF; a critic on every visual change; `npm test` must stay green.
 - [ ] 1d Perf check (ultra + low) before/after; critic shot of a far view
 
 ## Phase 2 — map expansion (design + investigation before any rebuild)
-- [ ] 2a Survey everything tied to map size: MAP_W/MAP_H, the overworld/dungeon/coast bands, the terrain canvas
+- [x] 2a Survey everything tied to map size: MAP_W/MAP_H, the overworld/dungeon/coast bands, the terrain canvas
       (3840 px wide already — 4096 is the floor on weak GPUs), server walkB64/world-data, minimap, saved positions,
       player houses, portals, editor world_edits.json
-- [ ] 2b Pick the expansion (e.g. widen the overworld and place the city in new land) + a terrain texture plan
+- [x] 2b Pick the expansion (DONE — see HANDOFF "v0.24 bigger world": grow EAST, MAP_W 480→680, OLD_W-bounded
+      generation, east strip as a third ground surface, city moves east at ×2.5) (e.g. widen the overworld and place the city in new land) + a terrain texture plan
       that stays under 4096 px per texture; write it into HANDOFF before building
-- [ ] 2c Save migration: any saved position that would land in a wall or the wrong place moves to a safe tile
-- [ ] 2d Implement; tests for map bounds, walkability parity client/server
+- [x] 2c Save migration (server rescuePosition on join + client findClearSpawn on load): any saved position that would land in a wall or the wrong place moves to a safe tile
+- [x] 2d Implement; tests for map bounds, walkability parity client/server — MAP_W 680, GEN_W-bounded generation
+      (old map verified tile-identical outside the old city + old east band), eastStrip (own rng; rivers bend round
+      the city; road to the west gate), east ground surface; test:city (71 checks)
 
 ## Phase 3 — the city ×2.5
-- [ ] 3a One source of truth for the city layout (CITY rect, gates, ring road, inner keep, bank, houses, shop
+- [x] 3a One source of truth for the city layout (js/city.js) (CITY rect, gates, ring road, inner keep, bank, houses, shop
       doors) used by world.js, game3d (signs, NPC positions, flatten zones) and the server (safe zone, spawn)
-- [ ] 3b Outer wall + corner towers + gates, inner keep, streets at ×2.5; wall height/thickness to match
+- [x] 3b Outer wall + corner towers + gates, inner keep, streets at ×2.5; wall height/thickness to match
+      (3-thick curtain, 5-thick keep, 7x7 towers, FORT_H = 2×WALL_H)
 - [ ] 3c Buildings ×2.5 (5×5 → ~12×12 tiles; bank ~22×17): doors a character fits through comfortably
-- [ ] 3d NPCs/shopkeepers, guards, signs, props, spawn point moved with the layout
+- [x] 3d NPCs/shopkeepers, guards, signs, props, spawn point moved with the layout (all from CITY_SPOTS)
 - [ ] 3e Rebuild server world-data; SERVER deploy needed
 
 ## Phase 4 — building interiors

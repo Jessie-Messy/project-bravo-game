@@ -1,5 +1,6 @@
 // state.js — all shared mutable state, exported by reference
 // Objects and arrays are mutated in-place; G wraps mutable primitives.
+import { CITY_SPOTS } from './city.js';
 
 // ── World ──────────────────────────────────────────────────────────
 export const map             = [];  // filled by world.js on import
@@ -10,7 +11,7 @@ export const playerPlacedWalls = [];
 
 // ── Entities ───────────────────────────────────────────────────────
 export const player = {
-  x: 240 * 48 + 24, y: 300 * 48 + 24,
+  x: CITY_SPOTS.spawn.x * 48 + 24, y: CITY_SPOTS.spawn.y * 48 + 24,   // a new character starts in Lunar's courtyard
   r: 13, speed: 190,
   hp: 100, maxHp: 100, iframes: 0,
   dead: false, ghost: false, hasArmor: false,
@@ -84,9 +85,11 @@ export const tileViewport = {
 };
 
 // ── NPC data ───────────────────────────────────────────────────────
-export const MERCHANT = { x:301*48+24, y:357*48+24, r:13 };  // NW shop
-export const BANKER   = { x:310*48+24, y:367*48+24, r:13 };  // bank S entrance
-export const HEALER   = { x:310*48+24, y:344*48+24, r:13 };  // healer house
+// City NPCs stand where the city plan puts them (city.js), in world units.
+const _npc = role => ({ x: CITY_SPOTS[role].x * 48 + 24, y: CITY_SPOTS[role].y * 48 + 24, r: 13 });
+export const MERCHANT = _npc('merchant');   // NW shop
+export const BANKER   = _npc('banker');     // behind the bank's south door
+export const HEALER   = _npc('healer');     // healer's house
 export const WORLD_HEALERS = [
   { x: 60*48+24,  y:210*48+24, r:13, healCooldown:0 },
   { x:400*48+24,  y: 92*48+24, r:13, healCooldown:0 },
@@ -96,15 +99,15 @@ export const WORLD_HEALERS = [
   { x:193*48+24,  y:234*48+24, r:13, healCooldown:0 },  // dungeon entrance (near PORTAL_A)
 ];
 
-export const BLACKSMITH = { x:319*48+24, y:357*48+24, r:13 };  // NE shop
-export const MAGE       = { x:301*48+24, y:367*48+24, r:13 };  // SW shop
-export const FARRIER    = { x:319*48+24, y:367*48+24, r:13 };  // SE shop
+export const BLACKSMITH = _npc('blacksmith');  // NE shop
+export const MAGE       = _npc('mage');        // SW shop
+export const FARRIER    = _npc('farrier');     // SE shop
 
-// Artifact-system NPCs — one column added on each side of the shop square
-export const ANTIQUARIAN  = { x:292*48+24, y:357*48+24, r:13 };  // W, north row
-export const CRYPTOLOGIST = { x:292*48+24, y:367*48+24, r:13 };  // W, south row
-export const CURATOR      = { x:328*48+24, y:357*48+24, r:13 };  // E, north row
-export const GRAVE_ROBBER = { x:328*48+24, y:367*48+24, r:13 };  // E, south row
+// Artifact-system NPCs — each keeps a house in the ×2.5 city (city.js)
+export const ANTIQUARIAN  = _npc('antiquarian');
+export const CRYPTOLOGIST = _npc('cryptologist');
+export const CURATOR      = _npc('curator');
+export const GRAVE_ROBBER = _npc('grave_robber');
 
 // ── Mutable primitive state (wrapped so modules can update them) ────
 export const G = {

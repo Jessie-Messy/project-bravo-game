@@ -37,6 +37,11 @@ try {
 
 // JSON fallback store
 let jsonStore = null;
+// Where a brand-new row puts a player: the city's spawn, set by bravo-room from
+// world-data.json at load (it was retyped here as 310,360 in four places).
+const DEF_SPAWN = { x: 586 * 48 + 24, y: 303 * 48 + 24 };
+function setDefaultSpawn(x, y) { DEF_SPAWN.x = x; DEF_SPAWN.y = y; }
+
 function jsonLoad() {
   if (jsonStore) return jsonStore;
   try { jsonStore = JSON.parse(fs.readFileSync(JSON_FILE, 'utf8')); }
@@ -86,11 +91,11 @@ function saveBlob(name, blobStr) {
   if (db) {
     db.prepare(`INSERT INTO players (name,x,y,blob,updated_at) VALUES (?,?,?,?,?)
       ON CONFLICT(name) DO UPDATE SET blob=excluded.blob, updated_at=excluded.updated_at`)
-      .run(name, 310 * 48 + 24, 360 * 48 + 24, blobStr, Date.now());
+      .run(name, DEF_SPAWN.x, DEF_SPAWN.y, blobStr, Date.now());
     return;
   }
   const s = jsonLoad();
-  s[name] = s[name] || { x: 310 * 48 + 24, y: 360 * 48 + 24, hp: 100, kills: 0, deaths: 0 };
+  s[name] = s[name] || { x: DEF_SPAWN.x, y: DEF_SPAWN.y, hp: 100, kills: 0, deaths: 0 };
   s[name].blob = blobStr;
   jsonFlush();
 }
@@ -99,11 +104,11 @@ function setToken(name, token) {
   if (db) {
     db.prepare(`INSERT INTO players (name,x,y,token,updated_at) VALUES (?,?,?,?,?)
       ON CONFLICT(name) DO UPDATE SET token=excluded.token`)
-      .run(name, 310 * 48 + 24, 360 * 48 + 24, token, Date.now());
+      .run(name, DEF_SPAWN.x, DEF_SPAWN.y, token, Date.now());
     return;
   }
   const s = jsonLoad();
-  s[name] = s[name] || { x: 310 * 48 + 24, y: 360 * 48 + 24, hp: 100, kills: 0, deaths: 0 };
+  s[name] = s[name] || { x: DEF_SPAWN.x, y: DEF_SPAWN.y, hp: 100, kills: 0, deaths: 0 };
   s[name].token = token;
   jsonFlush();
 }
@@ -123,4 +128,4 @@ function save(name, p) {
   jsonFlush();   // merge, never replace — the record also carries the name-claim token
 }
 
-module.exports = { load, save, getToken, setToken, loadBlob, saveBlob, backend: db ? 'sqlite' : 'json' };
+module.exports = { load, save, getToken, setToken, loadBlob, saveBlob, setDefaultSpawn, backend: db ? 'sqlite' : 'json' };

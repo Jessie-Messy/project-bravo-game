@@ -10,6 +10,7 @@ import { buildTown } from './render/buildings.js';
 import { buildCaveRock } from './render/cave-rock.js';
 import { findBridgeSpans, extendBridgeSpans, shapeBridgeSpans, makeDeckLookup, buildBridges } from './render/bridges.js';
 import { buildCaveMouths } from './render/cave-mouth.js';
+import { CITY_SPOTS, CITY_BUILDINGS, cityBuilding } from './city.js';
 import { makeFlameMaterial, makeFlameGeometry, makeGlowMaterial, makeGlowGeometry } from './render/flame.js';
 import { net, initNet, netTick, netChat, netPvp, netTp, netMobHit, netSave, netCallGuards,
   netHousePlace, netHouseUpdate, netHouseRemove,
@@ -25,7 +26,7 @@ import { TILE, MAP_W, MAP_H, T, BLOCKING, CITY,
   BANK_W, BANK_H, BANK_PAD, BANK_HEADER, BANK_BTN_W, BANK_BTN_H,
   GUARD_CALL_COOLDOWN, MINIMAP_BASE,
   DUNGEON_X0, DUNGEON_Y0, DUNGEON_W, DUNGEON_H,
-  TERRAIN_MAP_H, COAST_X0, COAST_Y0, COAST_W, COAST_H,
+  TERRAIN_MAP_H, COAST_X0, COAST_Y0, COAST_W, COAST_H, MAIN_W, EAST_X0, EAST_W,
   COAST_LANDING, COAST_MAINLAND_DOCK,
   REGION_MAINLAND, REGION_COAST, NOTO_BAD_AT, COMBAT_WINDOW_MS,
   RACES, getXpForLevel,
@@ -887,7 +888,9 @@ for(const ct of worldEdits.tiles) registerCustomTile(ct);
 const TERR_PX = (() => {
   const max = renderer.capabilities.maxTextureSize || 4096;
   let px = 8;
-  while (px > 1 && (MAP_W * px > max || MAP_H * px > max)) px >>= 1;
+  // (MAIN_W: the shared canvas stops where the original map did; the east strip
+  //  has its own, smaller surface — v0.24)
+  while (px > 1 && (MAIN_W * px > max || MAP_H * px > max)) px >>= 1;
   if (px !== 8)
     console.warn('[gfx] terrain texture reduced to ' + px + 'px/tile: MAX_TEXTURE_SIZE is ' +
                  max + ', so the full-detail ' + (MAP_W*8) + 'x' + (MAP_H*8) + ' canvas would not upload.');
@@ -898,13 +901,13 @@ const TERR_PX = (() => {
 // ensureCoastSurface) precisely so this texture never grows again — it is
 // already ~65 MB and already larger than some devices can upload.
 const terrCanvas = document.createElement('canvas');
-terrCanvas.width = MAP_W * TERR_PX; terrCanvas.height = TERRAIN_MAP_H * TERR_PX;
+terrCanvas.width = MAIN_W * TERR_PX; terrCanvas.height = TERRAIN_MAP_H * TERR_PX;
 const terrCtx = terrCanvas.getContext('2d');
 
 // A ground SURFACE: a canvas, plus the tile rect it covers. The shared one
 // covers the overworld and the dungeon; see ensureCoastSurface for the other.
 const _mainSurface = { ctx: terrCtx, tx0: 0, ty0: 0,
-                       tx1: MAP_W - 1, ty1: TERRAIN_MAP_H - 1, tex: null, mesh: null };
+                       tx1: MAIN_W - 1, ty1: TERRAIN_MAP_H - 1, tex: null, mesh: null };
 
 // Seeded noise for stable per-pixel terrain variation
 function _terrNoise(x, y) { let n=(x*374761393+y*668265263)^((x^y)*1274126177); n=(n^(n>>>15))*2246822519; n=(n^(n>>>13))*3266489917; return ((n^(n>>>16))>>>0)/4294967296; }
@@ -1280,7 +1283,7 @@ function paintTerrainRegion(tx0, ty0, tx1, ty1, surface) {
 }
 // The shared surface only. Regions below TERRAIN_MAP_H paint themselves when
 // they are first entered.
-function buildTerrainImage(){ paintTerrainRegion(0,0,MAP_W-1,TERRAIN_MAP_H-1,_mainSurface); }
+function buildTerrainImage(){ paintTerrainRegion(0,0,MAIN_W-1,TERRAIN_MAP_H-1,_mainSurface); }
 // ── Widen the rivers ──────────────────────────────────────────────
 // Done on the TILE MAP, and before the ground bake, so it lands ahead of every
 // consumer. Widening the render mask instead only stretches the painted
@@ -1616,12 +1619,12 @@ function wadeableAt(wx, wz){
 // ⚠ TERRAIN_MAP_H again: the mesh must match the canvas it is textured with, or
 // the UVs stretch the whole map. It stops where the shared texture stops.
 const terrMesh = new THREE.Mesh(
-  new THREE.PlaneGeometry(MAP_W * TILE, TERRAIN_MAP_H * TILE, MAP_W >> 1, TERRAIN_MAP_H >> 1),
+  new THREE.PlaneGeometry(MAIN_W * TILE, TERRAIN_MAP_H * TILE, MAIN_W >> 1, TERRAIN_MAP_H >> 1),
   new THREE.MeshStandardMaterial({ map: terrTex, roughness: 0.97, metalness: 0.0 })
 );
 terrMesh.rotation.x = -Math.PI / 2;
-terrMesh.position.set(MAP_W*TILE/2, 0, TERRAIN_MAP_H*TILE/2);
-terrain.displacePlane(terrMesh.geometry, MAP_W*TILE/2, TERRAIN_MAP_H*TILE/2);
+terrMesh.position.set(MAIN_W*TILE/2, 0, TERRAIN_MAP_H*TILE/2);
+terrain.displacePlane(terrMesh.geometry, MAIN_W*TILE/2, TERRAIN_MAP_H*TILE/2);
 terrMesh.receiveShadow = true;
 // Land never pops in or out, so it takes only the distance haze — not the
 // range fog, which exists to hide objects crossing the render distance. With
@@ -1877,6 +1880,36 @@ function updateFarRange(){
   farRange.material.color.setScalar(0.07 + 0.93 * _envDayF);
 }
 
+// ── The east strip's ground (v0.24) ──
+// The map grew east (MAP_W 480 → 680) for the ×2.5 city. The shared canvas is
+// already ~65 MB and at the edge of what some devices upload, so the strip
+// brings its own surface, the same way the coast does — built at boot, since
+// the city (and the spawn) is in it.
+let eastSurface = null;
+function ensureEastSurface(){
+  if(eastSurface) return eastSurface;
+  const W = EAST_W, H = DUNGEON_Y0 - 10;          // the overworld rows
+  const cv = document.createElement('canvas');
+  cv.width = W * TERR_PX; cv.height = H * TERR_PX;
+  eastSurface = { ctx: cv.getContext('2d'), canvas: cv, tx0: EAST_X0, ty0: 0, tx1: EAST_X0 + W - 1, ty1: H - 1, tex: null, mesh: null };
+  paintTerrainRegion(eastSurface.tx0, eastSurface.ty0, eastSurface.tx1, eastSurface.ty1, eastSurface);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearMipMapLinearFilter;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  eastSurface.tex = tex;
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(W * TILE, H * TILE, W >> 1, H >> 1),
+    new THREE.MeshStandardMaterial({ map: tex, roughness: 0.97, metalness: 0.0 }));
+  mesh.rotation.x = -Math.PI / 2;
+  const cx = (EAST_X0 + W / 2) * TILE, cz = (H / 2) * TILE;
+  mesh.position.set(cx, 0, cz);
+  terrain.displacePlane(mesh.geometry, cx, cz);
+  mesh.receiveShadow = true;
+  mesh.material.onBeforeCompile = terrMesh.material.onBeforeCompile;   // same ground shader
+  mesh.material.defines = { NO_RANGE_FOG: '' };
+  eastSurface.mesh = mesh; scene.add(mesh);
+  return eastSurface;
+}
+
 let coastSurface = null;
 function ensureCoastSurface(){
   if(coastSurface) return coastSurface;
@@ -1928,6 +1961,7 @@ function ensureCoastSurface(){
 function _surfaceAt(tx, ty){
   if(ty >= COAST_Y0 && ty < COAST_Y0 + COAST_H && tx >= COAST_X0 && tx < COAST_X0 + COAST_W)
     return coastSurface;                       // null until it has been visited
+  if(tx >= EAST_X0) return ty < DUNGEON_Y0 - 10 ? eastSurface : null;
   if(ty < TERRAIN_MAP_H) return _mainSurface;
   return null;
 }
@@ -2780,6 +2814,8 @@ terrMesh.material.onBeforeCompile = (shader) => {
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.80, 0.83, 0.88), snowF * 0.85);
       }`);
 };
+// The east strip's ground takes the same shader, so it is built only now (v0.24).
+ensureEastSurface();
 // Wooden planks for bridge decks
 const bridgeTex = makeCanvasTex(64,64,(x,w,h)=>{
   x.fillStyle='#4a2e10'; x.fillRect(0,0,w,h);              // gaps
@@ -3591,12 +3627,17 @@ function setPlaceInst(mesh, idx, cx, y, cz) {
 // ── What each wall tile IS ───────────────────────────────────────
 // Every WALL tile was the same 1-tile stone box, so the city was a maze of
 // grey blocks with no roofs. Connected groups of wall tell us what they are:
-//   BUILDING  a small group (the 5x5 houses, the bank, Saltmere's huts)
+//   BUILDING  a small group (the 13x13 houses, the 23x17 bank, Saltmere's huts)
 //   FORT      a big one (the curtain wall, the keep)
-//   TOWER     fort tiles in a solid 3x3 block (the curtain's corners)
+//   TOWER     fort tiles in a solid 7x7 block (the curtain's corners)
+// (v0.24: the ×2.5 city. Buildings were "<= 10 across" and towers any 3x3 of
+// wall, which on a 3-thick curtain and a 5-thick keep is the whole wall.)
 // Measured once, on the map as generated + edited. Walls built later (the
 // player's own) are PLAIN and keep the old look.
 const WK_PLAIN = 0, WK_FORT = 1, WK_BUILDING = 2, WK_TOWER = 3;
+// The city's fortifications scaled with it (×2.5 footprint): curtain and keep
+// twice the height of a plain wall, and 7x7 corner towers (half-size 3).
+const FORT_H = WALL_H * 2, TOWER_R = 3;
 const wallKind = new Uint8Array(MAP_W * MAP_H);
 const BUILDINGS = [];       // { x0, y0, x1, y1 } inclusive tile bounds
 (function classifyWalls(){
@@ -3615,31 +3656,31 @@ const BUILDINGS = [];       // { x0, y0, x1, y1 } inclusive tile bounds
       }
     }
     const w = x1-x0+1, h = y1-y0+1;
-    const kind = (Math.max(w, h) <= 10 && Math.min(w, h) >= 2) ? WK_BUILDING
-               : (Math.max(w, h) > 12 ? WK_FORT : WK_PLAIN);
+    const kind = (Math.max(w, h) <= 30 && Math.min(w, h) >= 2) ? WK_BUILDING
+               : (Math.max(w, h) > 40 ? WK_FORT : WK_PLAIN);
     for(let i = 0; i < tiles.length; i += 2) wallKind[tiles[i+1]*MAP_W + tiles[i]] = kind;
     if(kind === WK_BUILDING) BUILDINGS.push({ x0, y0, x1, y1 });
   }
-  // Towers: fort tiles whose whole 3x3 neighbourhood is wall — the corner
-  // blocks. The 2-thick keep never qualifies.
-  const towers = [];
-  for(let y = 1; y < MAP_H-1; y++) for(let x = 1; x < MAP_W-1; x++){
+  // Towers: fort tiles whose whole 7x7 neighbourhood is wall — the centre of
+  // each corner block. The 3-thick curtain and 5-thick keep never qualify.
+  const towers = [], R_ = TOWER_R;
+  for(let y = R_; y < MAP_H-R_; y++) for(let x = R_; x < MAP_W-R_; x++){
     if(wallKind[y*MAP_W+x] !== WK_FORT) continue;
     let all = true;
-    for(let dy = -1; dy <= 1 && all; dy++) for(let dx = -1; dx <= 1; dx++) if(!isW(x+dx, y+dy)){ all = false; break; }
+    for(let dy = -R_; dy <= R_ && all; dy++) for(let dx = -R_; dx <= R_; dx++) if(!isW(x+dx, y+dy)){ all = false; break; }
     if(all) towers.push([x, y]);
   }
-  for(const [x, y] of towers) for(let dy = -1; dy <= 1; dy++) for(let dx = -1; dx <= 1; dx++) wallKind[(y+dy)*MAP_W + x+dx] = WK_TOWER;
+  for(const [x, y] of towers) for(let dy = -R_; dy <= R_; dy++) for(let dx = -R_; dx <= R_; dx++) wallKind[(y+dy)*MAP_W + x+dx] = WK_TOWER;
   classifyWalls.towers = towers;
 })();
 const TOWER_CENTRES = [];
-for(let y = 1; y < MAP_H-1; y++) for(let x = 1; x < MAP_W-1; x++){
+for(let y = TOWER_R; y < MAP_H-TOWER_R; y++) for(let x = TOWER_R; x < MAP_W-TOWER_R; x++){
   if(wallKind[y*MAP_W+x] !== WK_TOWER) continue;
   let all = true;
-  for(let dy = -1; dy <= 1 && all; dy++) for(let dx = -1; dx <= 1; dx++) if(wallKind[(y+dy)*MAP_W+x+dx] !== WK_TOWER){ all = false; break; }
+  for(let dy = -TOWER_R; dy <= TOWER_R && all; dy++) for(let dx = -TOWER_R; dx <= TOWER_R; dx++) if(wallKind[(y+dy)*MAP_W+x+dx] !== WK_TOWER){ all = false; break; }
   if(all) TOWER_CENTRES.push([x, y]);
 }
-const TOWER_H = WALL_H * 1.38;
+const TOWER_H = FORT_H * 1.38;
 
 // Fort walls, towers and their merlons are drawn ALL the time rather than
 // windowed round the player like other obstacles, and they haze the way the
@@ -3846,17 +3887,10 @@ const _spillTex = (() => { const c = document.createElement('canvas'); c.width =
   x.putImageData(img, 0, 0); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.flipY = false; return t; })();
 const _spillMat = new THREE.MeshBasicMaterial({ map: _spillTex, transparent: true, opacity: 0, depthWrite: false,
   blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, fog: true });
-// Hanging shop signs: which door carries which icon. Door tiles are the ones
-// world.js carves (buildHouse / the bank); icons index the atlas below.
-const SHOP_SIGNS = [
-  { tx: 310, ty: 343, icon: 4 },   // healer
-  { tx: 301, ty: 355, icon: 0 },   // merchant (NW shop)
-  { tx: 319, ty: 355, icon: 1 },   // blacksmith (NE)
-  { tx: 301, ty: 369, icon: 2 },   // mage (SW)
-  { tx: 319, ty: 369, icon: 3 },   // farrier (SE)
-  { tx: 311, ty: 365, icon: 5 },   // bank, south doors
-  { tx: 310, ty: 359, icon: 5 },   // bank, north door
-];
+// Hanging shop signs: which door carries which icon, from the city plan's
+// doors (city.js — the middle tile of each); icons index the atlas below.
+const SHOP_SIGNS = [['merchant', 0], ['blacksmith', 1], ['mage', 2], ['farrier', 3], ['healer', 4], ['bank', 5]]
+  .map(([role, icon]) => { const b = cityBuilding(role), d = b.door[b.door.length >> 1]; return { tx: d.x, ty: d.y, icon }; });
 // The sign atlas: 3 x 2 painted boards — scales, anvil, star and moon,
 // horseshoe, healer's cross, stacked coins.
 const _signTex = (() => {
@@ -3916,10 +3950,10 @@ const _flowerMat = _bidHide(new THREE.MeshStandardMaterial({ vertexColors: true,
   const cones = [];
   for(const [tx, ty] of TOWER_CENTRES){
     const wx = tx*TILE+TILE/2, wz = ty*TILE+TILE/2, y = heightAt(wx, wz) + TOWER_H;
-    const g = new THREE.ConeGeometry(TILE*1.95, TILE*2.6, 16, 1, true);
+    const g = new THREE.ConeGeometry(TILE*(TOWER_R + 0.95), TILE*(TOWER_R + 0.95)*1.35, 20, 1, true);
     g.setAttribute('color', new THREE.Float32BufferAttribute(Array.from({ length: g.attributes.position.count }, () => [0.55, 0.30, 0.20]).flat(), 3));
     for(const [k, v] of [['aBid', -1], ['aCut', -1], ['aBase', 0]]) g.setAttribute(k, new THREE.Float32BufferAttribute(new Array(g.attributes.position.count).fill(v), 1));
-    g.translate(wx, y + TILE*1.3, wz); cones.push(g);
+    g.translate(wx, y + TILE*(TOWER_R + 0.95)*0.675, wz); cones.push(g);
   }
   if(cones.length){ const m = new THREE.Mesh(mergeGeometries(cones), _bldRoofMat); m.castShadow = true; scene.add(m); cones.forEach(g => g.dispose()); }
 })();
@@ -3957,7 +3991,7 @@ function _buildWallCentres(){
     let bx0 = x0, bx1 = x0, by0 = y0, by1 = y0;
     while(q.length){ const k = q.pop(), x = k % MAP_W, y = (k / MAP_W) | 0; comp.push(k);
       bx0 = Math.min(bx0, x); bx1 = Math.max(bx1, x); by0 = Math.min(by0, y); by1 = Math.max(by1, y);
-      for(let dy = -3; dy <= 3; dy++) for(let dx = -3; dx <= 3; dx++){
+      for(let dy = -4; dy <= 4; dy++) for(let dx = -4; dx <= 4; dx++){   // (±4: bridges the 7-wide gates)
         const nx = x + dx, ny = y + dy; if(!isF(nx, ny)) continue;
         const nk = ny*MAP_W + nx; if(!seen[nk]){ seen[nk] = 1; q.push(nk); } } }
     const cx = (bx0 + bx1) / 2, cy = (by0 + by1) / 2;
@@ -4002,7 +4036,7 @@ function rebuildForts(){
     {
       // Masonry is laid straight: no per-tile tilt or height jitter, which
       // opened seams and stepped the top (critic C-9). A full tile wide.
-      const h = wk===WK_TOWER ? TOWER_H : WALL_H;
+      const h = wk===WK_TOWER ? TOWER_H : FORT_H;
       _pos.set(cx, gy + h/2, cz); _sc1.set(TILE, h, TILE); q.identity();
       _m4.compose(_pos, q, _sc1); fortMesh.setMatrixAt(i, _m4);
       fortInstTile[i]=k; i++;
@@ -4024,8 +4058,8 @@ function rebuildForts(){
       for(const [ex, ez, thick] of edges){
         if(mi >= mcap-1) break;
         for(const s of [-0.25, 0.25]){
-          _pos.set(cx + (alongX?s*TILE:ex*TILE), gy + h + 11, cz + (alongX?ez*TILE:s*TILE));
-          _sc1.set(alongX?TILE*0.3:TILE*thick, 22, alongX?TILE*thick:TILE*0.3);
+          _pos.set(cx + (alongX?s*TILE:ex*TILE), gy + h + 17, cz + (alongX?ez*TILE:s*TILE));
+          _sc1.set(alongX?TILE*0.3:TILE*thick, 34, alongX?TILE*thick:TILE*0.3);   // (taller with the ×2 wall)
           _m4.compose(_pos, q, _sc1); merlonMesh.setMatrixAt(mi++, _m4);
         }
       }
@@ -7627,7 +7661,7 @@ const _robberRig   = spawnNPC(0x3a3a3a, GRAVE_ROBBER.x, GRAVE_ROBBER.y, 'dagger'
 
 // Decorative fletcher (bowyer) between the merchant and the smith — model
 // plus an [E] label, no shop yet.
-const FLETCHER = { x:313*48+24, y:354*48+24, r:13 };
+const FLETCHER = { x:CITY_SPOTS.fletcher.x*TILE+24, y:CITY_SPOTS.fletcher.y*TILE+24, r:13 };   // (city.js)
 // ...and his stand-in. He had none: NPC_MODELS listed `fallback:null`, so on
 // hardware where SKINNING_OK is false — which is the whole reason stand-ins
 // exist — his corner of the market was simply empty, and for the first second
@@ -7764,7 +7798,7 @@ const glbNpcs = [];
 const NPC_YAW = Math.PI;
 // The jester busks in the courtyard just west of the bank's south doors,
 // cycling dance clips while he waits for an audience.
-const JESTER = { x:306*48+24, y:367*48+24, r:13 };
+const JESTER = { x:CITY_SPOTS.jester.x*TILE+24, y:CITY_SPOTS.jester.y*TILE+24, r:13 };   // (city.js)
 // ONLY roles that have a model OF THEIR OWN. Dressing a merchant in the
 // banker's model was borrowing, not modelling: it put the same three faces on
 // eleven people and it meant the procedural figures never had to be good.
@@ -11126,7 +11160,7 @@ function handleWorldChestClick(e){
 // replaces it. Three jobs are always live, each rerolls the instant it's
 // turned in, and the difficulty tier climbs with your completed rank — so
 // there is never a point where the board runs dry.
-const CONTRACT_BOARD = { x:313*48+24, y:368*48+24, r:13 };
+const CONTRACT_BOARD = { x:CITY_SPOTS.contracts.x*TILE+24, y:CITY_SPOTS.contracts.y*TILE+24, r:13 };   // (city.js)
 const CONTRACT_MOBS=[
   {t:'wolf',n:'Wolves'},{t:'spider',n:'Spiders'},{t:'giant_rat',n:'Giant Rats'},
   {t:'goblin',n:'Goblins'},{t:'ratman',n:'Ratmen'},{t:'hellhound',n:'Hellhounds'},
@@ -12036,7 +12070,7 @@ function unstuckCooldownLeft(){
 function doUnstuck(){
   if(unstuckCooldownLeft()>0) return;
   G.unstuckAt=performance.now();
-  player.x=305*TILE+TILE/2; player.y=351*TILE+TILE/2;   // Lunar city square
+  player.x=CITY_SPOTS.spawn.x*TILE+TILE/2; player.y=CITY_SPOTS.spawn.y*TILE+TILE/2;   // Lunar's courtyard (city.js)
   if(player.onHorse){ player.onHorse=false; player.horseDown=false; }
   netTp('unstuck');
   closeTutorial();

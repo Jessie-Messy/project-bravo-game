@@ -1,9 +1,17 @@
 // world.js — map generation, resource system, NPC spawn data, champ altars
-import { TILE, MAP_W, MAP_H, T, TREE_HP, STONE_HP, IRON_HP, RESPAWN_TREE, RESPAWN_STONE, RESPAWN_IRON,
+import { TILE, MAP_W, MAP_H, MAIN_W, EAST_X0, T, TREE_HP, STONE_HP, IRON_HP, RESPAWN_TREE, RESPAWN_STONE, RESPAWN_IRON,
   DUNGEON_X0, DUNGEON_Y0, DUNGEON_W, DUNGEON_H,
   COAST_X0, COAST_Y0, COAST_W, COAST_H, COAST_LANDING, COAST_MAINLAND_DOCK,
 } from './constants.js';
 import { map, resourceHp, respawnAt, origTile, playerPlacedWalls, enemies } from './state.js';
+import { buildCity, CITY_RECT, CITY_C, CITY_SPOTS } from './city.js';
+
+// The ORIGINAL world generation runs at the original width. Forests and rocks
+// are placed with rng()*width and bounds-checked against it, so generating at
+// the full 680 would re-deal every tree, rock and cave of the old map. The new
+// east strip (x MAIN_W..MAP_W-1) is generated separately, with its own seed —
+// see eastStrip below. (v0.24, the bigger world.)
+const GEN_W = MAIN_W;
 
 // ── Seeded RNG ─────────────────────────────────────────────────────
 function makeRng(seed) {
@@ -50,7 +58,7 @@ for (let y = 0; y < MAP_H; y++) {
 
   // 3 winding rivers (west→east) — overworld only
   for (const riverY of [80, 200, 360]) {
-    for (let x = 0; x < MAP_W; x++) {
+    for (let x = 0; x < GEN_W; x++) {
       const cy = Math.round(riverY + Math.sin(x * 0.08 + riverY * 0.01) * 9);
       for (let dy = -1; dy <= 1; dy++) {
         const y = cy + dy;
@@ -62,14 +70,14 @@ for (let y = 0; y < MAP_H; y++) {
   // Main north-south path with bridges
   for (let y = 0; y < 480; y++) {
     const cx = Math.round(240 + Math.sin(y * 0.06) * 8);
-    if (cx < 0 || cx >= MAP_W) continue;
+    if (cx < 0 || cx >= GEN_W) continue;
     if (map[y][cx] === T.WATER) map[y][cx] = T.BRIDGE; else map[y][cx] = T.PATH;
-    if (cx + 1 < MAP_W) {
+    if (cx + 1 < GEN_W) {
       if (map[y][cx+1] === T.WATER) map[y][cx+1] = T.BRIDGE; else map[y][cx+1] = T.PATH;
     }
   }
   // East-west path
-  for (let x = 0; x < MAP_W; x++) {
+  for (let x = 0; x < GEN_W; x++) {
     const cy = Math.round(300 + Math.sin(x * 0.05) * 6);
     if (cy < 0 || cy >= 480) continue;
     if (map[cy][x] !== T.WATER && map[cy][x] !== T.PATH) map[cy][x] = T.PATH;
@@ -85,7 +93,7 @@ for (let y = 0; y < MAP_H; y++) {
   for (const [rx, ry] of [[80,60],[380,100],[160,390]]) {
     for (let y = ry; y < ry+5; y++)
       for (let x = rx; x < rx+6; x++) {
-        if (x<0||y<0||x>=MAP_W||y>=480) continue;
+        if (x<0||y<0||x>=GEN_W||y>=480) continue;
         const edge = (y===ry||y===ry+4||x===rx||x===rx+5);
         if (edge && rng()<0.8) map[y][x] = T.STONE;
       }
@@ -93,10 +101,10 @@ for (let y = 0; y < MAP_H; y++) {
 
   // Tree groves
   for (let i = 0; i < 160; i++) {
-    const cx=Math.floor(rng()*MAP_W), cy=Math.floor(rng()*480), r=2+Math.floor(rng()*4);
+    const cx=Math.floor(rng()*GEN_W), cy=Math.floor(rng()*480), r=2+Math.floor(rng()*4);
     for (let dy=-r;dy<=r;dy++) for (let dx=-r;dx<=r;dx++) {
       const tx=cx+dx, ty=cy+dy;
-      if (tx<0||ty<0||tx>=MAP_W||ty>=480) continue;
+      if (tx<0||ty<0||tx>=GEN_W||ty>=480) continue;
       if (map[ty][tx]!==T.GRASS) continue;
       if (rng()<0.72) map[ty][tx]=T.TREE;
     }
@@ -104,95 +112,17 @@ for (let y = 0; y < MAP_H; y++) {
 
   // Stone outcrops
   for (let i = 0; i < 80; i++) {
-    const cx=Math.floor(rng()*MAP_W), cy=Math.floor(rng()*480), r=1+Math.floor(rng()*2);
+    const cx=Math.floor(rng()*GEN_W), cy=Math.floor(rng()*480), r=1+Math.floor(rng()*2);
     for (let dy=-r;dy<=r;dy++) for (let dx=-r;dx<=r;dx++) {
       const tx=cx+dx, ty=cy+dy;
-      if (tx<0||ty<0||tx>=MAP_W||ty>=480) continue;
+      if (tx<0||ty<0||tx>=GEN_W||ty>=480) continue;
       if (map[ty][tx]!==T.GRASS) continue;
       if (rng()<0.65) map[ty][tx]=T.STONE;
     }
   }
 
-  // ── Lunar City ────────────────────────────────────────────────────
-  // Outer wall: x=280-340, y=332-392 (61×61).  Center: (310,362)
-  // Inner wall: x=296-324, y=348-376 (29×29), interior x=298-322 y=350-374
-  {
-    const OX1=280,OX2=340,OY1=332,OY2=392;
-    const IX1=296,IX2=324,IY1=348,IY2=376;
-    const CX=310,CY=362;
-
-    // Clear entire city footprint to GRASS (overwrites river/trees/stones)
-    for(let y=OY1;y<=OY2;y++) for(let x=OX1;x<=OX2;x++) map[y][x]=T.GRASS;
-
-    // Outer wall perimeter
-    for(let x=OX1;x<=OX2;x++){ map[OY1][x]=T.WALL; map[OY2][x]=T.WALL; }
-    for(let y=OY1;y<=OY2;y++){ map[y][OX1]=T.WALL; map[y][OX2]=T.WALL; }
-
-    // Corner towers: 3×3 solid blocks at each corner
-    for(let dy=0;dy<3;dy++) for(let dx=0;dx<3;dx++){
-      map[OY1+dy][OX1+dx]=T.WALL; map[OY1+dy][OX2-dx]=T.WALL;
-      map[OY2-dy][OX1+dx]=T.WALL; map[OY2-dy][OX2-dx]=T.WALL;
-    }
-
-    // Outer gates — 3-tile openings centered on each wall mid-point
-    for(let x=CX-1;x<=CX+1;x++){ map[OY1][x]=T.PATH; map[OY2][x]=T.PATH; }
-    for(let y=CY-1;y<=CY+1;y++){ map[y][OX1]=T.PATH; map[y][OX2]=T.PATH; }
-
-    // Ring road — rectangular loop 4 tiles inside outer wall
-    const RX1=OX1+4,RX2=OX2-4,RY1=OY1+4,RY2=OY2-4;
-    for(let x=RX1;x<=RX2;x++){ map[RY1][x]=T.PATH; map[RY2][x]=T.PATH; }
-    for(let y=RY1;y<=RY2;y++){ map[y][RX1]=T.PATH; map[y][RX2]=T.PATH; }
-
-    // Spurs: outer gates → ring road
-    for(let x=CX-1;x<=CX+1;x++) for(let y=OY1+1;y<=RY1;y++) map[y][x]=T.PATH;  // N
-    for(let x=CX-1;x<=CX+1;x++) for(let y=RY2;y<=OY2-1;y++) map[y][x]=T.PATH;  // S
-    for(let x=OX1+1;x<=RX1;x++) for(let y=CY-1;y<=CY+1;y++) map[y][x]=T.PATH;  // W
-    for(let x=RX2;x<=OX2-1;x++) for(let y=CY-1;y<=CY+1;y++) map[y][x]=T.PATH;  // E
-
-    // Spurs: ring road → inner wall entrances (horizontal at y=CY=362)
-    for(let x=RX1;x<=IX1;x++) map[CY][x]=T.PATH;  // W inner spur
-    for(let x=IX2;x<=RX2;x++) map[CY][x]=T.PATH;  // E inner spur
-
-    // NPC houses in residential ring (5×5 each: WALL border, PATH interior, 1 door gap)
-    function buildHouse(x1,y1,doorSide,doorOff){
-      for(let dy=0;dy<5;dy++) for(let dx=0;dx<5;dx++){
-        const tx=x1+dx,ty=y1+dy;
-        map[ty][tx]=(dy===0||dy===4||dx===0||dx===4)?T.WALL:T.PATH;
-      }
-      if(doorSide==='n') map[y1   ][x1+doorOff]=T.PATH;
-      if(doorSide==='s') map[y1+4 ][x1+doorOff]=T.PATH;
-      if(doorSide==='w') map[y1+doorOff][x1   ]=T.PATH;
-      if(doorSide==='e') map[y1+doorOff][x1+4 ]=T.PATH;
-    }
-
-    buildHouse(308,339,'s',2);  // Healer — north center, door south (y=343,x=310)
-    buildHouse(285,343,'e',2);  // Merchant — W side north, door east (y=345,x=289)
-    buildHouse(285,377,'e',2);  // Mage — W side south, door east (y=379,x=289)
-    buildHouse(331,343,'w',2);  // Blacksmith — E side north, door west (y=345,x=331)
-    buildHouse(331,377,'w',2);  // Farrier — E side south, door west (y=379,x=331)
-
-    // Inner wall — 29×29, 2-tile thick
-    for(let y=IY1;y<=IY2;y++) for(let x=IX1;x<=IX2;x++) map[y][x]=T.WALL;
-    // Carve interior
-    for(let y=IY1+2;y<=IY2-2;y++) for(let x=IX1+2;x<=IX2-2;x++) map[y][x]=T.PATH;
-    // W entrance (y=361-363)
-    for(let y=CY-1;y<=CY+1;y++){ map[y][IX1]=T.PATH; map[y][IX1+1]=T.PATH; }
-    // E entrance (y=361-363)
-    for(let y=CY-1;y<=CY+1;y++){ map[y][IX2-1]=T.PATH; map[y][IX2]=T.PATH; }
-
-    // Bank building — 9×7, center of courtyard
-    const BX1=306,BX2=314,BY1=359,BY2=365;
-    for(let y=BY1;y<=BY2;y++) for(let x=BX1;x<=BX2;x++) map[y][x]=T.WALL;
-    for(let y=BY1+1;y<=BY2-1;y++) for(let x=BX1+1;x<=BX2-1;x++) map[y][x]=T.PATH;
-    map[BY2][CX-1]=T.PATH; map[BY2][CX]=T.PATH; map[BY2][CX+1]=T.PATH;  // S doors
-    map[BY1][CX]=T.PATH;                                                   // N door
-
-    // 4 corner shops — 5×5 each, door faces the bank
-    buildHouse(299,351,'s',2);  // NW — door south (x=301,y=355)
-    buildHouse(317,351,'s',2);  // NE — door south (x=319,y=355)
-    buildHouse(299,369,'n',2);  // SW — door north (x=301,y=369)
-    buildHouse(317,369,'n',2);  // SE — door north (x=319,y=369)
-  }
+  // (Lunar City was built here at 61×61 until v0.24. It is ×2.5 now and lives
+  //  in the east strip — city.js, built by eastStrip below.)
 
   // Cave generator (cellular automata)
   function generateCave(cx, cy, w, h) {
@@ -219,13 +149,13 @@ for (let y = 0; y < MAP_H; y++) {
     for (let y=cy;y<cy+h;y++) { map[y][cx]=T.CAVE_WALL; map[y][cx+w-1]=T.CAVE_WALL; }
     for (let x=cx;x<cx+w;x++) { map[cy][x]=T.CAVE_WALL; map[cy+h-1][x]=T.CAVE_WALL; }
     const ex=cx+Math.floor(w/2);
-    if (ex>=0&&ex<MAP_W) {
+    if (ex>=0&&ex<GEN_W) {
       if (cy-1>=0) {
         map[cy-1][ex]=T.CAVE_ENTRANCE;
         if (cy-2>=0) {
           for (let ddx=-1;ddx<=1;ddx++) {
             const nx=ex+ddx;
-            if (nx>=0&&nx<MAP_W&&(map[cy-2][nx]===T.TREE||map[cy-2][nx]===T.STONE))
+            if (nx>=0&&nx<GEN_W&&(map[cy-2][nx]===T.TREE||map[cy-2][nx]===T.STONE))
               map[cy-2][nx]=T.GRASS;
           }
         }
@@ -234,7 +164,7 @@ for (let y = 0; y < MAP_H; y++) {
       for (let depth=0;depth<=4;depth++) {
         for (let ddx=-1;ddx<=1;ddx++) {
           const nx=ex+ddx, ny=cy+depth;
-          if (nx>cx&&nx<cx+w-1&&ny<cy+h-1&&ny>=0&&ny<MAP_H&&nx>=0&&nx<MAP_W)
+          if (nx>cx&&nx<cx+w-1&&ny<cy+h-1&&ny>=0&&ny<MAP_H&&nx>=0&&nx<GEN_W)
             map[ny][nx]=T.CAVE_FLOOR;
         }
       }
@@ -249,7 +179,7 @@ for (let y = 0; y < MAP_H; y++) {
 
   // Walkable entry corridors guarantee
   for (let y=0;y<480;y++) {
-    for (let x=0;x<MAP_W;x++) {
+    for (let x=0;x<GEN_W;x++) {
       if (map[y][x]!==T.CAVE_ENTRANCE) continue;
       for (let dy=1;dy<=3;dy++) {
         if (y+dy<480&&map[y+dy][x]===T.CAVE_WALL) map[y+dy][x]=T.CAVE_FLOOR;
@@ -261,13 +191,13 @@ for (let y = 0; y < MAP_H; y++) {
   function makePath(x1,y1,x2,y2) {
     const sx=x1<x2?1:-1, sy=y1<y2?1:-1;
     for (let x=x1; x!==x2; x+=sx) {
-      if (x>=0&&x<MAP_W&&y1>=0&&y1<480) {
+      if (x>=0&&x<GEN_W&&y1>=0&&y1<480) {
         const t=map[y1][x];
         if (t===T.GRASS||t===T.TREE||t===T.STONE) map[y1][x]=T.PATH;
       }
     }
     for (let y=y1; y!==y2+sy; y+=sy) {
-      if (x2>=0&&x2<MAP_W&&y>=0&&y<480) {
+      if (x2>=0&&x2<GEN_W&&y>=0&&y<480) {
         const t=map[y][x2];
         if (t===T.GRASS||t===T.TREE||t===T.STONE) map[y][x2]=T.PATH;
       }
@@ -287,7 +217,7 @@ for (let y = 0; y < MAP_H; y++) {
   // Clear any trees/stones near entrance
   for (let dy=-3;dy<=3;dy++) for (let dx=-3;dx<=3;dx++) {
     const tx=EA_X+dx, ty=EA_Y-2+dy;
-    if (tx>=0&&tx<MAP_W&&ty>=0&&ty<480&&(map[ty][tx]===T.TREE||map[ty][tx]===T.STONE))
+    if (tx>=0&&tx<GEN_W&&ty>=0&&ty<480&&(map[ty][tx]===T.TREE||map[ty][tx]===T.STONE))
       map[ty][tx]=T.GRASS;
   }
   // Path from main path (x≈240) west to entrance
@@ -297,6 +227,52 @@ for (let y = 0; y < MAP_H; y++) {
   // Place TELEPORT inside the first cave's floor (center of cave)
   const EB_X = 81, EB_Y = 162;
   map[EB_Y][EB_X] = T.TELEPORT;
+
+  // ── The east strip (v0.24) ─────────────────────────────────────────
+  // x MAIN_W..MAP_W-1, overworld rows. Its own rng, so the main generator's
+  // sequence — and everything it goes on to build — is untouched.
+  (function eastStrip(){
+    const erng = makeRng(0xE457);
+    const X0 = EAST_X0, CR = CITY_RECT;
+    const sst = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
+    // The rivers carry on east with the same meander, and ease round the city:
+    // the 200 north of it, the 360 south, clear by more than the 3 tiles a bank
+    // the game widens them by.
+    const ease = x => sst(X0, CR.x1 - 5, x);
+    for (const [riverY, bend] of [[80, 0], [200, -8], [360, 28]]) {
+      for (let x = X0; x < MAP_W; x++) {
+        const cy = Math.round(riverY + Math.sin(x * 0.08 + riverY * 0.01) * 9 + bend * ease(x));
+        for (let dy = -1; dy <= 1; dy++) { const y = cy + dy; if (y >= 0 && y < 480) map[y][x] = T.WATER; }
+      }
+    }
+    // The east-west road carries on and eases onto the city's west gate.
+    for (let x = X0; x <= CR.x1; x++) {
+      const cy = Math.round((300 + Math.sin(x * 0.05) * 6) * (1 - sst(X0, CR.x1 - 10, x)) + CITY_C.y * sst(X0, CR.x1 - 10, x));
+      for (let dy = -1; dy <= 1; dy++) if (map[cy + dy][x] !== T.WATER) map[cy + dy][x] = T.PATH;
+    }
+    // Groves and outcrops at the old map's density, kept off the city and its apron.
+    const nearCity = (tx, ty) => tx >= CR.x1 - 10 && tx <= CR.x2 + 10 && ty >= CR.y1 - 10 && ty <= CR.y2 + 10;
+    const W = MAP_W - X0;
+    for (let i = 0; i < Math.round(160 * W / 480); i++) {
+      const cx = X0 + Math.floor(erng() * W), cy = Math.floor(erng() * 480), r = 2 + Math.floor(erng() * 4);
+      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        const tx = cx + dx, ty = cy + dy;
+        if (tx < X0 || ty < 0 || tx >= MAP_W || ty >= 480 || nearCity(tx, ty)) continue;
+        if (map[ty][tx] !== T.GRASS) continue;
+        if (erng() < 0.72) map[ty][tx] = T.TREE;
+      }
+    }
+    for (let i = 0; i < Math.round(80 * W / 480); i++) {
+      const cx = X0 + Math.floor(erng() * W), cy = Math.floor(erng() * 480), r = 1 + Math.floor(erng() * 2);
+      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        const tx = cx + dx, ty = cy + dy;
+        if (tx < X0 || ty < 0 || tx >= MAP_W || ty >= 480 || nearCity(tx, ty)) continue;
+        if (map[ty][tx] !== T.GRASS) continue;
+        if (erng() < 0.65) map[ty][tx] = T.STONE;
+      }
+    }
+    buildCity(map);
+  })();
 
   // ── Separator strip (rows 480–489): solid CAVE_WALL ──────────────
   for (let y=480;y<490;y++)
@@ -576,7 +552,7 @@ export const COAST_SAFE_ZONE = { x1: 0, y1: 0, x2: 0, y2: 0 };
 // handler — a bare TELEPORT tile in the city would otherwise drop you into the
 // dungeon, because that branch only asks whether you are currently underground.
 export const COAST_PORTALS = {};
-export const CITY_COAST_GATE = { x: 288, y: 384 };
+export const CITY_COAST_GATE = CITY_SPOTS.coastGate;   // (city.js)
 export const COAST_NPCS = [];      // { id, x, y, style, prop, label }
 
 // The Saltmere gate, city end ----------------------------------------
@@ -975,7 +951,7 @@ export const DUNGEON_CITY_EXIT  = { x: DUNGEON_X0+38, y: DUNGEON_Y0+57 };
 // EVERY dungeon entry was refused and the server kept you frozen at the cave
 // mouth for everyone else. build-world-data ships this list to the server,
 // and usePortal() reads the same objects, so the two cannot disagree.
-export const CITY_ARRIVAL = { x: 305, y: 351 };
+export const CITY_ARRIVAL = CITY_SPOTS.arrival;   // (city.js)
 export const PORTAL_ARRIVALS = [DUNGEON_ENTRY_TILE, CITY_ARRIVAL];
 
 // ── The edge of the world ─────────────────────────────────────────────────
